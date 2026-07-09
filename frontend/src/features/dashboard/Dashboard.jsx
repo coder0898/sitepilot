@@ -58,7 +58,7 @@ export function Dashboard({ initialUser, onLogout }) {
   return <AppLayout user={user} tabs={tabs} activeTab={tab} onTabChange={setTab} onLogout={onLogout} notice={notice} onClearNotice={() => setNotice("")}>
     {loading && <section className="panel">Loading workspace…</section>}
     {!loading && data && tab === "overview" && <OverviewPage data={data} />}
-    {!loading && data && tab === "users" && <UsersPage data={data} action={action} />}
+    {!loading && data && tab === "users" && <UsersPage data={data} user={user} action={action} />}
     {!loading && data && tab === "projects" && <ProjectsPage data={data} user={user} action={action} />}
     {!loading && data && tab === "vendors" && <VendorsPage data={data} action={action} />}
     {!loading && data && tab === "approvals" && <ApprovalsPage data={data} action={action} />}
@@ -66,3 +66,4 @@ export function Dashboard({ initialUser, onLogout }) {
     {!loading && tab === "security" && <SecurityPage action={action} />}
   </AppLayout>;
 }
+

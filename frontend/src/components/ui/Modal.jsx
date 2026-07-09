@@ -13,7 +13,7 @@ export function Modal({ title, subtitle, children, onClose }) {
             <X size={24} />
           </button>
         </header>
-        {children}
+        <div className="modal-body">{children}</div>
       </section>
     </div>
   );
