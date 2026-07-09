@@ -1,7 +1,6 @@
 # Wrokved SiteOps MVP
 
-Converted from Next.js server actions to:
-
+Framework
 - Frontend: React + Vite + Tailwind CSS
 - Backend: Python FastAPI
 - Database: PostgreSQL
