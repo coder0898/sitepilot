@@ -1,0 +1,48 @@
+﻿services:
+  db:
+    image: postgres:16-alpine
+    container_name: siteops_mvp_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: siteops
+      POSTGRES_USER: siteops
+      POSTGRES_PASSWORD: siteops_password
+    ports:
+      - "5435:5432"
+    volumes:
+      - siteops_mvp_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U siteops -d siteops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: siteops_mvp_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://siteops:siteops_password@db:5432/siteops
+      JWT_SECRET: local-dev-secret-change-before-production
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://192.168.8.11:3000
+      UPLOAD_DIR: uploads/task-proofs
+    ports:
+      - "8000:8000"
+    volumes:
+      - siteops_uploads:/app/uploads
+
+  frontend:
+    build: ./frontend
+    container_name: siteops_mvp_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  siteops_mvp_data:
+  siteops_uploads:
