@@ -1,4 +1,4 @@
-﻿@import "tailwindcss";
+@import "tailwindcss";
 
 :root { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #07162d; background: #eef4fb; }
 * { box-sizing: border-box; }
@@ -163,8 +163,7 @@ th { color: #526985; font-size: 13px; text-transform: uppercase; letter-spacing:
 .modal > :last-child { margin-bottom: 24px; }
 .modal-form { padding-top: 18px; }
 .modal-form.two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.modal-form .wide, .modal-form button { grid-column: 1 / -1; }
-.modal-form button.danger { margin-top: -4px; }
+.modal-form .wide, .modal-form > button { grid-column: 1 / -1; }
 
 @media (max-width: 920px) {
   .section-toolbar { align-items: stretch; flex-direction: column; }
@@ -443,7 +442,7 @@ video {
     overflow: visible;
     border-radius: 0 0 24px 24px;
     padding: 18px 16px;
-    gap: 14px;
+    gap: 10px;
     color: #ffffff;
     background: radial-gradient(circle at 30% 0%, #123a78 0%, #06142b 42%, #031126 100%);
   }
@@ -744,5 +743,713 @@ video {
 
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* CRUD modal + mobile table stabilization */
+.modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal > header {
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0;
+}
+
+.modal-body > .modal-form {
+  margin: 0;
+}
+
+.modal-body > .profile-hero,
+.modal-body > .detail-grid,
+.modal-body > .info-strip,
+.modal-body > .split-actions {
+  margin-left: 28px !important;
+  margin-right: 28px !important;
+}
+
+.modal-form {
+  padding-bottom: 28px;
+}
+.data-row {
+  cursor: pointer;
+}
+
+@media (min-width: 921px) {
+  .modal {
+    max-height: min(86vh, 820px);
+  }
+
+  .modal-body {
+    padding-bottom: 0;
+  }
+
+  .modal-form.two-col {
+    align-items: end;
+  }
+
+  .modal-form > button {
+    align-self: end;
+  }
+}
+
+@media (max-width: 920px) {
+  .modal-backdrop {
+    align-items: center;
+    padding: 10px;
+  }
+
+  .modal {
+    width: min(100%, 520px);
+    max-height: calc(100dvh - 20px);
+    border-radius: 20px;
+  }
+
+  .modal > header {
+    padding: 18px 18px 14px;
+  }
+
+  .modal header h2 {
+    font-size: 24px;
+  }
+
+  .modal-body {
+    max-height: calc(100dvh - 116px);
+  }
+
+  .modal-body > .profile-hero,
+  .modal-body > .detail-grid,
+  .modal-body > .info-strip,
+  .modal-body > .split-actions {
+    margin-left: 16px !important;
+    margin-right: 16px !important;
+  }
+
+  .modal-form {
+    padding: 18px 16px 18px;
+  }
+
+  .modal-form > button {
+    min-height: 52px;
+  }
+
+  .modal-form > button:last-child,
+  .modal-form > button:nth-last-child(2):has(+ button.danger),
+  .modal-form > button.danger {
+    position: static;
+  }
+
+  .data-table {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    background: #f8fbff;
+  }
+
+  .data-row,
+  .user-table .data-row,
+  .project-table .data-row,
+  .vendor-table .data-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 16px;
+    border: 1px solid #dbe7f5;
+    border-radius: 18px;
+    background: white;
+    box-shadow: 0 10px 28px rgba(15, 45, 86, .06);
+  }
+
+  .data-row > span {
+    display: grid;
+    gap: 3px;
+    justify-content: stretch !important;
+  }
+
+  .data-row > span::before {
+    color: #6b7d95;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .user-table .data-row:not(.table-head) > span:nth-child(1)::before { content: "User"; }
+  .user-table .data-row:not(.table-head) > span:nth-child(2)::before { content: "Role"; }
+  .user-table .data-row:not(.table-head) > span:nth-child(3)::before { content: "Status"; }
+  .user-table .data-row:not(.table-head) > span:nth-child(4)::before { content: "Created"; }
+  .user-table .data-row:not(.table-head) > span:nth-child(5)::before { content: "Last login"; }
+  .user-table .data-row:not(.table-head) > span:nth-child(6)::before { content: "Action"; }
+
+  .project-table .data-row:not(.table-head) > span:nth-child(1)::before { content: "Project"; }
+  .project-table .data-row:not(.table-head) > span:nth-child(2)::before { content: "Manager"; }
+  .project-table .data-row:not(.table-head) > span:nth-child(3)::before { content: "Supervisor"; }
+  .project-table .data-row:not(.table-head) > span:nth-child(4)::before { content: "Dates"; }
+  .project-table .data-row:not(.table-head) > span:nth-child(5)::before { content: "Progress"; }
+  .project-table .data-row:not(.table-head) > span:nth-child(6)::before { content: "Action"; }
+
+  .vendor-table .data-row:not(.table-head) > span:nth-child(1)::before { content: "Vendor"; }
+  .vendor-table .data-row:not(.table-head) > span:nth-child(2)::before { content: "Category"; }
+  .vendor-table .data-row:not(.table-head) > span:nth-child(3)::before { content: "Contact"; }
+  .vendor-table .data-row:not(.table-head) > span:nth-child(4)::before { content: "Phone"; }
+  .vendor-table .data-row:not(.table-head) > span:nth-child(5)::before { content: "Status"; }
+  .vendor-table .data-row:not(.table-head) > span:nth-child(6)::before { content: "Action"; }
+
+  .person-cell {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+  }
+
+  .person-cell::before {
+    grid-column: 1 / -1;
+  }
+
+  .kebab {
+    width: 100%;
+    min-height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 13px;
+    color: #0645ad;
+    background: #eff6ff;
+  }
+
+  .kebab::after {
+    content: "View / Edit";
+    font-size: 13px;
+    font-weight: 900;
+  }
+}
+
+@media (max-width: 420px) {
+  .modal {
+    max-height: calc(100dvh - 12px);
+    border-radius: 16px;
+  }
+
+  .modal-backdrop {
+    padding: 6px;
+  }
+
+  .modal-body {
+    max-height: calc(100dvh - 94px);
+  }
+
+  .data-table {
+    padding: 10px;
+  }
+
+  .data-row,
+  .user-table .data-row,
+  .project-table .data-row,
+  .vendor-table .data-row {
+    padding: 14px;
+  }
+}
+
+/* Ensure the new modal body is the scroll container, not an inset child */
+.modal > .modal-body {
+  margin: 0 !important;
+}
+
+/* CRUD workflow polish: confirmations, disabled states, and stable sidebar spacing */
+.sidebar nav {
+  align-content: start;
+}
+
+button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.secondary-button {
+  background: #ffffff;
+  color: #0b315f;
+  border: 1px solid #d5e3f3;
+  box-shadow: none;
+}
+
+.confirm-dialog {
+  display: grid;
+  gap: 18px;
+  padding: 24px 28px 28px;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: #334a68;
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.confirm-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  background: #eff6ff;
+  color: #0645ad;
+}
+
+.confirm-icon.danger {
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.confirm-actions button {
+  min-width: 132px;
+}
+
+@media (max-width: 620px) {
+  .confirm-dialog {
+    padding: 20px 16px 18px;
+  }
+
+  .confirm-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .confirm-actions button {
+    width: 100%;
+  }
+}
+/* Semantic management tables: Users, Projects, Vendors */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-scroll .data-table {
+  width: 100%;
+  min-width: 860px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  overflow: visible;
+}
+
+.table-scroll .data-row,
+.table-scroll .user-table .data-row,
+.table-scroll .project-table .data-row,
+.table-scroll .vendor-table .data-row {
+  display: table-row;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  text-align: left;
+}
+
+.table-scroll .data-table th,
+.table-scroll .data-table td {
+  min-width: 0;
+  padding: 14px 18px;
+  vertical-align: middle;
+  border-bottom: 1px solid #e4edf7;
+  overflow-wrap: anywhere;
+}
+
+.table-scroll .data-table th {
+  height: 56px;
+  background: #f7faff;
+  color: #334a68;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.table-scroll .data-table tbody tr {
+  cursor: pointer;
+}
+
+.table-scroll .data-table tbody tr:hover td,
+.table-scroll .data-table tbody tr.selected td {
+  background: #f6faff;
+}
+
+.table-scroll .data-table b {
+  display: block;
+  max-width: 100%;
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.table-scroll .data-table small {
+  display: block;
+  max-width: 100%;
+  margin-top: 4px;
+  color: #61738d;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.table-scroll .person-cell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.table-scroll .person-cell > span:last-child {
+  min-width: 0;
+}
+
+.table-scroll .data-table td:last-child,
+.table-scroll .data-table th:last-child {
+  text-align: center;
+}
+
+.table-scroll .data-table .kebab {
+  margin: 0 auto;
+}
+
+@media (max-width: 920px) {
+  .table-scroll {
+    overflow-x: visible;
+  }
+
+  .table-scroll .data-table {
+    display: block;
+    min-width: 0;
+    padding: 14px;
+    background: #f8fbff;
+  }
+
+  .table-scroll .data-table thead {
+    display: none;
+  }
+
+  .table-scroll .data-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .table-scroll .data-row,
+  .table-scroll .user-table .data-row,
+  .table-scroll .project-table .data-row,
+  .table-scroll .vendor-table .data-row {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 16px;
+    border: 1px solid #dbe7f5;
+    border-radius: 18px;
+    background: white;
+    box-shadow: 0 10px 28px rgba(15, 45, 86, .06);
+  }
+
+  .table-scroll .data-table tbody tr:hover td,
+  .table-scroll .data-table tbody tr.selected td {
+    background: transparent;
+  }
+
+  .table-scroll .data-table td {
+    display: grid;
+    gap: 3px;
+    padding: 0;
+    border: 0;
+    text-align: left;
+  }
+
+  .table-scroll .data-table td::before {
+    content: attr(data-label);
+    color: #6b7d95;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .table-scroll .person-cell {
+    align-items: center;
+  }
+
+  .table-scroll .person-cell::before {
+    display: none;
+  }
+
+  .table-scroll .data-table td:last-child {
+    text-align: left;
+  }
+
+  .table-scroll .data-table .kebab {
+    width: 100%;
+    min-height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 13px;
+    color: #0645ad;
+    background: #eff6ff;
+  }
+
+  .table-scroll .data-table .kebab::after {
+    content: "View / Edit";
+    font-size: 13px;
+    font-weight: 900;
+  }
+}
+
+@media (max-width: 420px) {
+  .table-scroll .data-table {
+    padding: 10px;
+  }
+
+  .table-scroll .data-row,
+  .table-scroll .user-table .data-row,
+  .table-scroll .project-table .data-row,
+  .table-scroll .vendor-table .data-row {
+    padding: 14px;
+  }
+}
+/* Final responsive management table polish */
+.management-card {
+  overflow: hidden;
+}
+
+.table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #9fb3cc transparent;
+}
+
+.table-scroll .data-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #ffffff;
+}
+
+.table-scroll .data-table th,
+.table-scroll .data-table td {
+  height: auto;
+  padding: 16px 18px;
+  vertical-align: middle;
+  border-bottom: 1px solid #e1ebf7;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.table-scroll .data-table th {
+  background: #f5f9fe;
+  color: #223854;
+  font-size: 13px;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.table-scroll .data-table tbody tr {
+  cursor: pointer;
+  transition: background .15s ease;
+}
+
+.table-scroll .data-table tbody tr:hover td,
+.table-scroll .data-table tbody tr.selected td {
+  background: #f7fbff;
+}
+
+.table-scroll .data-table b {
+  display: block;
+  max-width: 100%;
+  font-size: 15px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.table-scroll .data-table small {
+  display: block;
+  max-width: 100%;
+  margin-top: 4px;
+  color: #61738d;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.table-scroll .person-cell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.table-scroll .person-cell > span:last-child {
+  min-width: 0;
+}
+
+.table-scroll .data-table td:last-child,
+.table-scroll .data-table th:last-child {
+  width: 88px;
+  min-width: 88px;
+  max-width: 88px;
+  padding-left: 10px;
+  padding-right: 10px;
+  text-align: center;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.table-scroll .data-table .kebab {
+  width: 42px;
+  height: 42px;
+  margin: 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 14px;
+}
+
+.user-table col:nth-child(1) { width: 18%; }
+.user-table col:nth-child(2) { width: 24%; }
+.user-table col:nth-child(3) { width: 15%; }
+.user-table col:nth-child(4) { width: 12%; }
+.user-table col:nth-child(5) { width: 14%; }
+.user-table col:nth-child(6) { width: 12%; }
+.user-table col:nth-child(7) { width: 88px; }
+
+.project-table col:nth-child(1) { width: 28%; }
+.project-table col:nth-child(2) { width: 16%; }
+.project-table col:nth-child(3) { width: 16%; }
+.project-table col:nth-child(4) { width: 22%; }
+.project-table col:nth-child(5) { width: 10%; }
+.project-table col:nth-child(6) { width: 88px; }
+
+.vendor-table col:nth-child(1) { width: 28%; }
+.vendor-table col:nth-child(2) { width: 16%; }
+.vendor-table col:nth-child(3) { width: 20%; }
+.vendor-table col:nth-child(4) { width: 16%; }
+.vendor-table col:nth-child(5) { width: 12%; }
+.vendor-table col:nth-child(6) { width: 88px; }
+
+@media (max-width: 920px) {
+  .table-scroll {
+    overflow-x: visible;
+  }
+
+  .table-scroll .data-table {
+    display: block;
+    min-width: 0;
+    padding: 12px;
+    background: #f8fbff;
+  }
+
+  .table-scroll .data-table colgroup,
+  .table-scroll .data-table thead {
+    display: none;
+  }
+
+  .table-scroll .data-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .table-scroll .data-table tr,
+  .table-scroll .data-row,
+  .table-scroll .user-table .data-row,
+  .table-scroll .project-table .data-row,
+  .table-scroll .vendor-table .data-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid #dbe7f5;
+    border-radius: 18px;
+    background: #ffffff;
+    box-shadow: 0 10px 28px rgba(15,45,86,.06);
+  }
+
+  .table-scroll .data-table tbody tr:hover td,
+  .table-scroll .data-table tbody tr.selected td {
+    background: transparent;
+  }
+
+  .table-scroll .data-table td,
+  .table-scroll .data-table td:last-child {
+    display: grid;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .table-scroll .data-table td::before {
+    content: attr(data-label);
+    color: #6b7d95;
+    font-size: 11px;
+    font-weight: 950;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .table-scroll .data-table .kebab {
+    width: 100%;
+    min-height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 13px;
+    color: #0645ad;
+    background: #eff6ff;
+  }
+
+  .table-scroll .data-table .kebab::after {
+    content: "View / Edit";
+    font-size: 13px;
+    font-weight: 900;
+  }
+}
+
+@media (max-width: 420px) {
+  .table-scroll .data-table {
+    padding: 10px;
+  }
+
+  .table-scroll .data-table tr,
+  .table-scroll .data-row,
+  .table-scroll .user-table .data-row,
+  .table-scroll .project-table .data-row,
+  .table-scroll .vendor-table .data-row {
+    padding: 14px;
   }
 }

@@ -18,6 +18,12 @@ class UserCreateIn(BaseModel):
     role: UserRole
 
 
+class UserUpdateIn(BaseModel):
+    name: str
+    email: str
+    role: UserRole | None = None
+
+
 class PasswordIn(BaseModel):
     password: str
 
@@ -79,3 +85,4 @@ class TaskAdminIn(BaseModel):
 class ReviewIn(BaseModel):
     action: str
     rejection_reason: str | None = None
+
