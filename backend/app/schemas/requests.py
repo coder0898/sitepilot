@@ -1,4 +1,4 @@
-﻿from datetime import date
+from datetime import date
 import uuid
 
 from pydantic import BaseModel
@@ -56,7 +56,7 @@ class ProjectIn(BaseModel):
     client_name: str
     site_address: str
     start_date: date
-    project_manager_id: uuid.UUID
+    project_manager_id: uuid.UUID | None = None
     supervisor_id: uuid.UUID
 
 

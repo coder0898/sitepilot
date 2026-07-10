@@ -1,5 +1,14 @@
 ﻿export function fmtStatus(value) {
-  return value?.replaceAll("_", " ") || "pending";
+  const labels = {
+    pending: "Pending",
+    in_progress: "In Progress",
+    submitted: "Submitted for Approval",
+    completed: "Approved",
+    rejected: "Rejected",
+    delayed: "Delayed",
+    blocked: "Blocked",
+  };
+  return labels[value] || value?.replaceAll("_", " ") || "Pending";
 }
 
 export function todayIso() {

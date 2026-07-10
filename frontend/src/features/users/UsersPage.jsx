@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MoreVertical, UserPlus } from "lucide-react";
+import { Eye, UserPlus } from "lucide-react";
 import { ConfirmModal, ManagementHeader, ManagementTable, Modal, Pill } from "../../components/ui";
 import { usersApi } from "../../api/usersApi";
 import { roles } from "../../utils/constants";
@@ -44,7 +44,7 @@ function UserModal({ selectedUser, currentUser, onClose, action }) {
 
   return <Modal title="User Details" subtitle="View and manage user access" onClose={onClose}>
     <div className="profile-hero"><div className="avatar large pastel">{initials(selectedUser.name)}</div><div><h3>{selectedUser.name}</h3><p>{selectedUser.email}</p></div><Pill tone={selectedUser.active ? "green" : "gray"}>{selectedUser.active ? "Active" : "Inactive"}</Pill></div>
-    <div className="detail-grid"><article><span>Role</span><strong>{roles[selectedUser.role]}</strong></article><article><span>Status</span><strong>{selectedUser.active ? "Active" : "Inactive"}</strong></article><article><span>Created</span><strong>{selectedUser.created_at ? new Date(selectedUser.created_at).toLocaleDateString("en-GB") : "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"}</strong></article><article><span>Last Login</span><strong>{selectedUser.last_login_at ? new Date(selectedUser.last_login_at).toLocaleString("en-GB") : "Not yet"}</strong></article></div>
+    <div className="detail-grid"><article><span>Role</span><strong>{roles[selectedUser.role]}</strong></article><article><span>Status</span><strong>{selectedUser.active ? "Active" : "Inactive"}</strong></article><article><span>Created</span><strong>{selectedUser.created_at ? new Date(selectedUser.created_at).toLocaleDateString("en-GB") : "-"}</strong></article><article><span>Last Login</span><strong>{selectedUser.last_login_at ? new Date(selectedUser.last_login_at).toLocaleString("en-GB") : "Not yet"}</strong></article></div>
     {protectedUser ? <div className="info-strip">System owner account. Protected from changes.</div> : <form className="modal-form two-col" onSubmit={save}>
       <label>Full Name<input name="name" defaultValue={selectedUser.name} required /></label>
       <label>Email Login<input name="email" defaultValue={selectedUser.email} required /></label>
@@ -139,7 +139,7 @@ export function UsersPage({ data, user, action }) {
                   <td data-label="Email"><b>{item.email}</b></td>
                   <td data-label="Role"><Pill>{roles[item.role]}</Pill></td>
                   <td data-label="Status"><Pill tone={item.active ? "green" : "gray"}>{item.active ? "Active" : "Inactive"}</Pill></td>
-                  <td data-label="Created On">{item.created_at ? new Date(item.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "Ã¢â‚¬â€"}</td>
+                  <td data-label="Created On">{item.created_at ? new Date(item.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "-"}</td>
                   <td data-label="Last Login">{item.last_login_at ? new Date(item.last_login_at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Not yet"}</td>
                   <td data-label="Actions">
                     <button
@@ -151,7 +151,7 @@ export function UsersPage({ data, user, action }) {
                         setSelected(item);
                       }}
                     >
-                      <MoreVertical size={20} />
+                      <Eye size={20} />
                     </button>
                   </td>
                 </tr>

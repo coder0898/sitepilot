@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, select
@@ -37,6 +37,17 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
         )
         if user.role == UserRole.admin:
             stmt = stmt.where(User.role != UserRole.super_admin)
+        users = [public_user(item) for item in db.scalars(stmt).all()]
+    elif user.role == UserRole.project_manager:
+        # Project Managers need active supervisors in the project creation/edit form.
+        stmt = (
+            select(User)
+            .where(User.active.is_(True), User.role.in_([UserRole.supervisor, UserRole.project_manager]))
+            .order_by(
+                case((User.role == UserRole.project_manager, 0), else_=1),
+                User.created_at.desc(),
+            )
+        )
         users = [public_user(item) for item in db.scalars(stmt).all()]
 
     vendors = [public_vendor(vendor) for vendor in db.scalars(select(Vendor).order_by(Vendor.created_at.desc())).all()]

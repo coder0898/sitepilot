@@ -55,7 +55,7 @@ export function Dashboard({ initialUser, onLogout }) {
     }
   }
 
-  return <AppLayout user={user} tabs={tabs} activeTab={tab} onTabChange={setTab} onLogout={onLogout} notice={notice} onClearNotice={() => setNotice("")}>
+  return <AppLayout user={user} tabs={tabs} activeTab={tab} onTabChange={setTab} onLogout={onLogout} onRefresh={refresh} notice={notice} onClearNotice={() => setNotice("")}>
     {loading && <section className="panel">Loading workspace…</section>}
     {!loading && data && tab === "overview" && <OverviewPage data={data} />}
     {!loading && data && tab === "users" && <UsersPage data={data} user={user} action={action} />}
