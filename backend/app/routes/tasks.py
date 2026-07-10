@@ -28,7 +28,7 @@ def supervisor_today(user: User = Depends(require_roles(UserRole.supervisor)), d
             Project.supervisor_id == user.id,
             or_(
                 ProjectTask.scheduled_date == today,
-                and_(ProjectTask.scheduled_date < today, ProjectTask.status.in_([TaskStatus.pending, TaskStatus.in_progress, TaskStatus.delayed, TaskStatus.blocked, TaskStatus.rejected])),
+                and_(ProjectTask.scheduled_date < today, ProjectTask.status.in_([TaskStatus.pending, TaskStatus.in_progress, TaskStatus.submitted, TaskStatus.delayed, TaskStatus.blocked, TaskStatus.rejected])),
             ),
         )
         .order_by(ProjectTask.scheduled_date, ProjectTask.day_no)
@@ -93,8 +93,11 @@ def review_task(task_id: uuid.UUID, payload: ReviewIn, actor: User = Depends(req
         task.approved_by = actor.id
         task.rejection_reason = None
     elif payload.action == "reject":
+        reason = (payload.rejection_reason or "").strip()
+        if not reason:
+            raise HTTPException(422, "Rejection reason is required.")
         task.status = TaskStatus.rejected
-        task.rejection_reason = payload.rejection_reason or "Rejected by project manager."
+        task.rejection_reason = reason
     else:
         raise HTTPException(422, "Review action must be approve or reject.")
     db.commit()

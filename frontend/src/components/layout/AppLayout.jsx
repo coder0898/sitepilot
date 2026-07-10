@@ -1,4 +1,4 @@
-﻿import { BarChart3, BriefcaseBusiness, CalendarCheck, CheckSquare, FolderKanban, LogOut, Settings, UserRoundCog, UsersRound } from "lucide-react";
+﻿import { BarChart3, BriefcaseBusiness, CalendarCheck, CheckSquare, FolderKanban, LogOut, RefreshCw, Settings, ShieldCheck, UserRoundCog, UsersRound } from "lucide-react";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
 
@@ -7,10 +7,11 @@ export function tabHelp(tab) {
     overview: "Product summary",
     users: "Create and manage logins",
     projects: "Calendar and task control",
-    vendors: "Vendor contacts",
+    communication: "Project contacts & quick actions",
     approvals: "Review submitted work",
     today: "Current and carried-forward tasks",
     security: "Application settings",
+    permissions: "Control role access",
   })[tab] || "Workspace";
 }
 
@@ -19,15 +20,16 @@ function navIcon(tab) {
     overview: <BarChart3 size={18} />,
     users: <UsersRound size={18} />,
     projects: <FolderKanban size={18} />,
-    vendors: <BriefcaseBusiness size={18} />,
+    communication: <BriefcaseBusiness size={18} />,
     approvals: <CheckSquare size={18} />,
     today: <CalendarCheck size={18} />,
     security: <Settings size={18} />,
+    permissions: <ShieldCheck size={18} />,
   };
   return icons[tab] || <UserRoundCog size={18} />;
 }
 
-export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, notice, onClearNotice, children }) {
+export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, onRefresh, notice, onClearNotice, children }) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -37,7 +39,7 @@ export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, notice
         <div className="sidebar-profile"><div className="avatar small">{initials(user.name)}</div><div><strong>{user.name}</strong><span>{user.email}</span></div></div>
       </aside>
       <main className="workspace">
-        <header className="page-head"><div><p>45-day interior fit-out control</p><h1>{tabs.find(([key]) => key === activeTab)?.[1]}</h1><span>{tabHelp(activeTab)}</span></div><div className="head-actions"><span>{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span><button type="button" onClick={onLogout}>Logout</button></div></header>
+        <header className="page-head"><div><p>45-day interior fit-out control</p><h1>{tabs.find(([key]) => key === activeTab)?.[1]}</h1><span>{tabHelp(activeTab)}</span></div><div className="head-actions"><span>{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span><button type="button" className="refresh-button" onClick={onRefresh}><RefreshCw size={18} /> Refresh</button><button type="button" onClick={onLogout}>Logout</button></div></header>
         <div className="mobile-tabs">{tabs.map(([key, label]) => <button type="button" key={key} onClick={() => onTabChange(key)} className={activeTab === key ? "active" : ""}>{label}</button>)}</div>
         {notice && <div className="notice" onClick={onClearNotice}>{notice}</div>}
         {children}

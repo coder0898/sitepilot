@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MoreVertical, Plus } from "lucide-react";
+import { Eye, Plus } from "lucide-react";
 import { ConfirmModal, ManagementHeader, ManagementTable, Modal, Pill } from "../../components/ui";
 import { vendorsApi } from "../../api/vendorsApi";
 import { categories } from "../../utils/constants";
@@ -13,7 +13,7 @@ function VendorModal({ vendor, action, onClose }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   async function save(e) { e.preventDefault(); await action(() => vendorsApi.update(vendor.id, Object.fromEntries(new FormData(e.currentTarget))), "Vendor updated"); onClose(); }
   async function remove() { await action(() => vendorsApi.remove(vendor.id), "Vendor deleted"); setConfirmDelete(false); onClose(); }
-  return <Modal title="Vendor Details" subtitle="Vendor contact and category" onClose={onClose}><div className="profile-hero"><div className="avatar large pastel">{initials(vendor.name)}</div><div><h3>{vendor.name}</h3><p>{vendor.contact_person} â€¢ {vendor.phone}</p></div><Pill>{vendor.category}</Pill></div><form className="modal-form two-col" onSubmit={save}><label>Vendor Company<input name="name" defaultValue={vendor.name} /></label><label>Category<select name="category" defaultValue={vendor.category}>{categories.map(c => <option key={c}>{c}</option>)}</select></label><label>Contact Person<input name="contact_person" defaultValue={vendor.contact_person} /></label><label>Phone<input name="phone" defaultValue={vendor.phone} /></label><label>WhatsApp<input name="whatsapp" defaultValue={vendor.whatsapp || ""} /></label><label>Notes<input name="notes" defaultValue={vendor.notes || ""} /></label><button>Save Vendor</button><button type="button" className="danger" onClick={() => setConfirmDelete(true)}>Delete Vendor</button></form>{confirmDelete && <ConfirmModal title="Delete vendor?" message={`This will remove ${vendor.name}. Assigned tasks will become unassigned.`} confirmLabel="Delete Vendor" onClose={() => setConfirmDelete(false)} onConfirm={remove} />}</Modal>;
+  return <Modal title="Vendor Details" subtitle="Vendor contact and category" onClose={onClose}><div className="profile-hero"><div className="avatar large pastel">{initials(vendor.name)}</div><div><h3>{vendor.name}</h3><p>{vendor.contact_person} - {vendor.phone}</p></div><Pill>{vendor.category}</Pill></div><form className="modal-form two-col" onSubmit={save}><label>Vendor Company<input name="name" defaultValue={vendor.name} /></label><label>Category<select name="category" defaultValue={vendor.category}>{categories.map(c => <option key={c}>{c}</option>)}</select></label><label>Contact Person<input name="contact_person" defaultValue={vendor.contact_person} /></label><label>Phone<input name="phone" defaultValue={vendor.phone} /></label><label>WhatsApp<input name="whatsapp" defaultValue={vendor.whatsapp || ""} /></label><label>Notes<input name="notes" defaultValue={vendor.notes || ""} /></label><button>Save Vendor</button><button type="button" className="danger" onClick={() => setConfirmDelete(true)}>Delete Vendor</button></form>{confirmDelete && <ConfirmModal title="Delete vendor?" message={`This will remove ${vendor.name}. Assigned tasks will become unassigned.`} confirmLabel="Delete Vendor" onClose={() => setConfirmDelete(false)} onConfirm={remove} />}</Modal>;
 }
 
 export function VendorsPage({ data, action }) {
@@ -94,7 +94,7 @@ export function VendorsPage({ data, action }) {
                         setSelected(vendor);
                       }}
                     >
-                      <MoreVertical size={20} />
+                      <Eye size={20} />
                     </button>
                   </td>
                 </tr>

@@ -1,4 +1,4 @@
-# Wrokved SiteOps MVP
+# Wrokved SiteOps
 
 Framework
 - Frontend: React + Vite + Tailwind CSS

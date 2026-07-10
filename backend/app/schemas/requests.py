@@ -51,12 +51,51 @@ class VendorIn(BaseModel):
     notes: str | None = None
 
 
+class VendorContactIn(BaseModel):
+    vendor_id: uuid.UUID
+    name: str
+    designation: str | None = None
+    phone: str
+    whatsapp: str | None = None
+    is_primary: bool = False
+
+
+class VendorCategoryIn(BaseModel):
+    name: str
+
+
+class ProjectVendorIn(BaseModel):
+    project_id: uuid.UUID
+    vendor_id: uuid.UUID
+
+
+class ContractorRelationshipIn(BaseModel):
+    main_contractor_id: uuid.UUID
+    subcontractor_id: uuid.UUID
+
+class ContractorProfileIn(BaseModel):
+    name: str
+    engagement_type: str = "main"
+    status: str = "active"
+    category_ids: list[uuid.UUID]
+    email: str | None = None
+    address: str | None = None
+    gst_number: str | None = None
+    notes: str | None = None
+
+class CommunicationLogIn(BaseModel):
+    vendor_id: uuid.UUID
+    contact_id: uuid.UUID | None = None
+    project_id: uuid.UUID | None = None
+    channel: str
+    note: str
+
 class ProjectIn(BaseModel):
     name: str
     client_name: str
     site_address: str
     start_date: date
-    project_manager_id: uuid.UUID
+    project_manager_id: uuid.UUID | None = None
     supervisor_id: uuid.UUID
 
 
@@ -86,3 +125,12 @@ class ReviewIn(BaseModel):
     action: str
     rejection_reason: str | None = None
 
+
+class ModulePermissionRow(BaseModel):
+    role: UserRole
+    module_key: str
+    can_view: bool
+
+
+class ModulePermissionIn(BaseModel):
+    permissions: list[ModulePermissionRow]
