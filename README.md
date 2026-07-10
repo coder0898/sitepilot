@@ -9,7 +9,7 @@ Framework
 
 ## Local run
 
-```bash command
+```bash
 docker compose up -d --build
 ```
 
