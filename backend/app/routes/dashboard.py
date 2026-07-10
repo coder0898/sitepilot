@@ -1,4 +1,4 @@
-import uuid
+﻿import uuid
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, select
@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user
 from app.database import get_db
-from app.models import ProjectTask, TaskStatus, User, UserRole, Vendor
+from app.models import ProjectTask, RoleModulePermission, TaskStatus, User, UserRole, Vendor
 from app.services.serializers import project_row, public_user, public_vendor, task_row, visible_projects_query
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
@@ -64,6 +64,12 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
                     .order_by(ProjectTask.submitted_at.desc().nullslast())
                 ).all()
             ]
-    return {"user": public_user(user), "users": users, "vendors": vendors, "projects": projects, "review_tasks": review_tasks}
+    if user.role == UserRole.super_admin:
+        module_permissions = ["communication", "users", "permissions"]
+    else:
+        module_permissions = [item.module_key for item in db.scalars(select(RoleModulePermission).where(RoleModulePermission.role == user.role.value, RoleModulePermission.can_view.is_(True))).all()]
+        if not module_permissions:
+            module_permissions = ["communication"]
+    return {"user": public_user(user), "users": users, "vendors": vendors, "projects": projects, "review_tasks": review_tasks, "module_permissions": module_permissions}
 
 

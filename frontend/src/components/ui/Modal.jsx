@@ -1,9 +1,9 @@
 ﻿import { X } from "lucide-react";
 
-export function Modal({ title, subtitle, children, onClose }) {
+export function Modal({ title, subtitle, children, onClose, className = "" }) {
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <section className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}>
         <header>
           <div>
             <h2>{title}</h2>

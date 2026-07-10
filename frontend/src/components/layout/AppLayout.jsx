@@ -1,4 +1,4 @@
-﻿import { BarChart3, BriefcaseBusiness, CalendarCheck, CheckSquare, FolderKanban, LogOut, RefreshCw, Settings, UserRoundCog, UsersRound } from "lucide-react";
+﻿import { BarChart3, BriefcaseBusiness, CalendarCheck, CheckSquare, FolderKanban, LogOut, RefreshCw, Settings, ShieldCheck, UserRoundCog, UsersRound } from "lucide-react";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
 
@@ -7,10 +7,11 @@ export function tabHelp(tab) {
     overview: "Product summary",
     users: "Create and manage logins",
     projects: "Calendar and task control",
-    vendors: "Vendor contacts",
+    communication: "Project contacts & quick actions",
     approvals: "Review submitted work",
     today: "Current and carried-forward tasks",
     security: "Application settings",
+    permissions: "Control role access",
   })[tab] || "Workspace";
 }
 
@@ -19,10 +20,11 @@ function navIcon(tab) {
     overview: <BarChart3 size={18} />,
     users: <UsersRound size={18} />,
     projects: <FolderKanban size={18} />,
-    vendors: <BriefcaseBusiness size={18} />,
+    communication: <BriefcaseBusiness size={18} />,
     approvals: <CheckSquare size={18} />,
     today: <CalendarCheck size={18} />,
     security: <Settings size={18} />,
+    permissions: <ShieldCheck size={18} />,
   };
   return icons[tab] || <UserRoundCog size={18} />;
 }
