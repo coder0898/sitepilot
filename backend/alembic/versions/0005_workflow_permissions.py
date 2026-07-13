@@ -20,7 +20,7 @@ def upgrade():
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.UniqueConstraint("role", "module_key", name="uq_role_module_permission"),
     )
-    defaults = (("admin", "communication"), ("admin", "users"), ("project_manager", "communication"), ("supervisor", "communication"))
+    defaults = (("admin", "execution"), ("admin", "communication"), ("admin", "users"), ("project_manager", "execution"), ("project_manager", "communication"), ("supervisor", "execution"), ("supervisor", "communication"))
     for role, module in defaults:
         op.execute(f"insert into role_module_permissions (id, role, module_key, can_view) values (gen_random_uuid(), '{role}', '{module}', true)")
 

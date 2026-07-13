@@ -4,6 +4,7 @@ import { initials } from "../../utils/format";
 
 export function tabHelp(tab) {
   return ({
+    execution: "Three-day project scheduler",
     overview: "Product summary",
     users: "Create and manage logins",
     projects: "Calendar and task control",
@@ -17,6 +18,7 @@ export function tabHelp(tab) {
 
 function navIcon(tab) {
   const icons = {
+    execution: <CalendarCheck size={18} />,
     overview: <BarChart3 size={18} />,
     users: <UsersRound size={18} />,
     projects: <FolderKanban size={18} />,
@@ -38,7 +40,7 @@ export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, onRefr
         <nav>{tabs.map(([key, label]) => <button type="button" key={key} onClick={() => onTabChange(key)} className={activeTab === key ? "active" : ""}><span className="nav-icon">{navIcon(key)}</span><span><b>{label}</b><small>{tabHelp(key)}</small></span></button>)}</nav>
         <div className="sidebar-profile"><div className="avatar small">{initials(user.name)}</div><div><strong>{user.name}</strong><span>{user.email}</span></div></div>
       </aside>
-      <main className="workspace">
+      <main className={`workspace tab-${activeTab}`}>
         <header className="page-head"><div><p>45-day interior fit-out control</p><h1>{tabs.find(([key]) => key === activeTab)?.[1]}</h1><span>{tabHelp(activeTab)}</span></div><div className="head-actions"><span>{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span><button type="button" className="refresh-button" onClick={onRefresh}><RefreshCw size={18} /> Refresh</button><button type="button" onClick={onLogout}>Logout</button></div></header>
         <div className="mobile-tabs">{tabs.map(([key, label]) => <button type="button" key={key} onClick={() => onTabChange(key)} className={activeTab === key ? "active" : ""}>{label}</button>)}</div>
         {notice && <div className="notice" onClick={onClearNotice}>{notice}</div>}

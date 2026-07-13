@@ -1,4 +1,4 @@
-﻿import enum
+import enum
 import uuid
 from datetime import date, datetime
 
@@ -32,6 +32,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    phone: Mapped[str | None] = mapped_column(Text)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, name="user_role"), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -121,6 +122,7 @@ class CommunicationLog(Base):
     vendor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
     contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_contacts.id", ondelete="SET NULL"))
     project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))
+    execution_project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_projects.id", ondelete="CASCADE"))
     channel: Mapped[str] = mapped_column(Text, nullable=False)
     note: Mapped[str] = mapped_column(Text, nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -201,3 +203,141 @@ class PasswordResetToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class ExecutionTemplate(Base):
+    __tablename__ = "execution_templates"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    project_type: Mapped[str] = mapped_column(Text, nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExecutionTemplateTask(Base):
+    __tablename__ = "execution_template_tasks"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_templates.id", ondelete="CASCADE"), nullable=False)
+    day_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False, default="General")
+    priority: Mapped[str] = mapped_column(Text, nullable=False, default="medium")
+    instructions: Mapped[str | None] = mapped_column(Text)
+    materials_required: Mapped[str | None] = mapped_column(Text)
+    material_reminder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reminder_lead_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ExecutionProject(Base):
+    __tablename__ = "execution_projects"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    client_name: Mapped[str] = mapped_column(Text, nullable=False)
+    location: Mapped[str] = mapped_column(Text, nullable=False)
+    project_type: Mapped[str] = mapped_column(Text, nullable=False)
+    area: Mapped[str | None] = mapped_column(Text)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    project_manager_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    supervisor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_templates.id"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExecutionDay(Base):
+    __tablename__ = "execution_days"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_projects.id", ondelete="CASCADE"), nullable=False)
+    day_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+
+class ExecutionProjectContractor(Base):
+    __tablename__ = "execution_project_contractors"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_projects.id", ondelete="CASCADE"), nullable=False)
+    contractor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
+    scope: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExecutionTask(Base):
+    __tablename__ = "execution_tasks"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_projects.id", ondelete="CASCADE"), nullable=False)
+    day_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_days.id", ondelete="CASCADE"), nullable=False)
+    template_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_template_tasks.id", ondelete="SET NULL"))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False, default="General")
+    instructions: Mapped[str | None] = mapped_column(Text)
+    materials_required: Mapped[str | None] = mapped_column(Text)
+    material_reminder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reminder_lead_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    assigned_supervisor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    assigned_contractor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id"))
+    assigned_subcontractor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id"))
+    priority: Mapped[str] = mapped_column(Text, nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="assigned")
+    proof_url: Mapped[str | None] = mapped_column(Text)
+    proof_required: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    rescheduled_date: Mapped[date | None] = mapped_column(Date)
+    delay_reason: Mapped[str | None] = mapped_column(Text)
+    rescheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rescheduled_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    reschedule_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ExecutionTaskDelayReport(Base):
+    __tablename__ = "execution_task_delay_reports"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_tasks.id", ondelete="CASCADE"), nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+class ExecutionTaskReschedule(Base):
+    __tablename__ = "execution_task_reschedules"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_tasks.id", ondelete="CASCADE"), nullable=False)
+    previous_date: Mapped[date] = mapped_column(Date, nullable=False)
+    new_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_tasks.id", ondelete="CASCADE"), nullable=False)
+    recipient_type: Mapped[str] = mapped_column(Text, nullable=False)
+    recipient_name: Mapped[str] = mapped_column(Text, nullable=False)
+    phone: Mapped[str | None] = mapped_column(Text)
+    message_preview: Mapped[str] = mapped_column(Text, nullable=False)
+    notification_type: Mapped[str] = mapped_column(Text, nullable=False, default="task_assignment")
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="preview")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+
+

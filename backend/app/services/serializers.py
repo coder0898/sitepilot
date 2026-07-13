@@ -1,4 +1,4 @@
-﻿from fastapi import HTTPException
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,7 @@ def public_user(user: User) -> dict:
         "id": str(user.id),
         "name": user.name,
         "email": user.email,
+        "phone": user.phone,
         "role": user.role.value,
         "active": user.active,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,

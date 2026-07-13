@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import SessionLocal
-from app.routes import auth, communication, dashboard, permissions, projects, tasks, users, vendors
+from app.routes import auth, communication, dashboard, execution_v2, permissions, users, vendors
 from app.seed import ensure_seed_data
 
 
@@ -30,8 +30,7 @@ def create_app() -> FastAPI:
     app.include_router(vendors.router)
     app.include_router(communication.router)
     app.include_router(permissions.router)
-    app.include_router(projects.router)
-    app.include_router(tasks.router)
+    app.include_router(execution_v2.router)
 
     @app.on_event("startup")
     def startup() -> None:

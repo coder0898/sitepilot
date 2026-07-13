@@ -7,14 +7,14 @@ from app.models import RoleModulePermission, User, UserRole
 from app.schemas.requests import ModulePermissionIn
 
 router = APIRouter(prefix="/api/role-permissions", tags=["role-permissions"])
-MODULES = ("communication", "users", "overview", "projects", "approvals", "today", "security")
+MODULES = ("execution", "communication", "users")
 MANAGED_ROLES = (UserRole.admin, UserRole.project_manager, UserRole.supervisor)
-DEFAULTS = {"admin": {"communication", "users"}, "project_manager": {"communication"}, "supervisor": {"communication"}}
+DEFAULTS = {"admin": {"execution", "communication", "users"}, "project_manager": {"execution", "communication"}, "supervisor": {"execution", "communication"}}
 
 
 def matrix(db):
     saved = {(item.role, item.module_key): item.can_view for item in db.scalars(select(RoleModulePermission)).all()}
-    return [{"role": role.value, "module_key": module, "can_view": saved.get((role.value, module), module in DEFAULTS[role.value]), "locked": module == "communication"} for role in MANAGED_ROLES for module in MODULES]
+    return [{"role": role.value, "module_key": module, "can_view": saved.get((role.value, module), module in DEFAULTS[role.value]), "locked": module == "execution"} for role in MANAGED_ROLES for module in MODULES]
 
 
 @router.get("")
@@ -29,7 +29,7 @@ def save_permissions(payload: ModulePermissionIn, actor: User = Depends(require_
     if any(role not in allowed_roles or module not in MODULES for role, module in incoming):
         raise HTTPException(400, "Invalid role permission entry.")
     for role in allowed_roles:
-        incoming[(role, "communication")] = True
+        incoming[(role, "execution")] = True
     existing = {(item.role, item.module_key): item for item in db.scalars(select(RoleModulePermission)).all()}
     for role in allowed_roles:
         for module in MODULES:
