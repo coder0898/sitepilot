@@ -1,6 +1,6 @@
 import { api } from "./client";
 export const executionApi = {
-  get: () => api("/api/v2/execution"),
+  get: options => api("/api/v2/execution", options),
   createProject: payload => api("/api/v2/execution/projects", { method:"POST", body:JSON.stringify(payload) }),
   updateProject: (id,payload) => api(`/api/v2/execution/projects/${id}`, { method:"PUT", body:JSON.stringify(payload) }),
   deleteProject: id => api(`/api/v2/execution/projects/${id}`, { method:"DELETE" }),

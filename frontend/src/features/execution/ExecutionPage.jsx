@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Bell, BriefcaseBusiness, CalendarDays, CheckCircle2, CircleDot, ClipboardList, Clock3, LayoutTemplate, Plus, RefreshCw, Trash2, UserRound, Users } from "lucide-react";
 import { executionApi } from "../../api/executionApi";
 import { ConfirmModal, Modal, Pill } from "../../components/ui";
@@ -13,20 +13,39 @@ export function ExecutionPage({ user, action }) {
   const [selectedTask, setSelectedTask] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [view, setView] = useState("schedule");
+  const [executionLoading, setExecutionLoading] = useState(false);
+  const requestRef = useRef(null);
   const canManage = user.role !== "supervisor";
 
-  async function load() {
-    const next = await executionApi.get();
-    setData({ ...empty, ...next });
-    setSelectedTask(current => current ? next.tasks.find(task => task.id === current.id) || null : null);
-    setProjectId(current => next.projects.some(project => project.id === current) ? current : next.projects[0]?.id || "");
-  }
-  useEffect(() => { load().catch(() => {}); }, []);
+  async function load({ restart = false } = {}) {
+    if (requestRef.current && !restart) return requestRef.current.promise;
+    if (requestRef.current && restart) requestRef.current.controller.abort();
 
+    const controller = new AbortController();
+    const promise = executionApi.get({ signal: controller.signal });
+    requestRef.current = { controller, promise };
+    setExecutionLoading(true);
+    try {
+      const next = await promise;
+      setData({ ...empty, ...next });
+      setSelectedTask(current => current ? next.tasks.find(task => task.id === current.id) || null : null);
+      setProjectId(current => next.projects.some(project => project.id === current) ? current : next.projects[0]?.id || "");
+      return next;
+    } finally {
+      if (requestRef.current?.promise === promise) {
+        requestRef.current = null;
+        setExecutionLoading(false);
+      }
+    }
+  }
+  useEffect(() => {
+    load().catch(error => { if (error?.name !== "AbortError") console.error(error); });
+    return () => requestRef.current?.controller.abort();
+  }, []);
   async function perform(fn, message) {
     let ok = false;
-    const result = await action(async () => { await fn(); ok = true; }, message);
-    if (ok) { setForm(null); setSelectedTask(null); await load(); }
+    const result = await action(async () => { await fn(); ok = true; }, message, { refresh: false });
+    if (ok) { setForm(null); setSelectedTask(null); await load({ restart: true }); }
     return result || { ok };
   }
 
@@ -88,7 +107,7 @@ export function ExecutionPage({ user, action }) {
     <div className="exec-dashboard">
       <section className="exec-welcome">
         <div><p>Good morning, {user.name.split(" ")[0]}!</p><small>{project?.name || "Select or create an execution project"}{project?.template_name ? ` · ${project.template_name}` : ""}</small></div>
-        <div className="exec-welcome-actions"><button className="exec-refresh-button secondary-button" type="button" onClick={() => load()}><RefreshCw size={17}/> Refresh</button>
+        <div className="exec-welcome-actions"><button className="exec-refresh-button secondary-button" type="button" disabled={executionLoading} aria-busy={executionLoading} onClick={() => load().catch(() => {})}><RefreshCw className={executionLoading ? "animate-spin" : ""} size={17}/> {executionLoading ? "Loading..." : "Refresh"}</button>
           <label><BriefcaseBusiness size={16}/><select value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">Select project</option>{data.projects.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
           {user.role === "super_admin" && <button className="exec-icon-button" onClick={() => setView(view === "templates" ? "schedule" : "templates")} aria-label="Execution templates"><LayoutTemplate/></button>}
           {canManage && project && <button className="secondary-button" onClick={() => setForm("project-settings")}>Edit project</button>}{canManage && <button className="flex" onClick={() => setForm("project")}><Plus/> New project</button>}

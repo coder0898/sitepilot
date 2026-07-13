@@ -30,21 +30,76 @@ def project_access(project_id, user, db):
     return project
 
 
-def task_json(task, db):
-    day = db.get(ExecutionDay, task.day_id)
-    supervisor = db.get(User, task.assigned_supervisor_id)
-    contractor = db.get(Vendor, task.assigned_contractor_id) if task.assigned_contractor_id else None
-    sub = db.get(Vendor, task.assigned_subcontractor_id) if task.assigned_subcontractor_id else None
-    notifications = db.scalars(select(NotificationOutbox).where(NotificationOutbox.task_id == task.id)).all()
+def _group_by_task(items):
+    grouped = {}
+    for item in items:
+        grouped.setdefault(item.task_id, []).append(item)
+    return grouped
+
+
+def build_task_context(tasks, days, users, vendors, db):
+    task_ids = [task.id for task in tasks]
+    notifications = db.scalars(
+        select(NotificationOutbox).where(NotificationOutbox.task_id.in_(task_ids))
+    ).all() if task_ids else []
     history = db.scalars(
         select(ExecutionTaskReschedule)
-        .where(ExecutionTaskReschedule.task_id == task.id)
+        .where(ExecutionTaskReschedule.task_id.in_(task_ids))
         .order_by(ExecutionTaskReschedule.created_at.desc())
-    ).all()
+    ).all() if task_ids else []
     delay_reports = db.scalars(
         select(ExecutionTaskDelayReport)
-        .where(ExecutionTaskDelayReport.task_id == task.id)
+        .where(ExecutionTaskDelayReport.task_id.in_(task_ids))
         .order_by(ExecutionTaskDelayReport.created_at.desc())
+    ).all() if task_ids else []
+
+    user_by_id = {item.id: item for item in users}
+    related_user_ids = {
+        user_id
+        for task in tasks
+        for user_id in (task.assigned_supervisor_id, task.rescheduled_by)
+        if user_id
+    }
+    related_user_ids.update(item.created_by for item in history)
+    related_user_ids.update(item.created_by for item in delay_reports)
+    missing_user_ids = related_user_ids - set(user_by_id)
+    if missing_user_ids:
+        related_users = db.scalars(select(User).where(User.id.in_(missing_user_ids))).all()
+        user_by_id.update({item.id: item for item in related_users})
+
+    vendor_by_id = {item.id: item for item in vendors}
+    related_vendor_ids = {
+        vendor_id
+        for task in tasks
+        for vendor_id in (task.assigned_contractor_id, task.assigned_subcontractor_id)
+        if vendor_id
+    }
+    missing_vendor_ids = related_vendor_ids - set(vendor_by_id)
+    if missing_vendor_ids:
+        related_vendors = db.scalars(select(Vendor).where(Vendor.id.in_(missing_vendor_ids))).all()
+        vendor_by_id.update({item.id: item for item in related_vendors})
+
+    return {
+        "days": {item.id: item for item in days},
+        "users": user_by_id,
+        "vendors": vendor_by_id,
+        "notifications": _group_by_task(notifications),
+        "history": _group_by_task(history),
+        "delay_reports": _group_by_task(delay_reports),
+    }
+
+
+def task_json(task, db, context=None):
+    day = context["days"].get(task.day_id) if context else db.get(ExecutionDay, task.day_id)
+    supervisor = context["users"].get(task.assigned_supervisor_id) if context else db.get(User, task.assigned_supervisor_id)
+    contractor = (context["vendors"].get(task.assigned_contractor_id) if context else db.get(Vendor, task.assigned_contractor_id)) if task.assigned_contractor_id else None
+    sub = (context["vendors"].get(task.assigned_subcontractor_id) if context else db.get(Vendor, task.assigned_subcontractor_id)) if task.assigned_subcontractor_id else None
+    notifications = context["notifications"].get(task.id, []) if context else db.scalars(select(NotificationOutbox).where(NotificationOutbox.task_id == task.id)).all()
+    history = context["history"].get(task.id, []) if context else db.scalars(
+        select(ExecutionTaskReschedule).where(ExecutionTaskReschedule.task_id == task.id).order_by(ExecutionTaskReschedule.created_at.desc())
+    ).all()
+    delay_reports = context["delay_reports"].get(task.id, []) if context else db.scalars(
+        select(ExecutionTaskDelayReport).where(ExecutionTaskDelayReport.task_id == task.id).order_by(ExecutionTaskDelayReport.created_at.desc())
     ).all()
     active_delay_report = next((item for item in delay_reports if item.status == "pending"), None)
     original_date = day.scheduled_date
@@ -52,7 +107,11 @@ def task_json(task, db):
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     is_overdue = effective_date < today and task.status not in {"submitted", "approved", "completed"}
     overdue_days = (today - effective_date).days if is_overdue else 0
-    rescheduled_by = db.get(User, task.rescheduled_by) if task.rescheduled_by else None
+    rescheduled_by = (context["users"].get(task.rescheduled_by) if context else db.get(User, task.rescheduled_by)) if task.rescheduled_by else None
+
+    def user_name(user_id, fallback):
+        item = context["users"].get(user_id) if context else db.get(User, user_id)
+        return item.name if item else fallback
     return {
         "id": str(task.id),
         "project_id": str(task.project_id),
@@ -94,7 +153,7 @@ def task_json(task, db):
             "reason": active_delay_report.reason,
             "proposed_date": active_delay_report.proposed_date.isoformat(),
             "status": active_delay_report.status,
-            "created_by_name": (db.get(User, active_delay_report.created_by).name if db.get(User, active_delay_report.created_by) else "Site supervisor"),
+            "created_by_name": user_name(active_delay_report.created_by, "Site supervisor"),
             "created_at": active_delay_report.created_at.isoformat(),
         } if active_delay_report else None,
         "delay_reports": [{
@@ -103,7 +162,7 @@ def task_json(task, db):
             "reason": item.reason,
             "proposed_date": item.proposed_date.isoformat(),
             "status": item.status,
-            "created_by_name": (db.get(User, item.created_by).name if db.get(User, item.created_by) else "Site supervisor"),
+            "created_by_name": user_name(item.created_by, "Site supervisor"),
             "created_at": item.created_at.isoformat(),
             "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
         } for item in delay_reports],
@@ -112,7 +171,7 @@ def task_json(task, db):
             "previous_date": item.previous_date.isoformat(),
             "new_date": item.new_date.isoformat(),
             "reason": item.reason,
-            "created_by_name": (db.get(User, item.created_by).name if db.get(User, item.created_by) else "SiteOps manager"),
+            "created_by_name": user_name(item.created_by, "SiteOps manager"),
             "created_at": item.created_at.isoformat(),
         } for item in history],
         "notifications": [{
@@ -244,10 +303,83 @@ def sync_project_contractor_mapping(task, actor_id, db):
 
 @router.get("")
 def workspace(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    projects=visible_projects(user,db); ids={p.id for p in projects}; days=db.scalars(select(ExecutionDay).where(ExecutionDay.project_id.in_(ids)).order_by(ExecutionDay.day_no)).all() if ids else []; tasks=db.scalars(select(ExecutionTask).where(ExecutionTask.project_id.in_(ids)).order_by(ExecutionTask.created_at)).all() if ids else []
-    users=db.scalars(select(User).where(User.active.is_(True),User.role.in_([UserRole.project_manager,UserRole.supervisor])).order_by(User.name)).all(); vendors=db.scalars(select(Vendor).where(Vendor.status=="active").order_by(Vendor.name)).all(); relations=db.scalars(select(ContractorRelationship)).all(); templates=db.scalars(select(ExecutionTemplate).where(ExecutionTemplate.active.is_(True)).order_by(ExecutionTemplate.name)).all(); template_tasks=db.scalars(select(ExecutionTemplateTask).order_by(ExecutionTemplateTask.day_no,ExecutionTemplateTask.sort_order)).all()
-    return {"projects":[{"id":str(p.id),"name":p.name,"client_name":p.client_name,"location":p.location,"project_type":p.project_type,"area":p.area,"start_date":p.start_date.isoformat(),"duration_days":p.duration_days,"project_manager_id":str(p.project_manager_id),"supervisor_id":str(p.supervisor_id),"status":p.status,"template_id":str(p.template_id) if p.template_id else None,"template_name":next((t.name for t in templates if t.id==p.template_id),None)} for p in projects],"days":[{"id":str(d.id),"project_id":str(d.project_id),"day_no":d.day_no,"scheduled_date":d.scheduled_date.isoformat()} for d in days],"tasks":[task_json(t,db) for t in tasks],"users":[{"id":str(u.id),"name":u.name,"role":u.role.value,"phone":u.phone} for u in users],"contractors":[{"id":str(v.id),"name":v.name,"engagement_type":v.engagement_type} for v in vendors],"relationships":[{"main_contractor_id":str(r.main_contractor_id),"subcontractor_id":str(r.subcontractor_id)} for r in relations],"templates":[{"id":str(t.id),"name":t.name,"project_type":t.project_type,"duration_days":t.duration_days,"tasks":[{"day_no":x.day_no,"title":x.title,"category":x.category,"priority":x.priority,"instructions":x.instructions,"materials_required":x.materials_required,"material_reminder":x.material_reminder,"reminder_lead_days":x.reminder_lead_days} for x in template_tasks if x.template_id==t.id]} for t in templates]}
+    projects = visible_projects(user, db)
+    project_ids = {project.id for project in projects}
+    days = db.scalars(
+        select(ExecutionDay)
+        .where(ExecutionDay.project_id.in_(project_ids))
+        .order_by(ExecutionDay.day_no)
+    ).all() if project_ids else []
+    tasks = db.scalars(
+        select(ExecutionTask)
+        .where(ExecutionTask.project_id.in_(project_ids))
+        .order_by(ExecutionTask.created_at)
+    ).all() if project_ids else []
+    users = db.scalars(
+        select(User)
+        .where(User.active.is_(True), User.role.in_([UserRole.project_manager, UserRole.supervisor]))
+        .order_by(User.name)
+    ).all()
+    vendors = db.scalars(select(Vendor).where(Vendor.status == "active").order_by(Vendor.name)).all()
+    relations = db.scalars(select(ContractorRelationship)).all()
+    templates = db.scalars(
+        select(ExecutionTemplate).where(ExecutionTemplate.active.is_(True)).order_by(ExecutionTemplate.name)
+    ).all()
+    template_tasks = db.scalars(
+        select(ExecutionTemplateTask).order_by(ExecutionTemplateTask.day_no, ExecutionTemplateTask.sort_order)
+    ).all()
+    context = build_task_context(tasks, days, users, vendors, db)
+    template_by_id = {template.id: template for template in templates}
+    template_tasks_by_id = {}
+    for template_task in template_tasks:
+        template_tasks_by_id.setdefault(template_task.template_id, []).append(template_task)
 
+    return {
+        "projects": [{
+            "id": str(project.id),
+            "name": project.name,
+            "client_name": project.client_name,
+            "location": project.location,
+            "project_type": project.project_type,
+            "area": project.area,
+            "start_date": project.start_date.isoformat(),
+            "duration_days": project.duration_days,
+            "project_manager_id": str(project.project_manager_id),
+            "supervisor_id": str(project.supervisor_id),
+            "status": project.status,
+            "template_id": str(project.template_id) if project.template_id else None,
+            "template_name": template_by_id[project.template_id].name if project.template_id in template_by_id else None,
+        } for project in projects],
+        "days": [{
+            "id": str(day.id),
+            "project_id": str(day.project_id),
+            "day_no": day.day_no,
+            "scheduled_date": day.scheduled_date.isoformat(),
+        } for day in days],
+        "tasks": [task_json(task, db, context) for task in tasks],
+        "users": [{"id": str(item.id), "name": item.name, "role": item.role.value, "phone": item.phone} for item in users],
+        "contractors": [{"id": str(item.id), "name": item.name, "engagement_type": item.engagement_type} for item in vendors],
+        "relationships": [{
+            "main_contractor_id": str(item.main_contractor_id),
+            "subcontractor_id": str(item.subcontractor_id),
+        } for item in relations],
+        "templates": [{
+            "id": str(template.id),
+            "name": template.name,
+            "project_type": template.project_type,
+            "duration_days": template.duration_days,
+            "tasks": [{
+                "day_no": item.day_no,
+                "title": item.title,
+                "category": item.category,
+                "priority": item.priority,
+                "instructions": item.instructions,
+                "materials_required": item.materials_required,
+                "material_reminder": item.material_reminder,
+                "reminder_lead_days": item.reminder_lead_days,
+            } for item in template_tasks_by_id.get(template.id, [])],
+        } for template in templates],
+    }
 
 @router.post("/templates")
 def create_template(payload: ExecutionTemplateIn, actor: User=Depends(require_roles(UserRole.super_admin)), db: Session=Depends(get_db)):
