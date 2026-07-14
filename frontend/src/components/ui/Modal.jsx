@@ -1,20 +1,5 @@
-﻿import { X } from "lucide-react";
+﻿import { cn } from "../../utils/cn";
 
-export function Modal({ title, subtitle, children, onClose, className = "" }) {
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}>
-        <header>
-          <div>
-            <h2>{title}</h2>
-            {subtitle && <p>{subtitle}</p>}
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close modal">
-            <X size={24} />
-          </button>
-        </header>
-        <div className="modal-body">{children}</div>
-      </section>
-    </div>
-  );
+export function Modal({ title, subtitle, children, onClose, className }) {
+  return <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/65 p-4 backdrop-blur-sm" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose?.()}><section className={cn("w-full max-w-2xl overflow-hidden rounded-2xl border border-white/20 bg-white shadow-2xl", className)} role="dialog" aria-modal="true" aria-label={title}><header className="flex items-start justify-between gap-5 border-b border-slate-100 px-6 py-5"><div className="min-w-0"><h2 className="text-xl font-black tracking-tight text-slate-950">{title}</h2>{subtitle && <p className="mt-1 text-sm leading-6 text-slate-500">{subtitle}</p>}</div><button type="button" className="modal-close-button grid size-12 shrink-0 place-items-center rounded-2xl border-2 border-blue-700 bg-blue-700 p-0 text-[32px] font-bold leading-none text-white shadow-[0_8px_18px_rgba(11,91,211,0.25)] transition hover:bg-blue-800 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-blue-600/30" onClick={onClose} aria-label="Close modal"><span aria-hidden="true">×</span></button></header><div className="max-h-[calc(90vh-88px)] overflow-y-auto p-6">{children}</div></section></div>;
 }

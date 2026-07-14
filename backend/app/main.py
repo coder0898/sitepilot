@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+import asyncio
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,8 +7,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import SessionLocal
-from app.routes import auth, communication, dashboard, permissions, projects, tasks, users, vendors
+from app.routes import auth, communication, dashboard, execution_v2, permissions, users, vendors
 from app.seed import ensure_seed_data
+from app.notification_worker import notification_worker_loop
 
 
 def create_app() -> FastAPI:
@@ -30,14 +32,27 @@ def create_app() -> FastAPI:
     app.include_router(vendors.router)
     app.include_router(communication.router)
     app.include_router(permissions.router)
-    app.include_router(projects.router)
-    app.include_router(tasks.router)
+    app.include_router(execution_v2.router)
 
     @app.on_event("startup")
     def startup() -> None:
         with SessionLocal() as db:
             ensure_seed_data(db)
 
+    @app.on_event("startup")
+    async def start_notification_worker() -> None:
+        if settings.notification_worker_enabled:
+            app.state.notification_worker_task = asyncio.create_task(notification_worker_loop())
+
+    @app.on_event("shutdown")
+    async def stop_notification_worker() -> None:
+        task = getattr(app.state, "notification_worker_task", None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     return app
 
 

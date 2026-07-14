@@ -1,51 +1,49 @@
-import uuid
+﻿import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.auth import current_user, require_roles
 from app.database import get_db
-from app.models import CommunicationLog, ContractorCategory, ContractorRelationship, Project, ProjectVendor, User, UserRole, Vendor, VendorCategory, VendorContact
+from app.models import CommunicationLog, ContractorCategory, ContractorRelationship, ExecutionProject, ExecutionProjectContractor, User, UserRole, Vendor, VendorCategory, VendorContact
 from app.schemas.requests import CommunicationLogIn, ContractorProfileIn, ContractorRelationshipIn, ProjectVendorIn, VendorCategoryIn, VendorContactIn
-from app.services.serializers import visible_projects_query
 
 router = APIRouter(prefix="/api/communication-hub", tags=["communication-hub"])
 MANAGER_ROLES = (UserRole.super_admin, UserRole.admin, UserRole.project_manager)
 VALID_STATUSES = {"active", "inactive", "on_hold"}
 
 
+def visible_execution_projects(user, db):
+    stmt = select(ExecutionProject).order_by(ExecutionProject.created_at.desc())
+    if user.role == UserRole.project_manager:
+        stmt = stmt.where(ExecutionProject.project_manager_id == user.id)
+    if user.role == UserRole.supervisor:
+        stmt = stmt.where(ExecutionProject.supervisor_id == user.id)
+    return db.scalars(stmt).all()
+
+
 def allowed_project_ids(user, db):
-    return set(db.scalars(visible_projects_query(user).with_only_columns(Project.id)).all())
+    return {project.id for project in visible_execution_projects(user, db)}
 
 
 def require_project(project_id, user, db):
-    project = db.get(Project, project_id)
+    project = db.get(ExecutionProject, project_id)
     if not project or project_id not in allowed_project_ids(user, db):
         raise HTTPException(403, "Project is not assigned to you.")
     return project
 
-
 @router.get("")
 def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    projects = db.scalars(visible_projects_query(user)).all()
+    projects = visible_execution_projects(user, db)
     project_ids = {project.id for project in projects}
-    links_query = select(ProjectVendor)
+    links_query = select(ExecutionProjectContractor)
     if user.role in {UserRole.project_manager, UserRole.supervisor}:
-        links_query = links_query.where(ProjectVendor.project_id.in_(project_ids)) if project_ids else links_query.where(False)
+        links_query = links_query.where(ExecutionProjectContractor.project_id.in_(project_ids)) if project_ids else links_query.where(False)
     project_links = db.scalars(links_query).all()
     relationships = db.scalars(select(ContractorRelationship).order_by(ContractorRelationship.created_at)).all()
-    visible_vendor_ids = {link.vendor_id for link in project_links}
-    if user.role == UserRole.supervisor:
-        changed = True
-        while changed:
-            before = len(visible_vendor_ids)
-            for relation in relationships:
-                if relation.main_contractor_id in visible_vendor_ids or relation.subcontractor_id in visible_vendor_ids:
-                    visible_vendor_ids.update({relation.main_contractor_id, relation.subcontractor_id})
-            changed = len(visible_vendor_ids) != before
+    # The Communication Hub is a company directory. Supervisors can see all active/inactive
+    # contractors, while project links below remain limited to their assigned projects.
     vendor_query = select(Vendor).order_by(Vendor.created_at.desc(), Vendor.name)
-    if user.role == UserRole.supervisor:
-        vendor_query = vendor_query.where(Vendor.id.in_(visible_vendor_ids)) if visible_vendor_ids else vendor_query.where(False)
     vendors = db.scalars(vendor_query).all()
     vendor_ids = {vendor.id for vendor in vendors}
     contacts = db.scalars(select(VendorContact).where(VendorContact.vendor_id.in_(vendor_ids)).order_by(VendorContact.is_primary.desc(), VendorContact.name)).all() if vendor_ids else []
@@ -64,8 +62,8 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "relationships": [{"id": str(r.id), "main_contractor_id": str(r.main_contractor_id), "subcontractor_id": str(r.subcontractor_id)} for r in visible_relationships],
         "categories": [{"id": str(c.id), "name": c.name} for c in categories],
         "projects": [{"id": str(p.id), "name": p.name, "status": p.status} for p in projects],
-        "project_vendors": [{"id": str(link.id), "project_id": str(link.project_id), "vendor_id": str(link.vendor_id)} for link in project_links],
-        "logs": [{"id": str(log.id), "vendor_id": str(log.vendor_id), "contact_id": str(log.contact_id) if log.contact_id else None, "project_id": str(log.project_id) if log.project_id else None, "channel": log.channel, "note": log.note, "created_by_name": log_users.get(log.created_by, "SiteOps user"), "created_at": log.created_at.isoformat()} for log in logs],
+        "project_vendors": [{"id": str(link.id), "project_id": str(link.project_id), "vendor_id": str(link.contractor_id)} for link in project_links],
+        "logs": [{"id": str(log.id), "vendor_id": str(log.vendor_id), "contact_id": str(log.contact_id) if log.contact_id else None, "project_id": str(log.execution_project_id) if log.execution_project_id else None, "channel": log.channel, "note": log.note, "created_by_name": log_users.get(log.created_by, "SiteOps user"), "created_at": log.created_at.isoformat()} for log in logs],
     }
 
 
@@ -165,7 +163,7 @@ def link_vendor(payload: ProjectVendorIn, actor: User = Depends(require_roles(*M
         raise HTTPException(404, "Contractor not found.")
     if contractor.engagement_type == "exclusive_subcontractor":
         raise HTTPException(400, "Exclusive subcontractors inherit project access from their main contractor.")
-    link = ProjectVendor(**payload.model_dump(), created_by=actor.id)
+    link = ExecutionProjectContractor(project_id=payload.project_id, contractor_id=payload.vendor_id, created_by=actor.id)
     db.add(link)
     try:
         db.commit()
@@ -180,14 +178,14 @@ def add_log(payload: CommunicationLogIn, actor: User = Depends(current_user), db
     if payload.project_id:
         require_project(payload.project_id, actor, db)
     if actor.role == UserRole.supervisor:
-        linked = db.scalar(select(ProjectVendor).where(ProjectVendor.project_id == payload.project_id, ProjectVendor.vendor_id == payload.vendor_id))
+        linked = db.scalar(select(ExecutionProjectContractor).where(ExecutionProjectContractor.project_id == payload.project_id, ExecutionProjectContractor.contractor_id == payload.vendor_id))
         if not linked:
             related_ids = {r.subcontractor_id for r in db.scalars(select(ContractorRelationship).where(ContractorRelationship.main_contractor_id == payload.vendor_id)).all()}
             related_ids.update({r.main_contractor_id for r in db.scalars(select(ContractorRelationship).where(ContractorRelationship.subcontractor_id == payload.vendor_id)).all()})
-            linked = db.scalar(select(ProjectVendor).where(ProjectVendor.project_id == payload.project_id, ProjectVendor.vendor_id.in_(related_ids))) if related_ids else None
+            linked = db.scalar(select(ExecutionProjectContractor).where(ExecutionProjectContractor.project_id == payload.project_id, ExecutionProjectContractor.contractor_id.in_(related_ids))) if related_ids else None
         if not linked:
             raise HTTPException(403, "Contractor is not assigned to this project.")
-    log = CommunicationLog(**payload.model_dump(), created_by=actor.id)
+    log = CommunicationLog(**payload.model_dump(exclude={"project_id"}), execution_project_id=payload.project_id, created_by=actor.id)
     db.add(log)
     db.commit()
     return {"id": str(log.id)}

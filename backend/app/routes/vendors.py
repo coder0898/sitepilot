@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.database import get_db
-from app.models import ProjectTask, User, UserRole, Vendor
+from app.models import ExecutionTask, ProjectTask, User, UserRole, Vendor
 from app.schemas.requests import VendorIn
 from app.services.serializers import public_vendor
 
@@ -37,6 +37,9 @@ def delete_vendor(vendor_id: uuid.UUID, _: User = Depends(require_roles(UserRole
     if not vendor:
         raise HTTPException(404, "Vendor not found.")
     db.query(ProjectTask).filter(ProjectTask.vendor_id == vendor_id).update({ProjectTask.vendor_id: None})
+    db.query(ExecutionTask).filter(ExecutionTask.assigned_subcontractor_id == vendor_id).update({ExecutionTask.assigned_subcontractor_id: None}, synchronize_session=False)
+    db.query(ExecutionTask).filter(ExecutionTask.assigned_contractor_id == vendor_id).update({ExecutionTask.assigned_contractor_id: None, ExecutionTask.assigned_subcontractor_id: None}, synchronize_session=False)
     db.delete(vendor)
     db.commit()
     return {"message": "Vendor deleted."}
+

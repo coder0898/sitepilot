@@ -1,7 +1,7 @@
 # Wrokved SiteOps
 
 Framework
-- Frontend: React + Vite + Tailwind CSS
+- Frontend: React.js + Tailwind CSS
 - Backend: Python FastAPI
 - Database: PostgreSQL
 - Migrations: Alembic
@@ -34,4 +34,4 @@ Default local login:
 - Existing old MVP database volumes are tolerated by the first Alembic migration.
 - For a fully clean test database, run `docker compose down -v` before `docker compose up -d --build`.
 - Proof uploads are stored in Docker volume `siteops_uploads` and served from `/uploads` on the backend.
-- The React app auto-detects the current browser hostname and calls backend on the same hostname, port `8000`.
+- The React app auto-detects the current browser hostname and calls backend on the same hostname, port `8000` for backend.

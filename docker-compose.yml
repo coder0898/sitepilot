@@ -1,4 +1,4 @@
-﻿services:
+services:
   db:
     image: postgres:16-alpine
     container_name: siteops_mvp_db
@@ -29,6 +29,10 @@
       JWT_SECRET: local-dev-secret-change-before-production
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://192.168.8.11:3000
       UPLOAD_DIR: uploads/task-proofs
+      NOTIFICATION_WORKER_ENABLED: "true"
+      NOTIFICATION_WORKER_INTERVAL_SECONDS: "5"
+      NOTIFICATION_PROVIDER: mock
+      WHATSAPP_ENABLED: "false"
     ports:
       - "8000:8000"
     volumes:
