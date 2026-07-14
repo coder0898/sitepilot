@@ -12,5 +12,6 @@ export const executionApi = {
   reviewTask: (id,action,rejectionReason) => api(`/api/v2/execution/tasks/${id}/review`, { method:"POST", body:JSON.stringify({ action, rejection_reason: rejectionReason || null }) }),
   reportDelay: (id,payload) => api(`/api/v2/execution/tasks/${id}/delay-report`, { method:"POST", body:JSON.stringify(payload) }),
   rescheduleTask: (id,payload) => api(`/api/v2/execution/tasks/${id}/reschedule`, { method:"POST", body:JSON.stringify(payload) }),
+  retryNotification: id => api(`/api/v2/execution/notifications/${id}/retry`, { method:"POST" }),
   createTemplate: payload => api("/api/v2/execution/templates", { method:"POST", body:JSON.stringify(payload) }),
 };

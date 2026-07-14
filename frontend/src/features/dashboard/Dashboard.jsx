@@ -1,10 +1,72 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { clearSession } from "../../api/client";
 import { dashboardApi } from "../../api/dashboardApi";
 import { AppLayout } from "../../components/layout/AppLayout";
-import { CommunicationHubPage } from "../communication/CommunicationHubPage";
-import { ExecutionPage } from "../execution/ExecutionPage";
-import { RolePermissionsPage } from "../permissions/RolePermissionsPage";
-import { UsersPage } from "../users/UsersPage";
-const labels={execution:"Execution",communication:"Communication Hub",users:"Users",permissions:"Role Permissions"};
-export function Dashboard({initialUser,onLogout}){const[data,setData]=useState(null),[tab,setTab]=useState("execution"),[notice,setNotice]=useState(""),[loading,setLoading]=useState(true);async function refresh(){setLoading(true);try{setData(await dashboardApi.get());}catch(err){const m=String(err.message||"").toLowerCase();if(m.includes("login")||m.includes("session")||m.includes("inactive")){clearSession();onLogout();return;}setNotice(err.message);setData({user:initialUser,users:[],module_permissions:["execution","communication"]});}finally{setLoading(false);}}useEffect(()=>{refresh();},[]);const user=data?.user||initialUser,tabs=(data?.module_permissions||["execution"]).filter(k=>labels[k]).map(k=>[k,labels[k]]);useEffect(()=>{if(data&&!tabs.some(([k])=>k===tab))setTab(tabs[0]?.[0]||"execution");},[data,tab]);async function action(fn,message="Saved",options={}){try{await fn();setNotice(message);if(options.refresh!==false)await refresh();return{ok:true};}catch(err){const error=err.message||"Something went wrong";setNotice(error);return{ok:false,error};}}return <AppLayout user={user} tabs={tabs} activeTab={tab} onTabChange={setTab} onLogout={onLogout} onRefresh={refresh} notice={notice} onClearNotice={()=>setNotice("")}>{loading&&<section className="panel">Loading workspace…</section>}{!loading&&tab==="execution"&&<ExecutionPage user={user} action={action}/>} {!loading&&tab==="communication"&&<CommunicationHubPage user={user} action={action}/>} {!loading&&data&&tab==="users"&&<UsersPage data={data} user={user} action={action}/>} {!loading&&tab==="permissions"&&user.role==="super_admin"&&<RolePermissionsPage action={action}/>}</AppLayout>}
+import { visibleTabs } from "../../config/tabs";
+import { DashboardTab } from "./DashboardTab";
+
+export function Dashboard({ initialUser, onLogout }) {
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState("execution");
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      setData(await dashboardApi.get());
+    } catch (error) {
+      const message = String(error.message || "").toLowerCase();
+      if (message.includes("login") || message.includes("session") || message.includes("inactive")) {
+        clearSession();
+        onLogout();
+        return;
+      }
+      setNotice(error.message);
+      setData({ user: initialUser, users: [], module_permissions: ["execution", "communication"] });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const user = data?.user || initialUser;
+  const tabs = visibleTabs(data?.module_permissions || ["execution"]);
+
+  useEffect(() => {
+    if (data && !tabs.some(([key]) => key === tab)) {
+      setTab(tabs[0]?.[0] || "execution");
+    }
+  }, [data, tab]);
+
+  async function action(operation, message = "Saved", options = {}) {
+    try {
+      await operation();
+      setNotice(message);
+      if (options.refresh !== false) await refresh();
+      return { ok: true };
+    } catch (error) {
+      const errorMessage = error.message || "Something went wrong";
+      setNotice(errorMessage);
+      return { ok: false, error: errorMessage };
+    }
+  }
+
+  return (
+    <AppLayout
+      user={user}
+      tabs={tabs}
+      activeTab={tab}
+      onTabChange={setTab}
+      onLogout={onLogout}
+      onRefresh={refresh}
+      notice={notice}
+      onClearNotice={() => setNotice("")}
+    >
+      <DashboardTab tab={tab} loading={loading} data={data} user={user} action={action} />
+    </AppLayout>
+  );
+}

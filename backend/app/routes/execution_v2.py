@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
+import hashlib
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth import current_user, require_roles
 from app.config import settings
 from app.database import get_db
-from app.models import ContractorRelationship, ExecutionDay, ExecutionProject, ExecutionProjectContractor, ExecutionTask, ExecutionTaskDelayReport, ExecutionTaskReschedule, ExecutionTemplate, ExecutionTemplateTask, NotificationOutbox, User, UserRole, Vendor, VendorContact
+from app.models import ContractorRelationship, ExecutionDay, ExecutionProject, ExecutionProjectContractor, ExecutionTask, ExecutionTaskDelayReport, ExecutionTaskReschedule, ExecutionTemplate, ExecutionTemplateTask, NotificationDeliveryAttempt, NotificationOutbox, User, UserRole, Vendor, VendorContact
 from app.schemas.requests import ExecutionProjectContractorIn, ExecutionProjectIn, ExecutionProjectUpdateIn, ExecutionTaskDelayReportIn, ExecutionTaskIn, ExecutionTaskRescheduleIn, ExecutionTaskReviewIn, ExecutionTaskStatusIn, ExecutionTemplateIn
 
 router = APIRouter(prefix="/api/v2/execution", tags=["execution-v2"])
@@ -37,11 +38,24 @@ def _group_by_task(items):
     return grouped
 
 
+def _group_by_notification(items):
+    grouped = {}
+    for item in items:
+        grouped.setdefault(item.notification_id, []).append(item)
+    return grouped
+
+
 def build_task_context(tasks, days, users, vendors, db):
     task_ids = [task.id for task in tasks]
     notifications = db.scalars(
         select(NotificationOutbox).where(NotificationOutbox.task_id.in_(task_ids))
     ).all() if task_ids else []
+    notification_ids = [item.id for item in notifications]
+    attempts = db.scalars(
+        select(NotificationDeliveryAttempt)
+        .where(NotificationDeliveryAttempt.notification_id.in_(notification_ids))
+        .order_by(NotificationDeliveryAttempt.started_at.desc())
+    ).all() if notification_ids else []
     history = db.scalars(
         select(ExecutionTaskReschedule)
         .where(ExecutionTaskReschedule.task_id.in_(task_ids))
@@ -84,6 +98,7 @@ def build_task_context(tasks, days, users, vendors, db):
         "users": user_by_id,
         "vendors": vendor_by_id,
         "notifications": _group_by_task(notifications),
+        "attempts": _group_by_notification(attempts),
         "history": _group_by_task(history),
         "delay_reports": _group_by_task(delay_reports),
     }
@@ -183,12 +198,74 @@ def task_json(task, db, context=None):
             "notification_type": n.notification_type,
             "scheduled_for": n.scheduled_for.isoformat() if n.scheduled_for else None,
             "status": n.status,
+            "created_at": n.created_at.isoformat(),
+            "attempt_count": n.attempt_count,
+            "max_attempts": n.max_attempts,
+            "next_attempt_at": n.next_attempt_at.isoformat() if n.next_attempt_at else None,
+            "last_attempt_at": n.last_attempt_at.isoformat() if n.last_attempt_at else None,
+            "sent_at": n.sent_at.isoformat() if n.sent_at else None,
+            "delivered_at": n.delivered_at.isoformat() if n.delivered_at else None,
+            "failure_reason": n.failure_reason,
+            "provider_message_id": n.provider_message_id,
+            "attempts": [{
+                "id": str(attempt.id),
+                "attempt_no": attempt.attempt_no,
+                "status": attempt.status,
+                "provider": attempt.provider,
+                "provider_message_id": attempt.provider_message_id,
+                "failure_reason": attempt.failure_reason,
+                "started_at": attempt.started_at.isoformat(),
+                "completed_at": attempt.completed_at.isoformat() if attempt.completed_at else None,
+            } for attempt in (context["attempts"].get(n.id, []) if context else db.scalars(
+                select(NotificationDeliveryAttempt)
+                .where(NotificationDeliveryAttempt.notification_id == n.id)
+                .order_by(NotificationDeliveryAttempt.started_at.desc())
+            ).all())],
         } for n in notifications],
     }
 
 
+def _queue_notification(db, task, recipient_type, recipient_name, phone, message_preview, notification_type, scheduled_for=None):
+    key_source = "|".join([
+        str(task.id), notification_type, recipient_type, phone or recipient_name,
+        scheduled_for.isoformat() if scheduled_for else "immediate", message_preview,
+    ])
+    idempotency_key = hashlib.sha256(key_source.encode("utf-8")).hexdigest()
+    existing = db.scalar(select(NotificationOutbox).where(NotificationOutbox.idempotency_key == idempotency_key))
+    if existing:
+        return existing
+
+    pending = db.scalars(select(NotificationOutbox).where(
+        NotificationOutbox.task_id == task.id,
+        NotificationOutbox.notification_type == notification_type,
+        NotificationOutbox.recipient_type == recipient_type,
+        NotificationOutbox.recipient_name == recipient_name,
+        NotificationOutbox.status.in_(["scheduled", "sending", "failed"]),
+    )).all()
+    for previous in pending:
+        previous.status = "failed"
+        previous.failure_reason = "Superseded by an updated task or schedule."
+        previous.next_attempt_at = None
+        previous.locked_at = None
+        previous.lock_token = None
+
+    has_phone = bool((phone or "").strip())
+    item = NotificationOutbox(
+        task_id=task.id,
+        recipient_type=recipient_type,
+        recipient_name=recipient_name,
+        phone=phone,
+        message_preview=message_preview,
+        notification_type=notification_type,
+        scheduled_for=scheduled_for,
+        status="scheduled" if has_phone else "failed",
+        failure_reason=None if has_phone else "Recipient phone number is missing.",
+        idempotency_key=idempotency_key,
+    )
+    db.add(item)
+    return item
+
 def rebuild_notifications(task, db):
-    db.query(NotificationOutbox).filter(NotificationOutbox.task_id == task.id).delete()
     project = db.get(ExecutionProject, task.project_id)
     day = db.get(ExecutionDay, task.day_id)
     effective_date = task.rescheduled_date or day.scheduled_date
@@ -215,7 +292,7 @@ Scheduled: {effective_date.strftime('%d %b %Y')}
 Priority: {task.priority.title()}
 
 Open SiteOps for instructions and status update."""
-        db.add(NotificationOutbox(task_id=task.id, recipient_type=kind, recipient_name=name, phone=phone, message_preview=preview, notification_type="task_assignment", status="preview" if phone else "missing_phone"))
+        _queue_notification(db, task, kind, name, phone, preview, "task_assignment")
     if task.rescheduled_date:
         for kind, name, phone in assignment_recipients:
             preview = f"""SiteOps Task Rescheduled
@@ -226,7 +303,7 @@ Revised date: {effective_date.strftime('%d %b %Y')}
 Reason: {task.delay_reason}
 
 Please review the revised plan."""
-            db.add(NotificationOutbox(task_id=task.id, recipient_type=kind, recipient_name=name, phone=phone, message_preview=preview, notification_type="task_rescheduled", status="preview" if phone else "missing_phone"))
+            _queue_notification(db, task, kind, name, phone, preview, "task_rescheduled")
     pending_delay = db.scalar(
         select(ExecutionTaskDelayReport)
         .where(ExecutionTaskDelayReport.task_id == task.id, ExecutionTaskDelayReport.status == "pending")
@@ -249,7 +326,7 @@ Proposed date: {pending_delay.proposed_date.strftime('%d %b %Y')}
 Reason: {pending_delay.reason}
 
 PM confirmation is required before the official schedule changes."""
-            db.add(NotificationOutbox(task_id=task.id, recipient_type=kind, recipient_name=name, phone=phone, message_preview=preview, notification_type="delay_report", status="preview" if phone else "missing_phone"))
+            _queue_notification(db, task, kind, name, phone, preview, "delay_report")
     if task.material_reminder and task.materials_required:
         reminder_date = effective_date - timedelta(days=max(task.reminder_lead_days, 1))
         scheduled_for = datetime.combine(reminder_date, time(hour=9), tzinfo=timezone.utc)
@@ -262,7 +339,7 @@ Task date: {effective_date.strftime('%d %b %Y')}
 Required material: {task.materials_required}
 
 Please confirm material availability."""
-            db.add(NotificationOutbox(task_id=task.id, recipient_type=kind, recipient_name=name, phone=phone, message_preview=preview, notification_type="material_reminder", scheduled_for=scheduled_for, status="scheduled" if phone else "missing_phone"))
+            _queue_notification(db, task, kind, name, phone, preview, "material_reminder", scheduled_for)
 
 def sync_project_contractor_mapping(task, actor_id, db):
     """Keep Communication Hub project mappings in sync with task assignment."""
@@ -543,6 +620,30 @@ def reschedule_task(task_id: uuid.UUID, payload: ExecutionTaskRescheduleIn, acto
     rebuild_notifications(task, db)
     db.commit()
     return task_json(task, db)
+
+@router.post("/notifications/{notification_id}/retry")
+def retry_notification(notification_id: uuid.UUID, actor: User = Depends(require_roles(*MANAGERS)), db: Session = Depends(get_db)):
+    notification = db.get(NotificationOutbox, notification_id)
+    if not notification:
+        raise HTTPException(404, "Notification not found.")
+    task = db.get(ExecutionTask, notification.task_id)
+    if not task:
+        raise HTTPException(404, "Notification task not found.")
+    project_access(task.project_id, actor, db)
+    if notification.status != "failed":
+        raise HTTPException(409, "Only failed notifications can be retried.")
+    if not (notification.phone or "").strip():
+        raise HTTPException(409, "Add the recipient phone number before retrying.")
+    if notification.failure_reason and notification.failure_reason.startswith("Superseded"):
+        raise HTTPException(409, "Superseded notifications cannot be retried.")
+    notification.status = "scheduled"
+    notification.next_attempt_at = datetime.now(timezone.utc)
+    notification.max_attempts = max(notification.max_attempts, notification.attempt_count + 1)
+    notification.locked_at = None
+    notification.lock_token = None
+    notification.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": str(notification.id), "status": notification.status, "message": "Notification queued for mock retry."}
 
 @router.patch("/tasks/{task_id}/status")
 def update_task_status(task_id: uuid.UUID, payload: ExecutionTaskStatusIn, actor: User = Depends(require_roles(UserRole.supervisor)), db: Session = Depends(get_db)):
