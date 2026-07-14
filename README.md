@@ -1,7 +1,7 @@
 # Wrokved SiteOps
 
 Framework
-- Frontend: React.js + Vite + Tailwind CSS
+- Frontend: React.js + Tailwind CSS
 - Backend: Python FastAPI
 - Database: PostgreSQL
 - Migrations: Alembic
