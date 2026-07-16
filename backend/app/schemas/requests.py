@@ -63,6 +63,9 @@ class VendorContactIn(BaseModel):
 
 
 class VendorCategoryIn(BaseModel):
+    category_type: str = "service"
+    parent_id: uuid.UUID | None = None
+    description: str | None = None
     name: str
 
 
@@ -78,6 +81,7 @@ class ContractorRelationshipIn(BaseModel):
 class ContractorProfileIn(BaseModel):
     name: str
     engagement_type: str = "main"
+    parent_vendor_id: uuid.UUID | None = None
     status: str = "active"
     category_ids: list[uuid.UUID]
     email: str | None = None
@@ -140,6 +144,8 @@ class ExecutionTemplateTaskIn(BaseModel):
     day_no: int
     title: str
     category: str = "General"
+    category_id: uuid.UUID | None = None
+    subcategory_id: uuid.UUID | None = None
     priority: str = "medium"
     instructions: str | None = None
     materials_required: str | None = None
@@ -169,6 +175,8 @@ class ExecutionTaskIn(BaseModel):
     day_id: uuid.UUID
     title: str
     category: str = "General"
+    category_id: uuid.UUID | None = None
+    subcategory_id: uuid.UUID | None = None
     instructions: str | None = None
     proof_required: str | None = None
     materials_required: str | None = None
@@ -210,4 +218,8 @@ class ExecutionTaskDelayReportIn(BaseModel):
 class ExecutionTaskRescheduleIn(BaseModel):
     scheduled_date: date
     reason: str
+
+
+class VendorCategoryUpdateIn(VendorCategoryIn):
+    active: bool = True
 

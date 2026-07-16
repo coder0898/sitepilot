@@ -1,35 +1,7 @@
-import { CircleDot, Plus, RotateCcw } from "lucide-react";
-import { Button, Pill } from "../../../components/ui";
-import { deliveryTone } from "../executionPresentation";
+import { CircleDot, Plus } from "lucide-react";
+import { Pill } from "../../../components/ui";
 
-const deliveryStatuses = ["all", "scheduled", "sending", "sent", "delivered", "failed"];
 const prettyStatus = value => String(value || "assigned").replaceAll("_", " ");
-
-export function NotificationDeliveryHistory({ notifications, filter, setFilter, canRetry, retry }) {
-  const visible = notifications.filter(note => filter === "all" || note.status === filter).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  return (
-    <section className="rounded-[18px] border border-slate-200 bg-white p-4 shadow-[0_14px_35px_rgba(15,23,42,0.06)] md:p-5">
-      <header className="flex flex-col gap-4 border-b border-slate-200 pb-4 lg:flex-row lg:items-center lg:justify-between">
-        <div><p className="m-0 text-[11px] font-black uppercase tracking-[0.14em] text-blue-700">Mock provider audit</p><h3 className="mt-1 font-serif text-2xl text-slate-950">Notification Delivery History</h3><p className="mt-1 text-sm text-slate-500">No real WhatsApp messages are sent. Every mock attempt remains auditable.</p></div>
-        <div className="flex max-w-full gap-2 overflow-x-auto pb-1" aria-label="Filter notification delivery history">
-          {deliveryStatuses.map(status => <Button type="button" size="sm" variant={filter === status ? "primary" : "secondary"} key={status} onClick={() => setFilter(status)} className="shrink-0 rounded-full capitalize">{status}</Button>)}
-        </div>
-      </header>
-      <div className="mt-4 grid gap-3 xl:grid-cols-2">
-        {visible.map(note => (
-          <article key={note.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><strong className="block truncate text-sm text-slate-950">{note.taskTitle}</strong><p className="mt-1 text-sm text-slate-600">{note.recipient_name} - {note.recipient_type.replaceAll("_", " ")}</p></div><Pill tone={deliveryTone(note.status)}>{note.status}</Pill></div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500"><span>Type: <b className="text-slate-700">{note.notification_type.replaceAll("_", " ")}</b></span><span>Attempts: <b className="text-slate-700">{note.attempt_count}/{note.max_attempts}</b></span><span className="col-span-2">{note.delivered_at ? `Delivered ${new Date(note.delivered_at).toLocaleString("en-GB")}` : note.next_attempt_at ? `Next attempt ${new Date(note.next_attempt_at).toLocaleString("en-GB")}` : note.scheduled_for ? `Scheduled ${new Date(note.scheduled_for).toLocaleString("en-GB")}` : "Queued immediately"}</span></div>
-            {note.failure_reason && <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-bold text-rose-700">{note.failure_reason}</p>}
-            {note.attempts?.length > 0 && <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer text-xs font-black text-slate-700">View {note.attempts.length} delivery attempt{note.attempts.length === 1 ? "" : "s"}</summary><div className="mt-3 grid gap-2">{note.attempts.map(attempt => <div key={attempt.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2 text-xs"><span>Attempt {attempt.attempt_no} - {new Date(attempt.started_at).toLocaleString("en-GB")}</span><Pill tone={deliveryTone(attempt.status)}>{attempt.status}</Pill>{attempt.failure_reason && <span className="w-full text-rose-700">{attempt.failure_reason}</span>}</div>)}</div></details>}
-            {canRetry && note.status === "failed" && note.phone && !note.failure_reason?.startsWith("Superseded") && <Button type="button" size="sm" onClick={() => retry(note.id)} className="mt-3"><RotateCcw size={15} /> Retry with mock sender</Button>}
-          </article>
-        ))}
-        {!visible.length && <div className="xl:col-span-2"><EmptySmall text="No notifications match this status." /></div>}
-      </div>
-    </section>
-  );
-}
 
 const metricTones = {
   blue: "[&>div>span]:bg-blue-50 [&>div>span]:text-blue-700",

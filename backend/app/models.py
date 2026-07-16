@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Text, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Enum, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,21 +64,38 @@ class Vendor(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     engagement_type: Mapped[str] = mapped_column(Text, nullable=False, default="main")
+    parent_vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="RESTRICT"))
+    migration_status: Mapped[str] = mapped_column(Text, nullable=False, default="ready")
     email: Mapped[str | None] = mapped_column(Text)
     address: Mapped[str | None] = mapped_column(Text)
     gst_number: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    __table_args__ = (
+        CheckConstraint("engagement_type in ('main', 'sub_vendor', 'migration_pending')", name="ck_vendor_engagement_type"),
+        CheckConstraint("engagement_type != 'sub_vendor' OR parent_vendor_id IS NOT NULL", name="ck_vendor_sub_vendor_parent"),
+        CheckConstraint("engagement_type != 'main' OR parent_vendor_id IS NULL", name="ck_vendor_main_without_parent"),
+        CheckConstraint("migration_status in ('ready', 'parent_required')", name="ck_vendor_migration_status"),
+        CheckConstraint("engagement_type != 'migration_pending' OR (migration_status = 'parent_required' AND parent_vendor_id IS NULL)", name="ck_vendor_pending_state"),
+        CheckConstraint("engagement_type = 'migration_pending' OR migration_status = 'ready'", name="ck_vendor_ready_state"),
+    )
 
 class VendorCategory(Base):
     __tablename__ = "vendor_categories"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    category_type: Mapped[str] = mapped_column(Text, nullable=False, default="service")
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_categories.id", ondelete="RESTRICT"))
+    description: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    __table_args__ = (
+        CheckConstraint("category_type in ('material', 'service')", name="ck_vendor_category_type"),
+        CheckConstraint("parent_id IS NULL OR parent_id <> id", name="ck_vendor_category_not_self_parent"),
+    )
 
 class ContractorCategory(Base):
     __tablename__ = "contractor_categories"
@@ -114,6 +131,29 @@ class ContractorRelationship(Base):
     main_contractor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
     subcontractor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("subcontractor_id", name="uq_contractor_relationship_subcontractor"),)
+
+class VendorStatusHistory(Base):
+    __tablename__ = "vendor_status_history"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(Text)
+    to_status: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class VendorParentMigrationCandidate(Base):
+    __table_args__ = (UniqueConstraint("vendor_id", "candidate_parent_vendor_id", name="uq_vendor_parent_migration_candidate"),)
+    __tablename__ = "vendor_parent_migration_candidates"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
+    candidate_parent_vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"))
+    original_engagement_type: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class CommunicationLog(Base):
@@ -222,6 +262,8 @@ class ExecutionTemplateTask(Base):
     day_no: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(Text, nullable=False, default="General")
+    category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_categories.id", ondelete="SET NULL"))
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_categories.id", ondelete="SET NULL"))
     priority: Mapped[str] = mapped_column(Text, nullable=False, default="medium")
     instructions: Mapped[str | None] = mapped_column(Text)
     materials_required: Mapped[str | None] = mapped_column(Text)
@@ -274,6 +316,8 @@ class ExecutionTask(Base):
     template_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_template_tasks.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(Text, nullable=False, default="General")
+    category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_categories.id", ondelete="SET NULL"))
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_categories.id", ondelete="SET NULL"))
     instructions: Mapped[str | None] = mapped_column(Text)
     materials_required: Mapped[str | None] = mapped_column(Text)
     material_reminder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -300,6 +344,16 @@ class ExecutionTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class ExecutionTaskStatusHistory(Base):
+    __tablename__ = "execution_task_status_history"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_tasks.id", ondelete="CASCADE"), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(Text)
+    to_status: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 class ExecutionTaskDelayReport(Base):
     __tablename__ = "execution_task_delay_reports"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -324,49 +378,3 @@ class ExecutionTaskReschedule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class NotificationOutbox(Base):
-    __tablename__ = "notification_outbox"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("execution_tasks.id", ondelete="CASCADE"), nullable=False)
-    recipient_type: Mapped[str] = mapped_column(Text, nullable=False)
-    recipient_name: Mapped[str] = mapped_column(Text, nullable=False)
-    phone: Mapped[str | None] = mapped_column(Text)
-    message_preview: Mapped[str] = mapped_column(Text, nullable=False)
-    notification_type: Mapped[str] = mapped_column(Text, nullable=False, default="task_assignment")
-    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="scheduled")
-    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    failure_reason: Mapped[str | None] = mapped_column(Text)
-    provider_message_id: Mapped[str | None] = mapped_column(Text)
-    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    lock_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-
-class NotificationDeliveryAttempt(Base):
-    __tablename__ = "notification_delivery_attempts"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    notification_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("notification_outbox.id", ondelete="CASCADE"), nullable=False)
-    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    provider: Mapped[str] = mapped_column(Text, nullable=False, default="mock")
-    provider_message_id: Mapped[str | None] = mapped_column(Text)
-    failure_reason: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class MockNotificationReceipt(Base):
-    __tablename__ = "mock_notification_receipts"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    provider_message_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

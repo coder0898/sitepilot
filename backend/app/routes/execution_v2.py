@@ -1,6 +1,5 @@
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-import hashlib
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -9,8 +8,9 @@ from sqlalchemy.orm import Session
 from app.auth import current_user, require_roles
 from app.config import settings
 from app.database import get_db
-from app.models import ContractorRelationship, ExecutionDay, ExecutionProject, ExecutionProjectContractor, ExecutionTask, ExecutionTaskDelayReport, ExecutionTaskReschedule, ExecutionTemplate, ExecutionTemplateTask, NotificationDeliveryAttempt, NotificationOutbox, User, UserRole, Vendor, VendorContact
+from app.models import ContractorCategory, ContractorRelationship, ExecutionDay, ExecutionProject, ExecutionProjectContractor, ExecutionTask, ExecutionTaskDelayReport, ExecutionTaskReschedule, ExecutionTaskStatusHistory, ExecutionTemplate, ExecutionTemplateTask, User, UserRole, Vendor, VendorCategory
 from app.schemas.requests import ExecutionProjectContractorIn, ExecutionProjectIn, ExecutionProjectUpdateIn, ExecutionTaskDelayReportIn, ExecutionTaskIn, ExecutionTaskRescheduleIn, ExecutionTaskReviewIn, ExecutionTaskStatusIn, ExecutionTemplateIn
+from app.services.history import record_new_task, set_task_status
 
 router = APIRouter(prefix="/api/v2/execution", tags=["execution-v2"])
 MANAGERS = (UserRole.super_admin, UserRole.admin, UserRole.project_manager)
@@ -31,6 +31,78 @@ def project_access(project_id, user, db):
     return project
 
 
+
+def validated_task_data(payload: ExecutionTaskIn, db: Session) -> dict:
+    data = payload.model_dump()
+    main_vendor = db.get(Vendor, payload.assigned_contractor_id) if payload.assigned_contractor_id else None
+    sub_vendor = db.get(Vendor, payload.assigned_subcontractor_id) if payload.assigned_subcontractor_id else None
+    if payload.assigned_contractor_id:
+        if not main_vendor:
+            raise HTTPException(404, "Assigned main vendor not found.")
+        if main_vendor.engagement_type != "main" or main_vendor.migration_status != "ready":
+            raise HTTPException(422, "Select an active main vendor with no pending parent migration.")
+        if main_vendor.status != "active":
+            raise HTTPException(409, "Inactive or on-hold vendors cannot receive new task assignments.")
+    if sub_vendor:
+        if not main_vendor:
+            raise HTTPException(422, "Main vendor is required for a sub-vendor assignment.")
+        if sub_vendor.engagement_type != "sub_vendor" or sub_vendor.migration_status != "ready":
+            raise HTTPException(422, "Resolve the sub-vendor parent mapping before task assignment.")
+        if sub_vendor.parent_vendor_id != main_vendor.id:
+            raise HTTPException(422, "The selected sub-vendor does not belong to the selected main vendor.")
+        if sub_vendor.status != "active":
+            raise HTTPException(409, "Inactive or on-hold sub-vendors cannot receive new task assignments.")
+    category = db.get(VendorCategory, payload.category_id) if payload.category_id else None
+    subcategory = db.get(VendorCategory, payload.subcategory_id) if payload.subcategory_id else None
+    if payload.category_id and (not category or not category.active or category.parent_id is not None):
+        raise HTTPException(422, "Select a valid active main category.")
+    if payload.subcategory_id:
+        if not subcategory or not subcategory.active or subcategory.parent_id is None:
+            raise HTTPException(422, "Select a valid active subcategory.")
+        if category and subcategory.parent_id != category.id:
+            raise HTTPException(422, "The selected subcategory does not belong to the selected main category.")
+        if not category:
+            category = db.get(VendorCategory, subcategory.parent_id)
+            data["category_id"] = category.id
+    if subcategory:
+        data["category"] = subcategory.name
+    elif category:
+        data["category"] = category.name
+
+    required_category_id = subcategory.id if subcategory else category.id if category else None
+    if required_category_id and main_vendor:
+        main_matches_directly = db.scalar(
+            select(ContractorCategory.id).where(
+                ContractorCategory.vendor_id == main_vendor.id,
+                ContractorCategory.category_id == required_category_id,
+            )
+        )
+        matching_child = db.scalar(
+            select(Vendor.id)
+            .join(ContractorCategory, ContractorCategory.vendor_id == Vendor.id)
+            .where(
+                Vendor.parent_vendor_id == main_vendor.id,
+                Vendor.engagement_type == "sub_vendor",
+                Vendor.migration_status == "ready",
+                Vendor.status == "active",
+                ContractorCategory.category_id == required_category_id,
+            )
+            .limit(1)
+        )
+        if not main_matches_directly and not matching_child:
+            raise HTTPException(422, "Neither this main vendor nor its active sub-vendors match the task category.")
+        if not main_matches_directly and not sub_vendor:
+            raise HTTPException(422, "Select the matching sub-vendor responsible for this category.")
+    if required_category_id and sub_vendor:
+        sub_matches = db.scalar(
+            select(ContractorCategory.id).where(
+                ContractorCategory.vendor_id == sub_vendor.id,
+                ContractorCategory.category_id == required_category_id,
+            )
+        )
+        if not sub_matches:
+            raise HTTPException(422, "The selected sub-vendor does not match this task category.")
+    return data
 def _group_by_task(items):
     grouped = {}
     for item in items:
@@ -38,24 +110,9 @@ def _group_by_task(items):
     return grouped
 
 
-def _group_by_notification(items):
-    grouped = {}
-    for item in items:
-        grouped.setdefault(item.notification_id, []).append(item)
-    return grouped
-
 
 def build_task_context(tasks, days, users, vendors, db):
     task_ids = [task.id for task in tasks]
-    notifications = db.scalars(
-        select(NotificationOutbox).where(NotificationOutbox.task_id.in_(task_ids))
-    ).all() if task_ids else []
-    notification_ids = [item.id for item in notifications]
-    attempts = db.scalars(
-        select(NotificationDeliveryAttempt)
-        .where(NotificationDeliveryAttempt.notification_id.in_(notification_ids))
-        .order_by(NotificationDeliveryAttempt.started_at.desc())
-    ).all() if notification_ids else []
     history = db.scalars(
         select(ExecutionTaskReschedule)
         .where(ExecutionTaskReschedule.task_id.in_(task_ids))
@@ -67,6 +124,11 @@ def build_task_context(tasks, days, users, vendors, db):
         .order_by(ExecutionTaskDelayReport.created_at.desc())
     ).all() if task_ids else []
 
+    status_history = db.scalars(
+        select(ExecutionTaskStatusHistory)
+        .where(ExecutionTaskStatusHistory.task_id.in_(task_ids))
+        .order_by(ExecutionTaskStatusHistory.created_at.desc())
+    ).all() if task_ids else []
     user_by_id = {item.id: item for item in users}
     related_user_ids = {
         user_id
@@ -76,6 +138,7 @@ def build_task_context(tasks, days, users, vendors, db):
     }
     related_user_ids.update(item.created_by for item in history)
     related_user_ids.update(item.created_by for item in delay_reports)
+    related_user_ids.update(item.changed_by for item in status_history if item.changed_by)
     missing_user_ids = related_user_ids - set(user_by_id)
     if missing_user_ids:
         related_users = db.scalars(select(User).where(User.id.in_(missing_user_ids))).all()
@@ -97,10 +160,9 @@ def build_task_context(tasks, days, users, vendors, db):
         "days": {item.id: item for item in days},
         "users": user_by_id,
         "vendors": vendor_by_id,
-        "notifications": _group_by_task(notifications),
-        "attempts": _group_by_notification(attempts),
         "history": _group_by_task(history),
         "delay_reports": _group_by_task(delay_reports),
+        "status_history": _group_by_task(status_history),
     }
 
 
@@ -109,12 +171,14 @@ def task_json(task, db, context=None):
     supervisor = context["users"].get(task.assigned_supervisor_id) if context else db.get(User, task.assigned_supervisor_id)
     contractor = (context["vendors"].get(task.assigned_contractor_id) if context else db.get(Vendor, task.assigned_contractor_id)) if task.assigned_contractor_id else None
     sub = (context["vendors"].get(task.assigned_subcontractor_id) if context else db.get(Vendor, task.assigned_subcontractor_id)) if task.assigned_subcontractor_id else None
-    notifications = context["notifications"].get(task.id, []) if context else db.scalars(select(NotificationOutbox).where(NotificationOutbox.task_id == task.id)).all()
     history = context["history"].get(task.id, []) if context else db.scalars(
         select(ExecutionTaskReschedule).where(ExecutionTaskReschedule.task_id == task.id).order_by(ExecutionTaskReschedule.created_at.desc())
     ).all()
     delay_reports = context["delay_reports"].get(task.id, []) if context else db.scalars(
         select(ExecutionTaskDelayReport).where(ExecutionTaskDelayReport.task_id == task.id).order_by(ExecutionTaskDelayReport.created_at.desc())
+    ).all()
+    status_history = context["status_history"].get(task.id, []) if context else db.scalars(
+        select(ExecutionTaskStatusHistory).where(ExecutionTaskStatusHistory.task_id == task.id).order_by(ExecutionTaskStatusHistory.created_at.desc())
     ).all()
     active_delay_report = next((item for item in delay_reports if item.status == "pending"), None)
     original_date = day.scheduled_date
@@ -134,6 +198,8 @@ def task_json(task, db, context=None):
         "day_no": day.day_no,
         "title": task.title,
         "category": task.category,
+        "category_id": str(task.category_id) if task.category_id else None,
+        "subcategory_id": str(task.subcategory_id) if task.subcategory_id else None,
         "instructions": task.instructions,
         "materials_required": task.materials_required,
         "material_reminder": task.material_reminder,
@@ -189,172 +255,30 @@ def task_json(task, db, context=None):
             "created_by_name": user_name(item.created_by, "SiteOps manager"),
             "created_at": item.created_at.isoformat(),
         } for item in history],
-        "notifications": [{
-            "id": str(n.id),
-            "recipient_type": n.recipient_type,
-            "recipient_name": n.recipient_name,
-            "phone": n.phone,
-            "message_preview": n.message_preview,
-            "notification_type": n.notification_type,
-            "scheduled_for": n.scheduled_for.isoformat() if n.scheduled_for else None,
-            "status": n.status,
-            "created_at": n.created_at.isoformat(),
-            "attempt_count": n.attempt_count,
-            "max_attempts": n.max_attempts,
-            "next_attempt_at": n.next_attempt_at.isoformat() if n.next_attempt_at else None,
-            "last_attempt_at": n.last_attempt_at.isoformat() if n.last_attempt_at else None,
-            "sent_at": n.sent_at.isoformat() if n.sent_at else None,
-            "delivered_at": n.delivered_at.isoformat() if n.delivered_at else None,
-            "failure_reason": n.failure_reason,
-            "provider_message_id": n.provider_message_id,
-            "attempts": [{
-                "id": str(attempt.id),
-                "attempt_no": attempt.attempt_no,
-                "status": attempt.status,
-                "provider": attempt.provider,
-                "provider_message_id": attempt.provider_message_id,
-                "failure_reason": attempt.failure_reason,
-                "started_at": attempt.started_at.isoformat(),
-                "completed_at": attempt.completed_at.isoformat() if attempt.completed_at else None,
-            } for attempt in (context["attempts"].get(n.id, []) if context else db.scalars(
-                select(NotificationDeliveryAttempt)
-                .where(NotificationDeliveryAttempt.notification_id == n.id)
-                .order_by(NotificationDeliveryAttempt.started_at.desc())
-            ).all())],
-        } for n in notifications],
+        "status_history": [{
+            "id": str(item.id),
+            "from_status": item.from_status,
+            "to_status": item.to_status,
+            "reason": item.reason,
+            "changed_by": str(item.changed_by) if item.changed_by else None,
+            "changed_by_name": user_name(item.changed_by, "System") if item.changed_by else "System",
+            "created_at": item.created_at.isoformat(),
+        } for item in status_history],
     }
 
 
-def _queue_notification(db, task, recipient_type, recipient_name, phone, message_preview, notification_type, scheduled_for=None):
-    key_source = "|".join([
-        str(task.id), notification_type, recipient_type, phone or recipient_name,
-        scheduled_for.isoformat() if scheduled_for else "immediate", message_preview,
-    ])
-    idempotency_key = hashlib.sha256(key_source.encode("utf-8")).hexdigest()
-    existing = db.scalar(select(NotificationOutbox).where(NotificationOutbox.idempotency_key == idempotency_key))
-    if existing:
-        return existing
-
-    pending = db.scalars(select(NotificationOutbox).where(
-        NotificationOutbox.task_id == task.id,
-        NotificationOutbox.notification_type == notification_type,
-        NotificationOutbox.recipient_type == recipient_type,
-        NotificationOutbox.recipient_name == recipient_name,
-        NotificationOutbox.status.in_(["scheduled", "sending", "failed"]),
-    )).all()
-    for previous in pending:
-        previous.status = "failed"
-        previous.failure_reason = "Superseded by an updated task or schedule."
-        previous.next_attempt_at = None
-        previous.locked_at = None
-        previous.lock_token = None
-
-    has_phone = bool((phone or "").strip())
-    item = NotificationOutbox(
-        task_id=task.id,
-        recipient_type=recipient_type,
-        recipient_name=recipient_name,
-        phone=phone,
-        message_preview=message_preview,
-        notification_type=notification_type,
-        scheduled_for=scheduled_for,
-        status="scheduled" if has_phone else "failed",
-        failure_reason=None if has_phone else "Recipient phone number is missing.",
-        idempotency_key=idempotency_key,
-    )
-    db.add(item)
-    return item
-
-def rebuild_notifications(task, db):
-    project = db.get(ExecutionProject, task.project_id)
-    day = db.get(ExecutionDay, task.day_id)
-    effective_date = task.rescheduled_date or day.scheduled_date
-    supervisor = db.get(User, task.assigned_supervisor_id)
-    assignment_recipients = [("supervisor", supervisor.name, supervisor.phone)]
-    material_recipients = [("supervisor", supervisor.name, supervisor.phone)]
-    for kind, vendor_id in (("main_contractor", task.assigned_contractor_id), ("subcontractor", task.assigned_subcontractor_id)):
-        if vendor_id:
-            vendor = db.get(Vendor, vendor_id)
-            primary = db.scalar(select(VendorContact).where(VendorContact.vendor_id == vendor_id).order_by(VendorContact.is_primary.desc()))
-            recipient = (kind, vendor.name, primary.phone if primary else vendor.phone)
-            assignment_recipients.append(recipient)
-            material_recipients.append(recipient)
-    seen = set()
-    for kind, name, phone in assignment_recipients:
-        if (kind, name) in seen:
-            continue
-        seen.add((kind, name))
-        preview = f"""New SiteOps Task
-
-Project: {project.name}
-Task: {task.title}
-Scheduled: {effective_date.strftime('%d %b %Y')}
-Priority: {task.priority.title()}
-
-Open SiteOps for instructions and status update."""
-        _queue_notification(db, task, kind, name, phone, preview, "task_assignment")
-    if task.rescheduled_date:
-        for kind, name, phone in assignment_recipients:
-            preview = f"""SiteOps Task Rescheduled
-
-Project: {project.name}
-Task: {task.title}
-Revised date: {effective_date.strftime('%d %b %Y')}
-Reason: {task.delay_reason}
-
-Please review the revised plan."""
-            _queue_notification(db, task, kind, name, phone, preview, "task_rescheduled")
-    pending_delay = db.scalar(
-        select(ExecutionTaskDelayReport)
-        .where(ExecutionTaskDelayReport.task_id == task.id, ExecutionTaskDelayReport.status == "pending")
-        .order_by(ExecutionTaskDelayReport.created_at.desc())
-    )
-    if pending_delay:
-        pm = db.get(User, project.project_manager_id)
-        delay_recipients = [("project_manager", pm.name, pm.phone)] + assignment_recipients
-        delay_seen = set()
-        for kind, name, phone in delay_recipients:
-            if (kind, name) in delay_seen:
-                continue
-            delay_seen.add((kind, name))
-            preview = f"""SiteOps Delay Report
-
-Project: {project.name}
-Task: {task.title}
-Category: {pending_delay.category.replace("_", " ").title()}
-Proposed date: {pending_delay.proposed_date.strftime('%d %b %Y')}
-Reason: {pending_delay.reason}
-
-PM confirmation is required before the official schedule changes."""
-            _queue_notification(db, task, kind, name, phone, preview, "delay_report")
-    if task.material_reminder and task.materials_required:
-        reminder_date = effective_date - timedelta(days=max(task.reminder_lead_days, 1))
-        scheduled_for = datetime.combine(reminder_date, time(hour=9), tzinfo=timezone.utc)
-        for kind, name, phone in material_recipients:
-            preview = f"""Material Reminder
-
-Upcoming: {task.title}
-Project: {project.name}
-Task date: {effective_date.strftime('%d %b %Y')}
-Required material: {task.materials_required}
-
-Please confirm material availability."""
-            _queue_notification(db, task, kind, name, phone, preview, "material_reminder", scheduled_for)
-
 def sync_project_contractor_mapping(task, actor_id, db):
-    """Keep Communication Hub project mappings in sync with task assignment."""
+    """Ensure task assignment maps the responsible main vendor to the project once."""
     vendor_ids = {task.assigned_contractor_id, task.assigned_subcontractor_id} - {None}
     mapped_ids = set()
     for vendor_id in vendor_ids:
         vendor = db.get(Vendor, vendor_id)
         if not vendor:
             continue
-        mapped_id = vendor.id
-        if vendor.engagement_type == "exclusive_subcontractor":
-            relationship = db.scalar(select(ContractorRelationship).where(ContractorRelationship.subcontractor_id == vendor.id))
-            if relationship:
-                mapped_id = relationship.main_contractor_id
-        mapped_ids.add(mapped_id)
+        if vendor.engagement_type == "main":
+            mapped_ids.add(vendor.id)
+        elif vendor.engagement_type == "sub_vendor" and vendor.parent_vendor_id:
+            mapped_ids.add(vendor.parent_vendor_id)
 
     if not mapped_ids:
         return
@@ -397,7 +321,13 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
         .where(User.active.is_(True), User.role.in_([UserRole.project_manager, UserRole.supervisor]))
         .order_by(User.name)
     ).all()
-    vendors = db.scalars(select(Vendor).where(Vendor.status == "active").order_by(Vendor.name)).all()
+    active_vendors = db.scalars(select(Vendor).where(Vendor.status == "active").order_by(Vendor.name)).all()
+    main_status_by_id = {item.id: item.status for item in db.scalars(select(Vendor).where(Vendor.engagement_type == "main")).all()}
+    vendors = [
+        item for item in active_vendors
+        if item.engagement_type == "main"
+        or (item.parent_vendor_id and main_status_by_id.get(item.parent_vendor_id) == "active")
+    ]
     relations = db.scalars(select(ContractorRelationship)).all()
     templates = db.scalars(
         select(ExecutionTemplate).where(ExecutionTemplate.active.is_(True)).order_by(ExecutionTemplate.name)
@@ -405,6 +335,18 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
     template_tasks = db.scalars(
         select(ExecutionTemplateTask).order_by(ExecutionTemplateTask.day_no, ExecutionTemplateTask.sort_order)
     ).all()
+    categories = db.scalars(
+        select(VendorCategory)
+        .where(VendorCategory.active.is_(True))
+        .order_by(VendorCategory.category_type, VendorCategory.parent_id.nullsfirst(), VendorCategory.name)
+    ).all()
+    vendor_category_ids = {}
+    eligible_vendor_ids = {item.id for item in vendors}
+    category_links = db.scalars(
+        select(ContractorCategory).where(ContractorCategory.vendor_id.in_(eligible_vendor_ids))
+    ).all() if eligible_vendor_ids else []
+    for link in category_links:
+        vendor_category_ids.setdefault(link.vendor_id, []).append(str(link.category_id))
     context = build_task_context(tasks, days, users, vendors, db)
     template_by_id = {template.id: template for template in templates}
     template_tasks_by_id = {}
@@ -435,7 +377,23 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
         } for day in days],
         "tasks": [task_json(task, db, context) for task in tasks],
         "users": [{"id": str(item.id), "name": item.name, "role": item.role.value, "phone": item.phone} for item in users],
-        "contractors": [{"id": str(item.id), "name": item.name, "engagement_type": item.engagement_type} for item in vendors],
+        "contractors": [{
+            "id": str(item.id),
+            "name": item.name,
+            "status": item.status,
+            "engagement_type": item.engagement_type,
+            "parent_vendor_id": str(item.parent_vendor_id) if item.parent_vendor_id else None,
+            "migration_status": item.migration_status,
+            "category_ids": vendor_category_ids.get(item.id, []),
+        } for item in vendors],
+        "categories": [{
+            "id": str(item.id),
+            "name": item.name,
+            "category_type": item.category_type,
+            "parent_id": str(item.parent_id) if item.parent_id else None,
+            "description": item.description,
+            "active": item.active,
+        } for item in categories],
         "relationships": [{
             "main_contractor_id": str(item.main_contractor_id),
             "subcontractor_id": str(item.subcontractor_id),
@@ -449,6 +407,8 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
                 "day_no": item.day_no,
                 "title": item.title,
                 "category": item.category,
+                "category_id": str(item.category_id) if item.category_id else None,
+                "subcategory_id": str(item.subcategory_id) if item.subcategory_id else None,
                 "priority": item.priority,
                 "instructions": item.instructions,
                 "materials_required": item.materials_required,
@@ -463,7 +423,25 @@ def create_template(payload: ExecutionTemplateIn, actor: User=Depends(require_ro
     if payload.duration_days < 1 or payload.duration_days > 45: raise HTTPException(422,"Duration must be between 1 and 45 days.")
     if any(t.day_no<1 or t.day_no>payload.duration_days for t in payload.tasks): raise HTTPException(422,"Template task day is outside the duration.")
     item=ExecutionTemplate(name=payload.name,project_type=payload.project_type,duration_days=payload.duration_days,created_by=actor.id); db.add(item); db.flush()
-    for i,t in enumerate(payload.tasks): db.add(ExecutionTemplateTask(template_id=item.id,sort_order=i+1,**t.model_dump()))
+    for i, t in enumerate(payload.tasks):
+        task_data = t.model_dump()
+        category = db.get(VendorCategory, t.category_id) if t.category_id else None
+        subcategory = db.get(VendorCategory, t.subcategory_id) if t.subcategory_id else None
+        if t.category_id and (not category or not category.active or category.parent_id is not None):
+            raise HTTPException(422, "Select a valid active main category for every classified template task.")
+        if t.subcategory_id:
+            if not subcategory or not subcategory.active or subcategory.parent_id is None:
+                raise HTTPException(422, "Select a valid active subcategory for every classified template task.")
+            if category and subcategory.parent_id != category.id:
+                raise HTTPException(422, "Template task subcategory does not belong to its main category.")
+            if not category:
+                category = db.get(VendorCategory, subcategory.parent_id)
+                task_data["category_id"] = category.id
+        if subcategory:
+            task_data["category"] = subcategory.name
+        elif category:
+            task_data["category"] = category.name
+        db.add(ExecutionTemplateTask(template_id=item.id, sort_order=i + 1, **task_data))
     db.commit(); return {"id":str(item.id)}
 
 
@@ -481,7 +459,7 @@ def create_project(payload: ExecutionProjectIn, actor: User=Depends(require_role
         day=ExecutionDay(project_id=project.id,day_no=n,scheduled_date=payload.start_date+timedelta(days=n-1)); db.add(day); db.flush(); day_by_no[n]=day
     if template:
         for tt in db.scalars(select(ExecutionTemplateTask).where(ExecutionTemplateTask.template_id==template.id)).all():
-            task=ExecutionTask(project_id=project.id,day_id=day_by_no[tt.day_no].id,title=tt.title,category=tt.category,instructions=tt.instructions,materials_required=tt.materials_required,material_reminder=tt.material_reminder,reminder_lead_days=tt.reminder_lead_days,template_task_id=tt.id,assigned_supervisor_id=payload.supervisor_id,priority=tt.priority,status="assigned",created_by=actor.id); db.add(task); db.flush(); rebuild_notifications(task,db)
+            task=ExecutionTask(project_id=project.id,day_id=day_by_no[tt.day_no].id,title=tt.title,category=tt.category,category_id=tt.category_id,subcategory_id=tt.subcategory_id,instructions=tt.instructions,materials_required=tt.materials_required,material_reminder=tt.material_reminder,reminder_lead_days=tt.reminder_lead_days,template_task_id=tt.id,assigned_supervisor_id=payload.supervisor_id,priority=tt.priority,status="assigned",created_by=actor.id); db.add(task); db.flush(); record_new_task(db, task, actor.id, "Created from project template")
     db.commit(); return {"id":str(project.id)}
 
 
@@ -489,8 +467,8 @@ def create_project(payload: ExecutionProjectIn, actor: User=Depends(require_role
 def create_task(payload: ExecutionTaskIn, actor: User=Depends(require_roles(*MANAGERS)), db: Session=Depends(get_db)):
     project_access(payload.project_id,actor,db); day=db.get(ExecutionDay,payload.day_id)
     if not day or day.project_id!=payload.project_id: raise HTTPException(422,"Selected day does not belong to project.")
-    if payload.assigned_subcontractor_id and not payload.assigned_contractor_id: raise HTTPException(422,"Main contractor is required for a subcontractor assignment.")
-    task=ExecutionTask(**payload.model_dump(),status="assigned",created_by=actor.id); db.add(task); db.flush(); sync_project_contractor_mapping(task, actor.id, db); rebuild_notifications(task,db); db.commit(); return task_json(task,db)
+    task_data = validated_task_data(payload, db)
+    task=ExecutionTask(**task_data,status="assigned",created_by=actor.id); db.add(task); db.flush(); record_new_task(db, task, actor.id); sync_project_contractor_mapping(task, actor.id, db); db.commit(); return task_json(task,db)
 
 
 @router.put("/tasks/{task_id}")
@@ -498,9 +476,10 @@ def update_task(task_id:uuid.UUID,payload:ExecutionTaskIn,actor:User=Depends(req
     task=db.get(ExecutionTask,task_id)
     if not task: raise HTTPException(404,"Task not found.")
     project_access(task.project_id,actor,db)
-    for k,v in payload.model_dump().items(): setattr(task,k,v)
+    task_data = validated_task_data(payload, db)
+    for k,v in task_data.items(): setattr(task,k,v)
     sync_project_contractor_mapping(task, actor.id, db)
-    rebuild_notifications(task,db); db.commit(); return task_json(task,db)
+    db.commit(); return task_json(task,db)
 
 
 @router.delete("/tasks/{task_id}")
@@ -513,7 +492,8 @@ def delete_task(task_id:uuid.UUID,actor:User=Depends(require_roles(*MANAGERS)),d
 @router.post("/project-contractors")
 def map_contractor(payload:ExecutionProjectContractorIn,actor:User=Depends(require_roles(*MANAGERS)),db:Session=Depends(get_db)):
     project_access(payload.project_id,actor,db); vendor=db.get(Vendor,payload.contractor_id)
-    if not vendor or vendor.engagement_type=="exclusive_subcontractor": raise HTTPException(422,"Select a main or independent contractor.")
+    if not vendor or vendor.engagement_type != "main" or vendor.migration_status != "ready": raise HTTPException(422,"Select a main vendor with no pending migration.")
+    if vendor.status != "active": raise HTTPException(409,"Only active vendors can be assigned to projects.")
     item=ExecutionProjectContractor(**payload.model_dump(),created_by=actor.id); db.add(item); db.commit(); return {"id":str(item.id)}
 
 
@@ -570,9 +550,8 @@ def report_task_delay(task_id: uuid.UUID, payload: ExecutionTaskDelayReportIn, a
         proposed_date=payload.proposed_date,
         created_by=actor.id,
     ))
-    task.status = "delayed"
+    set_task_status(db, task, "delayed", actor.id, reason)
     db.flush()
-    rebuild_notifications(task, db)
     db.commit()
     return task_json(task, db)
 
@@ -607,7 +586,7 @@ def reschedule_task(task_id: uuid.UUID, payload: ExecutionTaskRescheduleIn, acto
     task.rescheduled_by = actor.id
     task.reschedule_count = (task.reschedule_count or 0) + 1
     if task.status != "rejected":
-        task.status = "delayed"
+        set_task_status(db, task, "delayed", actor.id, reason)
     pending_reports = db.scalars(select(ExecutionTaskDelayReport).where(
         ExecutionTaskDelayReport.task_id == task.id,
         ExecutionTaskDelayReport.status == "pending",
@@ -617,33 +596,8 @@ def reschedule_task(task_id: uuid.UUID, payload: ExecutionTaskRescheduleIn, acto
         report.reviewed_by = actor.id
         report.reviewed_at = datetime.now(timezone.utc)
     db.flush()
-    rebuild_notifications(task, db)
     db.commit()
     return task_json(task, db)
-
-@router.post("/notifications/{notification_id}/retry")
-def retry_notification(notification_id: uuid.UUID, actor: User = Depends(require_roles(*MANAGERS)), db: Session = Depends(get_db)):
-    notification = db.get(NotificationOutbox, notification_id)
-    if not notification:
-        raise HTTPException(404, "Notification not found.")
-    task = db.get(ExecutionTask, notification.task_id)
-    if not task:
-        raise HTTPException(404, "Notification task not found.")
-    project_access(task.project_id, actor, db)
-    if notification.status != "failed":
-        raise HTTPException(409, "Only failed notifications can be retried.")
-    if not (notification.phone or "").strip():
-        raise HTTPException(409, "Add the recipient phone number before retrying.")
-    if notification.failure_reason and notification.failure_reason.startswith("Superseded"):
-        raise HTTPException(409, "Superseded notifications cannot be retried.")
-    notification.status = "scheduled"
-    notification.next_attempt_at = datetime.now(timezone.utc)
-    notification.max_attempts = max(notification.max_attempts, notification.attempt_count + 1)
-    notification.locked_at = None
-    notification.lock_token = None
-    notification.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    return {"id": str(notification.id), "status": notification.status, "message": "Notification queued for mock retry."}
 
 @router.patch("/tasks/{task_id}/status")
 def update_task_status(task_id: uuid.UUID, payload: ExecutionTaskStatusIn, actor: User = Depends(require_roles(UserRole.supervisor)), db: Session = Depends(get_db)):
@@ -657,7 +611,7 @@ def update_task_status(task_id: uuid.UUID, payload: ExecutionTaskStatusIn, actor
         raise HTTPException(422, "Use the delay report form when work is delayed.")
     if task.status in {"submitted", "approved"}:
         raise HTTPException(409, "Submitted or approved work cannot be changed by the supervisor.")
-    task.status = payload.status
+    set_task_status(db, task, payload.status, actor.id, "Supervisor started or restarted work")
     pending_reports = db.scalars(select(ExecutionTaskDelayReport).where(
         ExecutionTaskDelayReport.task_id == task.id,
         ExecutionTaskDelayReport.status == "pending",
@@ -667,7 +621,6 @@ def update_task_status(task_id: uuid.UUID, payload: ExecutionTaskStatusIn, actor
         report.reviewed_by = actor.id
         report.reviewed_at = datetime.now(timezone.utc)
     db.flush()
-    rebuild_notifications(task, db)
     db.commit()
     return task_json(task, db)
 
@@ -697,7 +650,7 @@ async def submit_task(task_id: uuid.UUID, remarks: str = Form(...), proof: Uploa
         (upload_path / filename).write_bytes(content)
         task.proof_url = f"/uploads/task-proofs/{filename}"
     task.remarks = remarks.strip()
-    task.status = "submitted"
+    set_task_status(db, task, "submitted", actor.id, "Supervisor submitted work for PM review")
     task.submitted_at = datetime.now(timezone.utc)
     task.rejection_reason = None
     task.reviewed_at = None
@@ -718,7 +671,7 @@ def review_task(task_id: uuid.UUID, payload: ExecutionTaskReviewIn, actor: User 
         raise HTTPException(422, "Review action must be approve or reject.")
     if payload.action == "reject" and not (payload.rejection_reason or "").strip():
         raise HTTPException(422, "Rejection reason is required.")
-    task.status = "approved" if payload.action == "approve" else "rejected"
+    set_task_status(db, task, "approved" if payload.action == "approve" else "rejected", actor.id, "PM approved work" if payload.action == "approve" else payload.rejection_reason.strip())
     task.rejection_reason = None if payload.action == "approve" else payload.rejection_reason.strip()
     task.reviewed_at = datetime.now(timezone.utc)
     task.reviewed_by = actor.id

@@ -27,6 +27,10 @@ def public_vendor(vendor: Vendor) -> dict:
         "phone": vendor.phone,
         "whatsapp": vendor.whatsapp,
         "notes": vendor.notes,
+        "status": vendor.status,
+        "engagement_type": vendor.engagement_type,
+        "parent_vendor_id": str(vendor.parent_vendor_id) if vendor.parent_vendor_id else None,
+        "migration_status": vendor.migration_status,
     }
 
 

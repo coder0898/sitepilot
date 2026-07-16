@@ -1,5 +1,11 @@
-﻿import { cn } from "../../utils/cn";
+import { X } from "lucide-react";
+import { cn } from "../../utils/cn";
 
-export function Modal({ title, subtitle, children, onClose, className }) {
-  return <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/65 p-4 backdrop-blur-sm" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose?.()}><section className={cn("w-full max-w-2xl overflow-hidden rounded-2xl border border-white/20 bg-white shadow-2xl", className)} role="dialog" aria-modal="true" aria-label={title}><header className="flex items-start justify-between gap-5 border-b border-slate-100 px-6 py-5"><div className="min-w-0"><h2 className="text-xl font-black tracking-tight text-slate-950">{title}</h2>{subtitle && <p className="mt-1 text-sm leading-6 text-slate-500">{subtitle}</p>}</div><button type="button" className="modal-close-button grid size-12 shrink-0 place-items-center rounded-2xl border-2 border-blue-700 bg-blue-700 p-0 text-[32px] font-bold leading-none text-white shadow-[0_8px_18px_rgba(11,91,211,0.25)] transition hover:bg-blue-800 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-blue-600/30" onClick={onClose} aria-label="Close modal"><span aria-hidden="true">×</span></button></header><div className="max-h-[calc(90vh-88px)] overflow-y-auto p-6">{children}</div></section></div>;
+export function Modal({ title, subtitle, children, onClose, className, hideHeader = false, bodyClassName }) {
+  return <div className="fixed inset-0 z-50 grid place-items-center overflow-hidden bg-slate-950/70 p-0 backdrop-blur-sm sm:p-4" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose?.()}>
+    <section className={cn("flex h-dvh w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[min(92dvh,920px)] sm:max-w-2xl sm:rounded-[26px] sm:border sm:border-white/20", className)} role="dialog" aria-modal="true" aria-label={title}>
+      {!hideHeader && <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 bg-white px-4 py-4 sm:px-6 sm:py-5"><div className="min-w-0"><h2 className="text-xl font-black tracking-tight text-slate-950 sm:text-2xl">{title}</h2>{subtitle && <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-500 sm:leading-6">{subtitle}</p>}</div><button type="button" className="grid size-12 shrink-0 place-items-center rounded-2xl bg-blue-600 text-white shadow-[0_10px_24px_rgba(37,99,235,.28)] transition hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600" onClick={onClose} aria-label="Close modal"><X aria-hidden="true" size={25} strokeWidth={3}/></button></header>}
+      <div className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6", hideHeader && "p-0 sm:p-0", bodyClassName)}>{children}</div>
+    </section>
+  </div>;
 }
