@@ -1,33 +1,59 @@
-import { LogOut, UserRoundCog } from "lucide-react";
+import { LogOut, RefreshCw, UserRoundCog } from "lucide-react";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
 import { getTabDefinition } from "../../config/tabs";
-import { Alert, RefreshButton } from "../ui";
+import { Alert, IconButton } from "../ui";
 
 export function tabHelp(tab) {
   return getTabDefinition(tab)?.help || "Workspace";
 }
 
-function navIcon(tab) {
-  const Icon = getTabDefinition(tab)?.icon;
-  return Icon ? <Icon size={18} /> : <UserRoundCog size={18} />;
+function TabIcon({ tab, size = 19 }) {
+  const Icon = getTabDefinition(tab)?.icon || UserRoundCog;
+  return <Icon aria-hidden="true" size={size} />;
+}
+
+function DesktopNav({ tabs, activeTab, onTabChange }) {
+  return <nav aria-label="Primary navigation" className="grid min-h-0 flex-1 content-start gap-1.5 overflow-x-hidden overflow-y-auto pr-1">
+    {tabs.map(([key, label]) => {
+      const active = activeTab === key;
+      return <button type="button" key={key} onClick={() => onTabChange(key)} aria-current={active ? "page" : undefined} className={`group flex min-h-14 min-w-0 max-w-full items-center gap-3 rounded-2xl px-3 text-left transition ${active ? "bg-blue-600 text-white shadow-[0_16px_35px_rgba(37,99,235,.28)]" : "text-slate-300 hover:bg-white/10 hover:text-white"}`}>
+        <span className={`grid size-10 shrink-0 place-items-center rounded-xl border ${active ? "border-white/20 bg-white/10" : "border-white/10 bg-white/5 group-hover:border-white/20"}`}><TabIcon tab={key}/></span>
+        <span className="min-w-0"><b className="block truncate text-sm">{label}</b><small className={`mt-0.5 block truncate text-[11px] ${active ? "text-blue-100" : "text-slate-400"}`}>{tabHelp(key)}</small></span>
+      </button>;
+    })}
+  </nav>;
+}
+
+function MobileNavigation({ tabs, activeTab, onTabChange }) {
+  return <nav aria-label="Mobile navigation" className="fixed inset-x-2 bottom-2 z-40 grid grid-flow-col auto-cols-fr gap-1 rounded-[22px] border border-slate-200/80 bg-white/95 p-1.5 pb-[max(.375rem,env(safe-area-inset-bottom))] shadow-[0_18px_55px_rgba(15,23,42,.2)] backdrop-blur-xl lg:hidden">
+    {tabs.map(([key, label]) => {
+      const active = activeTab === key;
+      return <button type="button" key={key} onClick={() => onTabChange(key)} aria-current={active ? "page" : undefined} className={`grid min-h-[58px] min-w-0 place-items-center content-center gap-1 rounded-2xl px-1 text-[10px] font-black transition ${active ? "bg-slate-950 text-white shadow-lg" : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"}`}>
+        <TabIcon tab={key} size={20}/><span className="max-w-full truncate">{label.replace("Communication Hub", "Contacts").replace("Role Permissions", "Roles")}</span>
+      </button>;
+    })}
+  </nav>;
 }
 
 export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, onRefresh, notice, onClearNotice, children }) {
-  return (
-    <div className="app-shell grid min-h-screen min-w-0 grid-cols-[280px_minmax(0,1fr)] max-[920px]:block">
-      <aside className="sidebar sticky top-0 flex h-screen flex-col gap-5 overflow-hidden bg-gradient-to-b from-[#071831] to-[#0a1e3b] p-6 text-white max-[920px]:static max-[920px]:h-auto max-[920px]:rounded-b-[28px] max-[920px]:bg-white max-[920px]:text-slate-950 max-[920px]:shadow-sm [&_nav]:grid [&_nav]:gap-2 max-[920px]:[&_nav]:hidden [&_nav_button]:flex [&_nav_button]:w-full [&_nav_button]:items-center [&_nav_button]:gap-3 [&_nav_button]:rounded-xl [&_nav_button]:bg-transparent [&_nav_button]:px-4 [&_nav_button]:py-4 [&_nav_button]:text-left [&_nav_button]:font-bold [&_nav_button]:text-white [&_nav_button]:shadow-none [&_nav_button.active]:bg-gradient-to-br [&_nav_button.active]:from-blue-600 [&_nav_button.active]:to-blue-500 [&_nav_button.active]:shadow-[0_18px_40px_rgba(11,91,211,0.35)] [&_nav_small]:mt-1 [&_nav_small]:block [&_nav_small]:font-medium [&_nav_small]:text-blue-200">
-        <div className="brand shrink-0 flex items-center gap-4 [&_strong]:block [&_strong]:text-[22px] [&_span]:text-blue-200"><div className="logo-mark grid size-[54px] shrink-0 place-items-center rounded-[18px] bg-blue-700 text-[21px] font-black text-white shadow-[0_16px_30px_rgba(11,91,211,0.25)]">45</div><div><strong>SiteOps</strong><span>Execution Portal</span></div></div>
-        <div className="identity shrink-0 grid gap-2 rounded-2xl border border-white/15 bg-white/5 p-4 max-[920px]:grid-cols-[1fr_auto] max-[920px]:items-center max-[920px]:border-slate-200 max-[920px]:bg-slate-50 [&>span]:text-blue-200 max-[920px]:[&>span]:text-slate-500 [&>button]:mt-2 [&>button]:flex [&>button]:items-center [&>button]:justify-center [&>button]:gap-2 [&>button]:rounded-xl [&>button]:bg-white [&>button]:px-4 [&>button]:py-3 [&>button]:font-black [&>button]:text-blue-800 max-[920px]:[&>button]:mt-0 max-[920px]:[&>button]:bg-blue-700 max-[920px]:[&>button]:text-white"><span>{roles[user.role]}</span><strong>{user.name}</strong><button type="button" onClick={onLogout}><LogOut size={18} /> Logout</button></div>
-        <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]">{tabs.map(([key, label]) => <button type="button" key={key} onClick={() => onTabChange(key)} className={activeTab === key ? "active" : ""}><span className="nav-icon grid size-9 shrink-0 place-items-center rounded-xl border border-white/20">{navIcon(key)}</span><span><b>{label}</b><small>{tabHelp(key)}</small></span></button>)}</nav>
-        <div className="sidebar-profile shrink-0 flex min-w-0 items-center gap-3 border-t border-white/10 pt-4 max-[920px]:hidden [&>div:last-child]:min-w-0 [&_strong]:block [&_span]:block [&_span]:truncate [&_span]:text-xs [&_span]:text-blue-200"><div className="avatar grid size-[46px] shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-blue-900 font-black text-white shadow-[0_12px_24px_rgba(11,91,211,0.22)] small">{initials(user.name)}</div><div><strong>{user.name}</strong><span>{user.email}</span></div></div>
-      </aside>
-      <main className={`workspace min-w-0 max-w-full overflow-x-hidden p-7 max-[920px]:p-5 max-[520px]:p-3 tab-${activeTab}`}>
-        <header className="page-head mb-5 flex items-center justify-between gap-6 rounded-[26px] border border-blue-100 bg-white/90 px-7 py-6 shadow-[0_22px_60px_rgba(15,45,86,0.08)] max-[920px]:block [&_p]:m-0 [&_p]:text-xs [&_p]:font-black [&_p]:uppercase [&_p]:tracking-[0.18em] [&_p]:text-slate-500 [&_h1]:m-0 [&_h1]:text-[clamp(34px,6vw,58px)] [&_h1]:font-black [&_h1]:tracking-[-0.07em] [&>div>span]:text-slate-500"><div><p>45-day interior fit-out control</p><h1>{tabs.find(([key]) => key === activeTab)?.[1]}</h1><span>{tabHelp(activeTab)}</span></div><div className="head-actions flex items-center gap-3 max-[920px]:hidden [&>span]:rounded-2xl [&>span]:border [&>span]:border-slate-200 [&>span]:bg-white [&>span]:px-4 [&>span]:py-3 [&>span]:font-black [&>button]:min-h-11 [&>button]:rounded-xl [&>button]:px-4 [&>button]:font-black"><span>{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span><RefreshButton className="refresh-button" onClick={onRefresh}>Refresh</RefreshButton></div></header>
-        <div className="mobile-tabs mb-5 hidden gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 max-[920px]:flex [&>button]:min-w-[140px] [&>button]:rounded-xl [&>button]:bg-transparent [&>button]:px-4 [&>button]:py-3 [&>button]:font-black [&>button]:text-slate-900 [&>button.active]:bg-blue-700 [&>button.active]:text-white">{tabs.map(([key, label]) => <button type="button" key={key} onClick={() => onTabChange(key)} className={activeTab === key ? "active" : ""}>{label}</button>)}</div>
-        {notice && <Alert className="notice mb-4" onDismiss={onClearNotice}>{notice}</Alert>}
+  const activeLabel = tabs.find(([key]) => key === activeTab)?.[1] || "Workspace";
+  return <div className="min-h-dvh min-w-0 bg-[radial-gradient(circle_at_10%_0%,rgba(219,234,254,.9),transparent_28%),linear-gradient(145deg,#f8fafc_0%,#eef4fb_56%,#f8fafc_100%)] text-slate-950 lg:grid lg:grid-cols-[272px_minmax(0,1fr)]">
+    <aside className="sticky top-0 hidden h-dvh min-w-0 min-h-0 flex-col gap-5 overflow-hidden bg-[#071a33] p-5 text-white lg:flex">
+      <div className="flex shrink-0 items-center gap-3 px-1"><div className="grid size-12 place-items-center rounded-2xl bg-blue-600 text-xl font-black shadow-[0_14px_30px_rgba(37,99,235,.3)]">45</div><div><strong className="block text-xl tracking-tight">SiteOps</strong><span className="text-xs font-medium text-blue-200">Execution intelligence</span></div></div>
+      <div className="shrink-0 rounded-2xl border border-white/10 bg-white/[.06] p-4"><span className="text-xs font-semibold text-blue-200">{roles[user.role]}</span><strong className="mt-1 block truncate text-sm">{user.name}</strong></div>
+      <DesktopNav tabs={tabs} activeTab={activeTab} onTabChange={onTabChange}/>
+      <div className="shrink-0 border-t border-white/10 pt-4"><div className="flex min-w-0 items-center gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-blue-600 font-black">{initials(user.name)}</div><div className="min-w-0 flex-1"><strong className="block truncate text-sm">{user.name}</strong><span className="block truncate text-xs text-slate-400">{user.email}</span></div><IconButton variant="ghost" className="!text-slate-300 hover:!bg-white/10 hover:!text-white" aria-label="Logout" onClick={onLogout}><LogOut size={18}/></IconButton></div></div>
+    </aside>
+
+    <div className="min-w-0">
+      <header className="sticky top-0 z-30 flex min-h-[70px] items-center gap-3 border-b border-slate-200/80 bg-white/90 px-4 backdrop-blur-xl lg:hidden"><div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-600 font-black text-white">45</div><div className="min-w-0 flex-1"><span className="block text-[10px] font-black uppercase tracking-[.18em] text-blue-700">SiteOps</span><strong className="block truncate text-base">{activeLabel}</strong></div><IconButton variant="secondary" aria-label="Refresh workspace" onClick={onRefresh}><RefreshCw size={18}/></IconButton><IconButton variant="ghost" aria-label="Logout" onClick={onLogout}><LogOut size={18}/></IconButton></header>
+      <main className={`min-w-0 max-w-full overflow-x-hidden px-3 pb-28 pt-3 sm:px-5 sm:pt-5 lg:p-8 lg:pb-8 tab-${activeTab}`}>
+        <header className="mb-6 hidden items-end justify-between gap-6 rounded-[28px] border border-white/80 bg-white/85 px-7 py-6 shadow-[0_22px_70px_rgba(15,45,86,.08)] backdrop-blur lg:flex"><div><p className="text-[10px] font-black uppercase tracking-[.22em] text-blue-700">45-day interior fit-out control</p><h1 className="mt-2 text-[clamp(36px,4vw,58px)] font-black tracking-[-.055em] text-slate-950">{activeLabel}</h1><span className="mt-1 block text-sm text-slate-500">{tabHelp(activeTab)}</span></div><div className="flex items-center gap-2"><span className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black text-slate-600">{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span><IconButton variant="secondary" aria-label="Refresh workspace" onClick={onRefresh}><RefreshCw size={18}/></IconButton></div></header>
+        {notice && <Alert className="mb-4" onDismiss={onClearNotice}>{notice}</Alert>}
         {children}
       </main>
     </div>
-  );
+    <MobileNavigation tabs={tabs} activeTab={activeTab} onTabChange={onTabChange}/>
+  </div>;
 }

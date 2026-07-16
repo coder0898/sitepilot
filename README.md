@@ -31,7 +31,6 @@ Default local login:
 
 ## Notes
 
-- Existing old MVP database volumes are tolerated by the first Alembic migration.
 - For a fully clean test database, run `docker compose down -v` before `docker compose up -d --build`.
 - Proof uploads are stored in Docker volume `siteops_uploads` and served from `/uploads` on the backend.
 - The React app auto-detects the current browser hostname and calls backend on the same hostname, port `8000` for backend.

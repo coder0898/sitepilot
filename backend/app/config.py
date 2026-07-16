@@ -6,10 +6,6 @@ class Settings(BaseSettings):
     jwt_secret: str = "local-dev-secret-change-before-production"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     upload_dir: str = "uploads/task-proofs"
-    notification_worker_enabled: bool = True
-    notification_worker_interval_seconds: int = 5
-    notification_provider: str = "mock"
-    whatsapp_enabled: bool = False
 
 
 settings = Settings()

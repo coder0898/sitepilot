@@ -1,27 +1,18 @@
 import { Check } from "lucide-react";
+import { Pill } from "../../../components/ui";
 
 const roleLabels = { admin: "Admin", project_manager: "Project Manager", supervisor: "Supervisor" };
 const moduleLabels = { execution: "Execution", communication: "Communication Hub", users: "Users", overview: "Overview", projects: "Projects", approvals: "Approvals", today: "Today", security: "Security" };
 
+function PermissionToggle({ permission, onChange, compact = false }) {
+  const on = Boolean(permission?.can_view);
+  return <label className={`flex cursor-pointer items-center gap-2 ${compact ? "justify-between" : "justify-center"} ${permission?.locked ? "cursor-not-allowed opacity-60" : ""}`}><input className="peer sr-only" type="checkbox" checked={on} disabled={permission?.locked} onChange={onChange}/><span className="relative h-6 w-11 shrink-0 rounded-full bg-slate-300 transition after:absolute after:left-1 after:top-1 after:size-4 after:rounded-full after:bg-white after:transition peer-checked:bg-blue-600 peer-checked:after:translate-x-5 peer-focus-visible:ring-4 peer-focus-visible:ring-blue-100"/><b className="text-xs text-slate-700">{on ? "Visible" : "Hidden"}</b></label>;
+}
+
 export function PermissionMatrix({ data, onToggle }) {
-  return (
-    <section className="permission-panel overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm [&>header]:flex [&>header]:items-center [&>header]:justify-between [&>header]:gap-4 [&>header]:border-b [&>header]:border-slate-100 [&>header]:pb-4 max-[720px]:[&>header]:grid [&_h3]:m-0 [&_h3]:font-serif [&_h3]:text-xl [&_p]:m-0 [&_p]:text-sm [&_p]:text-slate-500 [&>header>span]:flex [&>header>span]:items-center [&>header>span]:gap-2 [&>header>span]:text-xs [&>header>span]:font-bold [&>header>span]:text-emerald-700">
-      <header>
-        <div><h3>Predefined system-role visibility</h3><p>These roles exist for access control even when no user is currently assigned to them.</p></div>
-        <span><Check /> Backend role restrictions remain active</span>
-      </header>
-      <div className="permission-matrix mt-4 min-w-[720px] overflow-x-auto">
-        <div className="matrix-head grid grid-cols-[minmax(220px,1.5fr)_repeat(3,1fr)] items-center gap-3 border-b border-slate-200 px-4 py-3 text-xs uppercase tracking-wider text-slate-500"><strong>Module</strong>{Object.entries(roleLabels).map(([role, label]) => <strong key={role}>{label}</strong>)}</div>
-        {data.modules.map(moduleKey => (
-          <div className="matrix-row grid grid-cols-[minmax(220px,1.5fr)_repeat(3,1fr)] items-center gap-3 border-b border-slate-100 px-4 py-4 [&>div>strong]:block [&>div>small]:mt-1 [&>div>small]:block [&>div>small]:text-xs [&>div>small]:text-slate-500" key={moduleKey}>
-            <div><strong>{moduleLabels[moduleKey] || moduleKey}</strong><small>{moduleKey === "communication" ? "Primary workspace - always enabled" : "Show this module in navigation"}</small></div>
-            {Object.keys(roleLabels).map(role => {
-              const permission = data.permissions.find(item => item.role === role && item.module_key === moduleKey);
-              return <label className={`permission-switch flex cursor-pointer items-center justify-center gap-2 [&_input]:sr-only [&>span]:relative [&>span]:h-6 [&>span]:w-11 [&>span]:rounded-full [&>span]:bg-slate-300 [&>span]:transition [&>span]:after:absolute [&>span]:after:left-1 [&>span]:after:top-1 [&>span]:after:size-4 [&>span]:after:rounded-full [&>span]:after:bg-white [&>span]:after:transition [&.on>span]:bg-blue-700 [&.on>span]:after:translate-x-5 [&.locked]:cursor-not-allowed [&.locked]:opacity-60 [&>b]:text-xs ${permission?.can_view ? "on" : ""} ${permission?.locked ? "locked" : ""}`} key={role}><input type="checkbox" checked={Boolean(permission?.can_view)} disabled={permission?.locked} onChange={() => onToggle(role, moduleKey)} /><span /><b>{permission?.can_view ? "Visible" : "Hidden"}</b></label>;
-            })}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
+  const permissionFor = (role, moduleKey) => data.permissions.find(item => item.role === role && item.module_key === moduleKey);
+  return <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><header className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black text-slate-950">System-role visibility</h3><p className="mt-1 text-sm text-slate-500">Roles exist independently of user accounts.</p></div><span className="flex items-center gap-2 text-xs font-bold text-emerald-700"><Check size={17}/>Backend restrictions remain active</span></header>
+    <div className="grid gap-3 p-3 md:hidden">{data.modules.map(moduleKey => <article key={moduleKey} className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="mb-4 flex items-start justify-between gap-3"><div><strong className="text-sm text-slate-950">{moduleLabels[moduleKey] || moduleKey}</strong><small className="mt-1 block text-xs text-slate-500">{moduleKey === "communication" ? "Primary workspace" : "Navigation visibility"}</small></div>{moduleKey === "communication" && <Pill tone="green">Core</Pill>}</div><div className="grid gap-3">{Object.entries(roleLabels).map(([role, label]) => <div key={role} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-3"><span className="text-xs font-bold text-slate-600">{label}</span><PermissionToggle compact permission={permissionFor(role, moduleKey)} onChange={() => onToggle(role, moduleKey)}/></div>)}</div></article>)}</div>
+    <div className="hidden overflow-x-auto p-5 md:block"><div className="min-w-[720px]"><div className="grid grid-cols-[minmax(220px,1.5fr)_repeat(3,1fr)] items-center gap-3 border-b border-slate-200 px-4 py-3 text-xs font-black uppercase tracking-wider text-slate-500"><strong>Module</strong>{Object.entries(roleLabels).map(([role, label]) => <strong key={role}>{label}</strong>)}</div>{data.modules.map(moduleKey => <div className="grid grid-cols-[minmax(220px,1.5fr)_repeat(3,1fr)] items-center gap-3 border-b border-slate-100 px-4 py-4" key={moduleKey}><div><strong className="block">{moduleLabels[moduleKey] || moduleKey}</strong><small className="mt-1 block text-xs text-slate-500">{moduleKey === "communication" ? "Primary workspace - always enabled" : "Show this module in navigation"}</small></div>{Object.keys(roleLabels).map(role => <PermissionToggle key={role} permission={permissionFor(role, moduleKey)} onChange={() => onToggle(role, moduleKey)}/>)}</div>)}</div></div>
+  </section>;
 }

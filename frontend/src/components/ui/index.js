@@ -5,6 +5,7 @@ export { ConfirmModal } from "./ConfirmModal";
 export { EmptyState } from "./EmptyState";
 export { Field, Input, Select, Textarea } from "./Field";
 export { FormActions } from "./FormActions";
+export { DetailGrid, FormGrid, FormSection } from "./FormLayout";
 export { IconButton } from "./IconButton";
 export { LoadingSpinner } from "./LoadingSpinner";
 export { ManagementHeader } from "./ManagementHeader";
