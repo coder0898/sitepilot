@@ -1,0 +1,113 @@
+PRODUCT REQUIREMENTS DOCUMENT
+Workved Site Operations and Project Execution Management System
+1. Product Vision
+Create a centralized, WhatsApp-first platform that gives Workved reliable control over commercial interior project execution, clearly assigns responsibility, distributes the Site Supervisor's workload, tracks external approvals, and provides management with timely visibility into progress, delays, blockers, vendor performance, and internal support deployment.
+2. Business Need
+Project status currently depends on calls, WhatsApp chats, spreadsheets, photographs, and verbal follow-up.
+The Site Supervisor carries excessive coordination, documentation, reporting, and follow-up responsibility.
+Tasks, support work, and external approvals do not always have one clearly accountable internal owner.
+Employee absence can leave work unowned or delay execution.
+Vendor commitments, delays, rework, and attendance are not consistently recorded.
+Management lacks one dependable source of truth for daily execution.
+3. Product Goals
+4. Users and Roles
+5. Core Operating Model
+Admin creates a project using the approved 45-day template.
+PM reviews generated tasks, owners, vendors, dependencies, and external approvals.
+Every active task and external approval receives one Primary Responsible Employee.
+Supporting employees may be attached for coordination or execution support without changing primary accountability.
+Employees and vendors receive assignments through WhatsApp.
+Employees submit progress and evidence; vendors only acknowledge or clarify assignments.
+Supervisor verifies work; PM approves applicable critical and quality-sensitive work.
+Absence triggers Reassignment Required; urgent work temporarily transfers to the Supervisor until reassigned.
+Daily and weekly reports are generated from recorded data.
+Management receives exception-focused visibility and decisions required.
+6. Core Modules
+Authentication and role-based access
+Employee, project-team, vendor, and sub-vendor management
+Master 45-day template and project generation
+Task and responsibility ownership
+Support employee allocation
+Absence and mandatory reassignment
+Task dependencies and external approvals
+WhatsApp communication
+Supervisor verification and PM approval
+Delay, blocker, carry-forward, and no-update handling
+Daily and weekly reports
+Management dashboards
+Audit and Super Admin technical controls
+7. Non-Negotiable Business Rules
+Every active task must have one Primary Responsible Employee.
+Every active external approval must have one internal owner.
+Supporting employees do not replace primary accountability.
+Employee absence must trigger reassignment; the system must not silently choose a replacement.
+Urgent unassigned work temporarily transfers to the Site Supervisor.
+Vendors cannot officially complete, verify, approve, or close tasks.
+The baseline schedule remains locked after activation; live changes retain history.
+Class A work requires Supervisor verification and PM approval before dependent work continues.
+Blocked and overdue are separate conditions and may apply simultaneously.
+Critical overrides require a reason and audit record.
+8. Management Dashboards
+Project progress and milestone status
+Delayed, blocked, overdue, and no-update work
+Pending approvals and external approvals at risk
+Responsibilities awaiting reassignment
+Support employee allocation
+Vendor risks and incidents
+Management decisions required
+9. Success Metrics
+At least 90% daily task and responsibility update compliance.
+100% of active tasks and external approvals have one internal owner.
+100% of absent-owner responsibilities enter reassignment workflow.
+No urgent responsibility remains without temporary ownership.
+30-40% reduction in management follow-up calls.
+Measurable reduction in Site Supervisor coordination burden.
+Consistent daily report generation.
+No critical work closes without required approval.
+Complete audit history for assignments, reassignments, approvals, and overrides.
+10. Key Risks and Controls
+11. Out of Scope for Initial Release
+Automatic skill-based employee assignment
+AI manpower planning or automatic replacement
+GPS, biometric attendance, payroll, and leave management
+Client or vendor portals
+AI delay prediction and full critical-path scheduling
+Native mobile application and offline mode
+12. Final Product Definition
+The product is a 45-day, template-driven, WhatsApp-first execution platform that provides clear task and approval ownership, structured support allocation, mandatory absence reassignment, vendor coordination, verification and approval control, automated reporting, management visibility, and secure technical administration.
+===== TABLE 1 =====
+Company | Workved Spaces Pvt. Ltd.
+Document Status | Final Draft for Management Approval
+Version | 1.1
+Project Model | Standard 45-Day Interior Execution Cycle and Site management.
+Author | Pratik Bakshi - Frontend Developer
+===== TABLE 2 =====
+ID | Goal | Outcome
+PG-01 | Daily visibility | Show planned, active, completed, delayed, blocked, overdue, and unreported work.
+PG-02 | Clear accountability | Assign one Primary Responsible Employee to every active task and external approval.
+PG-03 | Supervisor workload distribution | Assign support responsibilities to internal employees without diluting primary ownership.
+PG-04 | Absence reassignment | Trigger mandatory, visible reassignment when an owner is absent.
+PG-05 | External approval control | Track society, landlord, building, client, and government approvals with internal ownership.
+PG-06 | WhatsApp-first adoption | Allow routine field updates through WhatsApp.
+PG-07 | Standardized execution | Generate projects from one approved 45-day template.
+PG-08 | Automated reporting | Generate daily and weekly reports from recorded data.
+PG-09 | Vendor accountability | Record assignment acceptance, attendance, delay, rework, and incidents.
+PG-10 | Auditability | Preserve key operational and technical actions.
+===== TABLE 3 =====
+Role | Primary Responsibility
+Super Admin | Full technical control: users, roles, integrations, logs, recovery, security, and audit. No routine operational approvals unless separately assigned.
+Management | Read-only visibility across projects, risks, approvals, reassignments, vendor concerns, and required decisions.
+Admin | Project setup, employee/vendor master data, template management, cross-project support approval, fallback approvals, and company-wide oversight.
+Project Manager | Owns schedule, assignments, approval decisions, support allocation, external approval ownership, and report submission.
+Site Supervisor | Controls daily execution, verifies work, distributes support responsibilities, handles reassignment, and coordinates site activity.
+Assigned Internal Employee | Owns tasks, coordination, documentation, external approval follow-up, reporting support, or area support.
+Vendor/Sub-vendor | Receives WhatsApp assignments and responds; cannot officially complete or approve tasks.
+===== TABLE 4 =====
+Risk | Control
+Low field adoption | WhatsApp-first interactions, consolidated messages, minimal data entry.
+Supervisor overload continues | Explicit support responsibilities and visible workload distribution.
+Incorrect task updates | Evidence, Supervisor verification, PM approval, audit history.
+Owner absence delays work | Mandatory reassignment, SLA escalation, temporary Supervisor ownership.
+External approval delays | Named internal owner, follow-up dates, blocking impact, escalation.
+WhatsApp failure or cost | Provider-independent integration, retry logic, suppression, portal fallback.
+Unauthorized override | Role restrictions, mandatory reasons, complete audit trail.

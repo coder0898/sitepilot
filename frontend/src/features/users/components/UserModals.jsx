@@ -1,32 +1,119 @@
-import { useState } from "react";
-import { KeyRound, Save, UserPlus } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, AlertTriangle, Check, Clock3, KeyRound, Mail, RotateCcw, Save, ShieldCheck, Trash2, UserPlus, UserX } from "lucide-react";
+import { authApi } from "../../../api/authApi";
 import { usersApi } from "../../../api/usersApi";
-import { Button, ConfirmModal, DetailGrid, Field, FormActions, FormGrid, Input, Modal, Pill, Select } from "../../../components/ui";
+import { Button, Field, FormActions, Input, Modal, Pill, Select, Textarea } from "../../../components/ui";
 import { roles } from "../../../utils/constants";
 import { initials } from "../../../utils/format";
 
-function roleOptionsFor(actorRole, currentRole = "") {
-  const options = actorRole === "super_admin" ? ["admin", "project_manager", "supervisor"] : ["project_manager", "supervisor"];
-  return Array.from(new Set([currentRole, ...options].filter(Boolean)));
+function roleDefinition(catalog, role) {
+  return catalog.find(item => item.role === role) || { label: roles[role] || role, summary: "Role-based SiteOps access.", capabilities: [] };
 }
 
-export function CreateUserModal({ create, user, onClose }) {
-  return <Modal title="Create user" subtitle="Create a secure, role-based SiteOps login" onClose={onClose}><form className="grid gap-5" onSubmit={create}><FormGrid><Field label="Full name"><Input name="name" autoComplete="name" placeholder="Enter full name" required/></Field><Field label="Email login"><Input name="email" type="email" autoComplete="email" placeholder="Enter email address" required/></Field><Field label="Mobile number" hint="Used for site contact and future WhatsApp messaging"><Input name="phone" inputMode="tel" placeholder="Enter mobile number"/></Field><Field label="Temporary password"><Input name="password" type="password" autoComplete="new-password" placeholder="Enter temporary password" required/></Field><Field label="Role" className="md:col-span-2"><Select name="role" defaultValue="" required><option value="" disabled>Select role</option>{roleOptionsFor(user.role).map(role => <option key={role} value={role}>{roles[role]}</option>)}</Select></Field></FormGrid><FormActions><Button variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit"><UserPlus size={18}/>Create user</Button></FormActions></form></Modal>;
+function AccountStatus({ person }) {
+  if (!person.active) return <Pill tone="gray">Offboarded</Pill>;
+  if (person.activation_status === "setup_pending") return <Pill tone="orange">Setup pending</Pill>;
+  return <Pill tone="green">Active</Pill>;
+}
+function IdentityBand({ person }) {
+  return <div className="relative overflow-hidden rounded-[24px] bg-[#071a33] p-5 text-white shadow-[0_22px_60px_rgba(7,26,51,.18)] sm:p-6"><div className="absolute -right-12 -top-16 size-40 rounded-full border-[28px] border-blue-500/10"/><div className="relative flex items-center gap-4"><span className="grid size-14 shrink-0 place-items-center rounded-[20px] bg-blue-600 text-base font-black shadow-[0_12px_28px_rgba(37,99,235,.35)]">{initials(person.name)}</span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2"><strong className="truncate text-xl font-black tracking-[-.025em]">{person.name}</strong><AccountStatus person={person}/></span><small className="mt-1 block truncate text-sm text-blue-100/75">{person.email}</small></span></div></div>;
 }
 
-export function UserModal({ selectedUser, currentUser, onClose, action }) {
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState(null);
-  const protectedUser = selectedUser.role === "super_admin";
+function CapabilityPreview({ definition }) {
+  return <section className="rounded-[22px] border border-blue-100 bg-blue-50/70 p-4 sm:p-5"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-blue-600 text-white"><ShieldCheck size={19}/></span><div><p className="text-xs font-black uppercase tracking-[.16em] text-blue-700">Access preview</p><h3 className="mt-1 font-black text-slate-950">{definition.label}</h3><p className="mt-1 text-sm leading-6 text-slate-600">{definition.summary}</p></div></div><div className="mt-4 grid gap-2 sm:grid-cols-2">{definition.capabilities.map(item => <span key={item} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm"><Check className="text-emerald-600" size={15}/>{item}</span>)}</div></section>;
+}
 
-  async function save(event) { event.preventDefault(); const result = await action(() => usersApi.update(selectedUser.id, Object.fromEntries(new FormData(event.currentTarget))), "User updated"); if (result?.ok !== false) onClose(); }
-  async function toggleActive() { const result = await action(() => usersApi.setActive(selectedUser.id, !selectedUser.active), "User status updated"); if (result?.ok !== false) onClose(); }
-  async function resetPassword() { const result = await action(() => usersApi.resetPassword(selectedUser.id, password), "Password reset"); if (result?.ok !== false) setPassword(""); }
+export function CreateUserModal({ create, catalog, manageableRoles, onClose }) {
+  const [selectedRole, setSelectedRole] = useState(manageableRoles[0] || "");
+  const definition = roleDefinition(catalog, selectedRole);
+  return <Modal title="Create team access" subtitle="Create a Supabase identity with a fixed, auditable SiteOps role." onClose={onClose} className="sm:max-w-3xl"><form className="grid gap-5" onSubmit={create}><CapabilityPreview definition={definition}/><section className="grid gap-4 rounded-[22px] border border-slate-200 bg-white p-4 sm:grid-cols-2 sm:p-5"><Field label="Full name"><Input name="name" autoComplete="name" placeholder="e.g. Ananya Shah" required/></Field><Field label="Email login"><Input name="email" type="email" autoComplete="email" placeholder="name@company.com" required/></Field><Field label="Mobile number" hint="Use international format for future WhatsApp identity."><Input name="phone" inputMode="tel" placeholder="+919876543210"/></Field><Field label="System role"><Select name="role" value={selectedRole} onChange={event => setSelectedRole(event.target.value)} required>{manageableRoles.map(role => <option key={role} value={role}>{roles[role]}</option>)}</Select></Field><Field label="Employee code"><Input name="employee_code" placeholder="EMP-00124" required/></Field><Field label="Designation"><Input name="designation" placeholder="Project Manager" required/></Field><Field label="Department"><Input name="department" placeholder="Projects / Operations"/></Field><Field label="Temporary password" hint="Stored and validated only by Supabase Auth."><Input name="password" type="password" autoComplete="new-password" minLength={8} placeholder="Minimum 8 characters" required/></Field></section><FormActions><Button variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit"><UserPlus size={18}/>Create access</Button></FormActions></form></Modal>;
+}
 
-  return <Modal title="User details" subtitle="Identity, access and account status" onClose={onClose}>
-    <div className="mb-5 flex items-center gap-4 rounded-2xl bg-slate-950 p-4 text-white sm:p-5"><div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-blue-600 font-black">{initials(selectedUser.name)}</div><div className="min-w-0 flex-1"><h3 className="truncate text-lg font-black">{selectedUser.name}</h3><p className="truncate text-sm text-slate-300">{selectedUser.email}</p></div><Pill tone={selectedUser.active ? "green" : "gray"}>{selectedUser.active ? "Active" : "Inactive"}</Pill></div>
-    <DetailGrid className="mb-5" items={[{ label: "Role", value: roles[selectedUser.role] }, { label: "Status", value: selectedUser.active ? "Active" : "Inactive" }, { label: "Created", value: selectedUser.created_at ? new Date(selectedUser.created_at).toLocaleDateString("en-GB") : "-" }, { label: "Last login", value: selectedUser.last_login_at ? new Date(selectedUser.last_login_at).toLocaleString("en-GB") : "Not yet" }]}/>
-    {protectedUser ? <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-900">System owner account. Protected from role and status changes.</div> : <form className="grid gap-5" onSubmit={save}><FormGrid><Field label="Full name"><Input name="name" defaultValue={selectedUser.name} required/></Field><Field label="Email login"><Input name="email" type="email" defaultValue={selectedUser.email} required/></Field><Field label="Mobile number"><Input name="phone" inputMode="tel" defaultValue={selectedUser.phone || ""}/></Field><Field label="Role"><Select name="role" defaultValue={selectedUser.role}>{roleOptionsFor(currentUser.role, selectedUser.role).map(role => <option key={role} value={role}>{roles[role]}</option>)}</Select></Field></FormGrid><div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"><Field label="Set a new password"><Input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="New password"/></Field><Button type="button" variant="secondary" disabled={!password} onClick={resetPassword}><KeyRound size={17}/>Reset</Button></div><FormActions className="border-t border-slate-100 pt-4"><Button type="button" variant={selectedUser.active ? "danger" : "secondary"} onClick={() => setConfirm("status")}>{selectedUser.active ? "Deactivate" : "Activate"}</Button><Button type="submit"><Save size={17}/>Save user</Button></FormActions></form>}
-    {confirm === "status" && <ConfirmModal title={selectedUser.active ? "Deactivate user?" : "Activate user?"} message={`This will ${selectedUser.active ? "block" : "restore"} login access for ${selectedUser.name}.`} confirmLabel={selectedUser.active ? "Deactivate" : "Activate"} onClose={() => setConfirm(null)} onConfirm={toggleActive}/>}
+function LifecycleModal({ mode, person, onClose, onConfirm, loading }) {
+  const deleting = mode === "delete";
+  const restoring = mode === "restore";
+  const title = deleting ? "Permanently delete unused account?" : restoring ? "Restore employee access?" : "Offboard employee?";
+  const subtitle = deleting
+    ? "Only test or duplicate accounts with no business history can be permanently deleted."
+    : restoring
+      ? "Restore SiteOps and Supabase login after confirming the employee should regain access."
+      : "Block login while preserving all project, task, approval, and audit history.";
+
+  return <Modal title={title} subtitle={subtitle} onClose={onClose}>
+    <form onSubmit={onConfirm} className="grid gap-5">
+      <section className={"flex items-start gap-3 rounded-[20px] border p-4 text-sm leading-6 " + (deleting ? "border-rose-200 bg-rose-50 text-rose-900" : restoring ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-950")}>
+        <span className={"grid size-10 shrink-0 place-items-center rounded-2xl " + (deleting ? "bg-rose-600 text-white" : restoring ? "bg-emerald-600 text-white" : "bg-amber-500 text-white")}>{deleting ? <Trash2 size={19}/> : restoring ? <RotateCcw size={19}/> : <UserX size={19}/>}</span>
+        <div><strong className="block text-base">{person.name}</strong><span className="mt-1 block">{deleting ? "This action also removes the Supabase identity and cannot be undone." : restoring ? "The employee will be able to sign in again immediately." : "Active PM or Supervisor responsibilities must be reassigned before offboarding."}</span></div>
+      </section>
+      <Field label={deleting ? "Deletion reason" : restoring ? "Restoration reason" : "Offboarding reason"} hint="This reason is required for accountability."><Textarea name="reason" minLength={4} placeholder={deleting ? "Duplicate QA identity created during testing." : restoring ? "Employee returned to active duty." : "Employee left the company on DD/MM/YYYY."} required/></Field>
+      {deleting && <Field label="Confirm exact email" hint={"Enter " + person.email + " to confirm permanent deletion."}><Input name="confirmation" type="email" autoComplete="off" required/></Field>}
+      <FormActions><Button variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" variant={deleting || !restoring ? "danger" : "primary"} loading={loading}>{deleting ? <><Trash2 size={17}/>Delete permanently</> : restoring ? <><RotateCcw size={17}/>Restore access</> : <><UserX size={17}/>Offboard employee</>}</Button></FormActions>
+    </form>
   </Modal>;
+}
+
+export function UserModal({ selectedUser, actor, catalog, manageableRoles, onClose, action }) {
+  const [selectedRole, setSelectedRole] = useState(selectedUser.role);
+  const [lifecycleMode, setLifecycleMode] = useState("");
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [events, setEvents] = useState([]);
+  const canManage = manageableRoles.includes(selectedUser.role);
+  const canDelete = actor.role === "super_admin" && !selectedUser.active && canManage;
+  const definition = roleDefinition(catalog, selectedRole);
+  const profile = selectedUser.employee_profile;
+
+  useEffect(() => { usersApi.events(selectedUser.id).then(setEvents).catch(() => setEvents([])); }, [selectedUser.id]);
+
+  async function save(event) {
+    event.preventDefault();
+    const result = await action(() => usersApi.update(selectedUser.id, Object.fromEntries(new FormData(event.currentTarget))), "User access updated");
+    if (result?.ok !== false) onClose();
+  }
+
+  async function applyLifecycle(event) {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    setLifecycleBusy(true);
+    let operation;
+    let notice;
+    if (lifecycleMode === "delete") {
+      operation = () => usersApi.remove(selectedUser.id, values);
+      notice = "Unused account permanently deleted";
+    } else if (lifecycleMode === "restore") {
+      operation = () => usersApi.restore(selectedUser.id, values.reason);
+      notice = "Employee access restored";
+    } else {
+      operation = () => usersApi.offboard(selectedUser.id, values.reason);
+      notice = "Employee offboarded and login blocked";
+    }
+    const result = await action(operation, notice);
+    setLifecycleBusy(false);
+    if (result?.ok) { setLifecycleMode(""); onClose(); }
+  }
+
+  function sendRecovery() {
+    return action(() => authApi.requestReset(selectedUser.email), "Supabase recovery email requested", { refresh: false });
+  }
+
+  const roleChanged = selectedRole !== selectedUser.role;
+  return <><Modal title="Access record" subtitle="Employee identity, role boundary, lifecycle and immutable account history." onClose={onClose} className="sm:max-w-4xl"><div className="grid gap-5"><IdentityBand person={selectedUser}/>{canManage ? <form className="grid gap-5" onSubmit={save}><section className="grid gap-4 rounded-[22px] border border-slate-200 p-4 sm:grid-cols-2 sm:p-5"><Field label="Full name"><Input name="name" defaultValue={selectedUser.name} required/></Field><Field label="Email login"><Input name="email" type="email" defaultValue={selectedUser.email} required/></Field><Field label="Mobile number"><Input name="phone" inputMode="tel" defaultValue={selectedUser.phone || ""} placeholder="+919876543210"/></Field><Field label="System role"><Select name="role" value={selectedRole} onChange={event => setSelectedRole(event.target.value)}>{manageableRoles.map(role => <option key={role} value={role}>{roles[role]}</option>)}</Select></Field><Field label="Employee code"><Input name="employee_code" defaultValue={profile?.employee_code || ""} required/></Field><Field label="Designation"><Input name="designation" defaultValue={profile?.designation || ""} required/></Field><Field label="Department"><Input name="department" defaultValue={profile?.department || ""}/></Field>{roleChanged && <Field className="sm:col-span-2" label="Reason for role change" hint="Role changes are written to account history."><Input name="reason" placeholder="Explain why access responsibility is changing" minLength={4} required/></Field>}</section><CapabilityPreview definition={definition}/><section className="rounded-[22px] border border-slate-200 bg-slate-50 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 shrink-0 text-amber-600" size={19}/><div><h3 className="font-black text-slate-950">Employment lifecycle</h3><p className="mt-1 text-sm leading-6 text-slate-600">Offboarding blocks Supabase and portal access but retains accountable business history. Permanent deletion is limited to inactive, unused test or duplicate accounts.</p></div></div></section><FormActions><Button type="button" variant="secondary" onClick={sendRecovery}><Mail size={17}/>Send reset email</Button>{selectedUser.active ? <Button type="button" variant="danger" onClick={() => setLifecycleMode("offboard")}><UserX size={17}/>Offboard</Button> : <><Button type="button" variant="secondary" onClick={() => setLifecycleMode("restore")}><RotateCcw size={17}/>Restore</Button>{canDelete && <Button type="button" variant="danger" onClick={() => setLifecycleMode("delete")}><Trash2 size={17}/>Delete unused account</Button>}</>}<Button type="submit"><Save size={17}/>Save changes</Button></FormActions></form> : <div className="grid gap-4"><CapabilityPreview definition={roleDefinition(catalog, selectedUser.role)}/><div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">This identity is visible for context but falls outside your management authority.</div></div>}<section className="rounded-[22px] border border-slate-200 bg-slate-50/80 p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.16em] text-slate-500">Account trail</p><h3 className="mt-1 font-black text-slate-950">Recent activity</h3></div><Activity className="text-blue-600" size={20}/></div><div className="mt-4 grid gap-2">{events.length ? events.slice(0, 6).map(item => <article key={item.id} className="grid grid-cols-[auto_1fr] gap-3 rounded-2xl bg-white p-3 shadow-sm"><span className="mt-0.5 grid size-8 place-items-center rounded-xl bg-slate-100 text-slate-500"><Clock3 size={15}/></span><div><strong className="block text-xs text-slate-900">{item.event_type.replaceAll("_", " ")}</strong><p className="mt-1 text-xs leading-5 text-slate-500">{item.reason}</p><time className="mt-1 block text-[11px] font-semibold text-slate-400">{new Date(item.created_at).toLocaleString("en-GB")}</time></div></article>) : <p className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">No account changes recorded yet.</p>}</div></section></div></Modal>{lifecycleMode && <LifecycleModal mode={lifecycleMode} person={selectedUser} onClose={() => setLifecycleMode("")} onConfirm={applyLifecycle} loading={lifecycleBusy}/>}</>;
+}
+export function EditMyProfileModal({ user, onClose, action }) {
+  async function save(event) {
+    event.preventDefault();
+    const result = await action(() => usersApi.updateMe(Object.fromEntries(new FormData(event.currentTarget))), "Profile updated");
+    if (result?.ok !== false) onClose();
+  }
+  return <Modal title="Edit personal details" subtitle="Keep your contact identity accurate for project coordination." onClose={onClose}><form className="grid gap-5" onSubmit={save}><IdentityBand person={user}/><section className="grid gap-4 rounded-[22px] border border-slate-200 p-4 sm:p-5"><Field label="Full name"><Input name="name" defaultValue={user.name} required/></Field><Field label="Mobile number"><Input name="phone" inputMode="tel" defaultValue={user.phone || ""} placeholder="+919876543210"/></Field></section><FormActions><Button variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit"><Save size={17}/>Save profile</Button></FormActions></form></Modal>;
+}
+
+export function ChangePasswordModal({ onClose, action }) {
+  async function save(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    if (form.get("password") !== form.get("confirm_password")) return action(() => Promise.reject(new Error("Passwords do not match.")), "", { refresh: false });
+    const result = await action(() => authApi.updatePassword(form.get("password")), "Password updated by Supabase", { refresh: false });
+    if (result?.ok !== false) onClose();
+  }
+  return <Modal title="Change password" subtitle="Your password is encrypted and managed only by Supabase Auth." onClose={onClose}><form className="grid gap-5" onSubmit={save}><section className="rounded-[22px] border border-blue-100 bg-blue-50/70 p-5"><span className="grid size-11 place-items-center rounded-2xl bg-blue-600 text-white"><KeyRound size={20}/></span><p className="mt-4 text-sm leading-6 text-slate-600">Use at least eight characters. Updating the password keeps your current device signed in.</p></section><Field label="New password"><Input name="password" type="password" autoComplete="new-password" minLength={8} required/></Field><Field label="Confirm new password"><Input name="confirm_password" type="password" autoComplete="new-password" minLength={8} required/></Field><FormActions><Button variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit"><KeyRound size={17}/>Update password</Button></FormActions></form></Modal>;
 }

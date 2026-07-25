@@ -1,41 +1,33 @@
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: siteops_mvp_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: siteops
-      POSTGRES_USER: siteops
-      POSTGRES_PASSWORD: siteops_password
-    ports:
-      - "5435:5432"
-    volumes:
-      - siteops_mvp_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U siteops -d siteops"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   backend:
     build: ./backend
     container_name: siteops_mvp_backend
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://siteops:siteops_password@db:5432/siteops
-      JWT_SECRET: local-dev-secret-change-before-production
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@host.docker.internal:54322/postgres}
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://192.168.8.11:3000
       UPLOAD_DIR: uploads/task-proofs
+      SUPABASE_URL: ${SUPABASE_BACKEND_URL:-http://host.docker.internal:54321}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      BOOTSTRAP_SUPER_ADMIN_EMAIL: ${BOOTSTRAP_SUPER_ADMIN_EMAIL:-}
+      BOOTSTRAP_SUPER_ADMIN_PASSWORD: ${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-}
+      MIGRATION_TEMP_PASSWORD: ${MIGRATION_TEMP_PASSWORD:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - siteops_uploads:/app/uploads
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+        VITE_SUPABASE_URL: ${SUPABASE_PUBLIC_URL:-http://127.0.0.1:54321}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
     container_name: siteops_mvp_frontend
     restart: unless-stopped
     depends_on:
@@ -44,5 +36,4 @@ services:
       - "3000:3000"
 
 volumes:
-  siteops_mvp_data:
   siteops_uploads:

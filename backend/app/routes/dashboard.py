@@ -1,30 +1,58 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import case, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
+
 from app.auth import current_user
 from app.database import get_db
-from app.models import RoleModulePermission, User, UserRole
+from app.models import User, UserRole
+from app.services.access_control import access_catalog, manageable_roles
 from app.services.serializers import public_user
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
+
 @router.get("/health")
-def health(): return {"ok": True}
+def health():
+    return {"ok": True}
+
 
 @router.get("/me")
-def me(user: User = Depends(current_user)): return public_user(user)
+def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return public_user(user, db)
+
 
 @router.get("/dashboard")
 def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    users=[]
-    if user.role in {UserRole.super_admin,UserRole.admin}:
-        stmt=select(User).order_by(case((User.role==UserRole.super_admin,0),(User.role==UserRole.admin,1),(User.role==UserRole.project_manager,2),else_=3),User.created_at.desc())
-        if user.role==UserRole.admin: stmt=stmt.where(User.role!=UserRole.super_admin)
-        users=[public_user(item) for item in db.scalars(stmt).all()]
-    elif user.role==UserRole.project_manager:
-        users=[public_user(item) for item in db.scalars(select(User).where(User.active.is_(True),User.role.in_([UserRole.project_manager,UserRole.supervisor])).order_by(User.name)).all()]
-    if user.role==UserRole.super_admin: modules=["execution","communication","users","permissions"]
+    users = []
+    if user.role == UserRole.super_admin:
+        statement = select(User).order_by(
+            case(
+                (User.role == UserRole.super_admin, 0),
+                (User.role == UserRole.admin, 1),
+                (User.role == UserRole.project_manager, 2),
+                (User.role == UserRole.supervisor, 3),
+                else_=4,
+            ),
+            User.name,
+        )
+        users = [public_user(item, db) for item in db.scalars(statement).all()]
+    elif user.role == UserRole.admin:
+        managed = manageable_roles(user.role)
+        statement = select(User).where(or_(User.id == user.id, User.role.in_(managed))).order_by(User.active.desc(), User.name)
+        users = [public_user(item, db) for item in db.scalars(statement).all()]
+    elif user.role in {UserRole.project_manager, UserRole.supervisor}:
+        statement = select(User).where(User.active.is_(True), User.role.in_([UserRole.project_manager, UserRole.supervisor])).order_by(User.name)
+        users = [public_user(item, db) for item in db.scalars(statement).all()]
+
+    if user.role in {UserRole.super_admin, UserRole.admin, UserRole.project_manager, UserRole.supervisor}:
+        modules = ["projects", "execution", "communication", "users"]
     else:
-        modules=[item.module_key for item in db.scalars(select(RoleModulePermission).where(RoleModulePermission.role==user.role.value,RoleModulePermission.can_view.is_(True))).all()]
-        if not modules: modules=["execution","communication"]
-    return {"user":public_user(user),"users":users,"module_permissions":modules}
+        modules = ["projects", "users"]
+
+    return {
+        "user": public_user(user, db),
+        "users": users,
+        "module_permissions": modules,
+        "access_catalog": access_catalog(),
+        "manageable_roles": [role.value for role in manageable_roles(user.role)],
+    }
