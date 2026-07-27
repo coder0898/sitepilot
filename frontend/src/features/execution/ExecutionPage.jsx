@@ -8,6 +8,17 @@ import { DelayReportModal, ProjectModal, ProjectSettingsModal, RescheduleTaskMod
 const empty = { projects: [], days: [], tasks: [], users: [], contractors: [], categories: [], relationships: [], templates: [] };
 const prettyStatus = value => String(value || "assigned").replaceAll("_", " ");
 
+export function sanitizeLegacyExecutionWorkspace(payload, role) {
+  const next = { ...empty, ...(payload || {}) };
+  if (!["super_admin", "admin", "project_manager"].includes(role)) {
+    return { ...next, templates: [] };
+  }
+  if (role !== "super_admin") {
+    return { ...next, templates: (next.templates || []).filter(template => template.active) };
+  }
+  return next;
+}
+
 export function ExecutionPage({ user, action }) {
   const [data, setData] = useState(empty);
   const [projectId, setProjectId] = useState("");
@@ -29,8 +40,9 @@ export function ExecutionPage({ user, action }) {
     requestRef.current = { controller, promise };
     setExecutionLoading(true);
     try {
-      const next = await promise;
-      setData({ ...empty, ...next });
+      const response = await promise;
+      const next = sanitizeLegacyExecutionWorkspace(response, user.role);
+      setData(next);
       setSelectedTask(current => current ? next.tasks.find(task => task.id === current.id) || null : null);
       setSelectedTemplate(current => current ? next.templates.find(template => template.id === current.id) || null : null);
       setProjectId(current => next.projects.some(project => project.id === current) ? current : next.projects[0]?.id || "");

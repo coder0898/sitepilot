@@ -364,6 +364,52 @@ def sync_project_contractor_mapping(task, actor_id, db):
             created_by=actor_id,
         ))
 
+def serialize_legacy_execution_templates(templates, template_tasks_by_id, template_project_counts, role):
+    """Return only legacy execution-template data needed by the caller's role.
+
+    This route must never become an alternate read path for the governed V2
+    template module. Non-super-admin roles receive only active legacy
+    blueprints required for project creation; template-management metadata is
+    reserved for Super Admin. Supervisor and Internal Employee receive none.
+    """
+    if role not in MANAGERS:
+        return []
+
+    visible_templates = templates if role == UserRole.super_admin else [item for item in templates if item.active]
+    result = []
+    for template in visible_templates:
+        item = {
+            "id": str(template.id),
+            "name": template.name,
+            "project_type": template.project_type,
+            "duration_days": template.duration_days,
+            "active": template.active,
+            "tasks": [{
+                "id": str(task.id),
+                "day_no": task.day_no,
+                "title": task.title,
+                "category": task.category,
+                "category_id": str(task.category_id) if task.category_id else None,
+                "subcategory_id": str(task.subcategory_id) if task.subcategory_id else None,
+                "priority": task.priority,
+                "instructions": task.instructions,
+                "materials_required": task.materials_required,
+                "material_reminder": task.material_reminder,
+                "reminder_lead_days": task.reminder_lead_days,
+            } for task in template_tasks_by_id.get(template.id, [])],
+        }
+        if role == UserRole.super_admin:
+            used_count = template_project_counts.get(template.id, 0)
+            item.update({
+                "used_project_count": used_count,
+                "can_delete": used_count == 0,
+                "created_at": template.created_at.isoformat() if template.created_at else None,
+                "updated_at": template.updated_at.isoformat() if template.updated_at else None,
+            })
+        result.append(item)
+    return result
+
+
 @router.get("")
 def workspace(user: User = Depends(current_user), db: Session = Depends(get_db)):
     projects = visible_projects(user, db)
@@ -391,7 +437,14 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
         or (item.parent_vendor_id and main_status_by_id.get(item.parent_vendor_id) == "active")
     ]
     relations = db.scalars(select(ContractorRelationship)).all()
-    templates = db.scalars(select(ExecutionTemplate).order_by(ExecutionTemplate.active.desc(), ExecutionTemplate.name)).all()
+    templates = []
+    if user.role in MANAGERS:
+        template_stmt = select(ExecutionTemplate)
+        if user.role != UserRole.super_admin:
+            template_stmt = template_stmt.where(ExecutionTemplate.active.is_(True))
+        templates = db.scalars(
+            template_stmt.order_by(ExecutionTemplate.active.desc(), ExecutionTemplate.name)
+        ).all()
     template_ids = {template.id for template in templates}
     template_tasks = db.scalars(
         select(ExecutionTemplateTask)
@@ -400,9 +453,9 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
     ).all() if template_ids else []
     template_project_counts = dict(db.execute(
         select(ExecutionProject.template_id, func.count(ExecutionProject.id))
-        .where(ExecutionProject.template_id.is_not(None))
+        .where(ExecutionProject.template_id.in_(template_ids))
         .group_by(ExecutionProject.template_id)
-    ).all())
+    ).all()) if template_ids and user.role == UserRole.super_admin else {}
     categories = db.scalars(
         select(VendorCategory)
         .where(VendorCategory.active.is_(True))
@@ -473,30 +526,9 @@ def workspace(user: User = Depends(current_user), db: Session = Depends(get_db))
             "main_contractor_id": str(item.main_contractor_id),
             "subcontractor_id": str(item.subcontractor_id),
         } for item in relations],
-        "templates": [{
-            "id": str(template.id),
-            "name": template.name,
-            "project_type": template.project_type,
-            "duration_days": template.duration_days,
-            "active": template.active,
-            "used_project_count": template_project_counts.get(template.id, 0),
-            "can_delete": template_project_counts.get(template.id, 0) == 0,
-            "created_at": template.created_at.isoformat() if template.created_at else None,
-            "updated_at": template.updated_at.isoformat() if template.updated_at else None,
-            "tasks": [{
-                "id": str(item.id),
-                "day_no": item.day_no,
-                "title": item.title,
-                "category": item.category,
-                "category_id": str(item.category_id) if item.category_id else None,
-                "subcategory_id": str(item.subcategory_id) if item.subcategory_id else None,
-                "priority": item.priority,
-                "instructions": item.instructions,
-                "materials_required": item.materials_required,
-                "material_reminder": item.material_reminder,
-                "reminder_lead_days": item.reminder_lead_days,
-            } for item in template_tasks_by_id.get(template.id, [])],
-        } for template in templates],
+        "templates": serialize_legacy_execution_templates(
+            templates, template_tasks_by_id, template_project_counts, user.role
+        ),
     }
 
 def validated_template_tasks(payload: ExecutionTemplateIn, db: Session) -> list[tuple[uuid.UUID | None, dict]]:
