@@ -6,3 +6,7 @@ docker-compose.yml
 npm-debug.log*
 .env.local
 .env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example

@@ -2,10 +2,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Project, ProjectTask, TaskStatus, User, UserRole, Vendor
+from app.models import EmployeeProfile, Project, ProjectTask, TaskStatus, User, UserRole, Vendor
 
 
-def public_user(user: User) -> dict:
+def public_user(user: User, db: Session | None = None) -> dict:
+    profile = db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == user.id)) if db else None
     return {
         "id": str(user.id),
         "name": user.name,
@@ -13,10 +14,17 @@ def public_user(user: User) -> dict:
         "phone": user.phone,
         "role": user.role.value,
         "active": user.active,
+        "activation_status": "offboarded" if not user.active else ("active" if user.activated_at else "setup_pending"),
+        "activated_at": user.activated_at.isoformat() if user.activated_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "created_at": user.created_at.isoformat() if user.created_at else None,
+        "employee_profile": {
+            "employee_code": profile.employee_code,
+            "designation": profile.designation,
+            "department": profile.department,
+            "availability": profile.availability,
+        } if profile else None,
     }
-
 
 def public_vendor(vendor: Vendor) -> dict:
     return {

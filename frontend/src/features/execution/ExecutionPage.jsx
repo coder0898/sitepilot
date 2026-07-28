@@ -3,16 +3,28 @@ import { Activity, AlertTriangle, BriefcaseBusiness, CalendarDays, CheckCircle2,
 import { executionApi } from "../../api/executionApi";
 import { Button, ConfirmModal, Pill } from "../../components/ui";
 import { DayColumn, ExecutionMetric as Metric, TeamMember } from "./components/ExecutionOverview";
-import { DelayReportModal, ProjectModal, ProjectSettingsModal, RescheduleTaskModal, TaskDetail, TaskModal, TemplateModal, TemplateView } from "./components/ExecutionModals";
+import { DelayReportModal, ProjectModal, ProjectSettingsModal, RescheduleTaskModal, TaskAssignmentModal, TaskDetail, TaskModal, TemplateDetail, TemplateModal, TemplateView } from "./components/ExecutionModals";
 
 const empty = { projects: [], days: [], tasks: [], users: [], contractors: [], categories: [], relationships: [], templates: [] };
 const prettyStatus = value => String(value || "assigned").replaceAll("_", " ");
+
+export function sanitizeLegacyExecutionWorkspace(payload, role) {
+  const next = { ...empty, ...(payload || {}) };
+  if (!["super_admin", "admin", "project_manager"].includes(role)) {
+    return { ...next, templates: [] };
+  }
+  if (role !== "super_admin") {
+    return { ...next, templates: (next.templates || []).filter(template => template.active) };
+  }
+  return next;
+}
 
 export function ExecutionPage({ user, action }) {
   const [data, setData] = useState(empty);
   const [projectId, setProjectId] = useState("");
   const [form, setForm] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [view, setView] = useState("schedule");
   const [executionLoading, setExecutionLoading] = useState(false);
@@ -28,9 +40,11 @@ export function ExecutionPage({ user, action }) {
     requestRef.current = { controller, promise };
     setExecutionLoading(true);
     try {
-      const next = await promise;
-      setData({ ...empty, ...next });
+      const response = await promise;
+      const next = sanitizeLegacyExecutionWorkspace(response, user.role);
+      setData(next);
       setSelectedTask(current => current ? next.tasks.find(task => task.id === current.id) || null : null);
+      setSelectedTemplate(current => current ? next.templates.find(template => template.id === current.id) || null : null);
       setProjectId(current => next.projects.some(project => project.id === current) ? current : next.projects[0]?.id || "");
       return next;
     } finally {
@@ -85,15 +99,25 @@ export function ExecutionPage({ user, action }) {
     payload.reminder_lead_days = 1;
     await perform(() => selectedTask ? executionApi.updateTask(selectedTask.id, payload) : executionApi.createTask(payload), selectedTask ? "Task updated" : "Task created");
   }
-  async function createTemplate(event) {
-    event.preventDefault();
-    const fields = new FormData(event.currentTarget);
-    const duration = Number(fields.get("duration_days"));
-    const templateTasks = [];
-    for (let day = 1; day <= duration; day += 1) {
-      String(fields.get(`day_${day}`) || "").split("\n").map(item => item.trim()).filter(Boolean).forEach(title => templateTasks.push({ day_no: day, title, category: "General", priority: "medium" }));
-    }
-    await perform(() => executionApi.createTemplate({ name: fields.get("name"), project_type: fields.get("project_type"), duration_days: duration, tasks: templateTasks }), "Execution template created");
+  async function createTemplate(payload) {
+    await perform(() => executionApi.createTemplate(payload), "Structured execution template created");
+  }
+  async function updateTemplate(payload) {
+    await perform(() => executionApi.updateTemplate(selectedTemplate.id, payload), "Execution template updated for future projects");
+  }
+  async function changeTemplateStatus(template) {
+    await perform(
+      () => executionApi.updateTemplateStatus(template.id, !template.active),
+      template.active ? "Template archived" : "Template reactivated"
+    );
+  }
+  async function deleteTemplate(template) {
+    await perform(() => executionApi.deleteTemplate(template.id), "Unused template deleted");
+    setSelectedTemplate(null);
+  }
+  function openTemplate(template, mode = "template-detail") {
+    setSelectedTemplate(template);
+    setForm(mode);
   }
   async function remove() { await perform(() => executionApi.deleteTask(selectedTask.id), "Task deleted"); setConfirmDelete(false); }
   async function saveProject(event) { event.preventDefault(); await perform(() => executionApi.updateProject(project.id, Object.fromEntries(new FormData(event.currentTarget))), "Project updated"); }
@@ -103,6 +127,15 @@ export function ExecutionPage({ user, action }) {
   async function reviewTask(actionName, reason) { await perform(() => executionApi.reviewTask(selectedTask.id, actionName, reason), actionName === "approve" ? "Work approved" : "Work rejected for correction"); }
   async function reportDelay(event) { event.preventDefault(); const payload = Object.fromEntries(new FormData(event.currentTarget)); await perform(() => executionApi.reportDelay(selectedTask.id, payload), "Delay reported to the Project Manager"); }
   async function rescheduleTask(payload) { return perform(() => executionApi.rescheduleTask(selectedTask.id, payload), "Task rescheduled with audit history"); }
+  async function saveAssignment(event) {
+    event.preventDefault();
+    const fields = new FormData(event.currentTarget);
+    await perform(() => executionApi.updateAssignment(selectedTask.id, {
+      assigned_contractor_id: fields.get("assigned_contractor_id") || null,
+      assigned_subcontractor_id: fields.get("assigned_subcontractor_id") || null,
+      reason: fields.get("reason") || null,
+    }), selectedTask.assigned_contractor_id ? "Task responsibility updated" : "Vendor assigned to task");
+  }
   function openTask(day) { setSelectedTask(null); setForm({ type: "task", day }); }
 
   return (
@@ -116,7 +149,7 @@ export function ExecutionPage({ user, action }) {
         </div>
       </section>
 
-      {view === "templates" && user.role === "super_admin" ? <TemplateView templates={data.templates} open={() => setForm("template")}/> : <>
+      {view === "templates" && user.role === "super_admin" ? <TemplateView templates={data.templates} open={() => { setSelectedTemplate(null); setForm("template"); }} view={template => openTemplate(template)} edit={template => openTemplate(template, "template-edit")} toggle={changeTemplateStatus}/> : <>
         <section className="exec-metrics grid grid-cols-5 gap-3 max-[1180px]:grid-cols-3 max-[720px]:grid-cols-2 max-[420px]:grid-cols-1">
           <Metric icon={<ClipboardList/>} label="Total tasks" value={tasks.length} helper={`${tasks.filter(task => task.status === "completed").length} completed`} tone="blue"/>
           <Metric icon={<Clock3/>} label="Assigned tasks" value={statusCounts.assigned || 0} helper="Ready to start" tone="orange"/>
@@ -165,13 +198,16 @@ export function ExecutionPage({ user, action }) {
       </>}
 
       {form === "project-settings" && project && <ProjectSettingsModal project={project} pms={pms} supervisors={supervisors} submit={saveProject} remove={deleteProject} close={() => setForm(null)}/>}
-      {form === "project" && <ProjectModal user={user} pms={pms} supervisors={supervisors} templates={data.templates} submit={createProject} close={() => setForm(null)}/>}
+      {form === "project" && <ProjectModal user={user} pms={pms} supervisors={supervisors} templates={data.templates.filter(template => template.active)} submit={createProject} close={() => setForm(null)}/>}
       {form?.type === "task" && <TaskModal project={project} day={form.day} task={null} supervisors={supervisors} mains={mains} subsFor={subsFor} categories={data.categories} submit={saveTask} close={() => setForm(null)}/>}
-      {selectedTask && form?.type !== "edit" && !["reschedule","delay-report"].includes(form) && <TaskDetail task={selectedTask} user={user} categories={data.categories} edit={() => setForm({ type: "edit", day: days.find(day => day.id === selectedTask.day_id) })} reportDelay={() => setForm("delay-report")} reschedule={() => setForm("reschedule")} remove={() => setConfirmDelete(true)} close={() => setSelectedTask(null)} canManage={canManage} onStatus={changeStatus} onSubmit={submitWork} onReview={reviewTask}/>}
+      {selectedTask && form?.type !== "edit" && !["reschedule","delay-report","assignment"].includes(form) && <TaskDetail task={selectedTask} user={user} categories={data.categories} assign={() => setForm("assignment")} edit={() => setForm({ type: "edit", day: days.find(day => day.id === selectedTask.day_id) })} reportDelay={() => setForm("delay-report")} reschedule={() => setForm("reschedule")} remove={() => setConfirmDelete(true)} close={() => setSelectedTask(null)} canManage={canManage} onStatus={changeStatus} onSubmit={submitWork} onReview={reviewTask}/>}
       {form?.type === "edit" && selectedTask && <TaskModal project={project} day={form.day} task={selectedTask} supervisors={supervisors} mains={mains} subsFor={subsFor} categories={data.categories} submit={saveTask} close={() => setForm(null)}/>}
+      {form === "assignment" && selectedTask && <TaskAssignmentModal task={selectedTask} mains={mains} subsFor={subsFor} categories={data.categories} submit={saveAssignment} close={() => setForm(null)}/>}
       {form === "delay-report" && selectedTask && <DelayReportModal task={selectedTask} submit={reportDelay} close={() => setForm(null)}/>}
       {form === "reschedule" && selectedTask && <RescheduleTaskModal task={selectedTask} submit={rescheduleTask} close={() => setForm(null)}/>}
-      {form === "template" && <TemplateModal submit={createTemplate} close={() => setForm(null)}/>}
+      {form === "template" && <TemplateModal categories={data.categories} submit={createTemplate} close={() => setForm(null)}/>}
+      {form === "template-edit" && selectedTemplate && <TemplateModal template={selectedTemplate} categories={data.categories} submit={updateTemplate} close={() => setForm("template-detail")}/>}
+      {form === "template-detail" && selectedTemplate && <TemplateDetail template={selectedTemplate} categories={data.categories} edit={() => setForm("template-edit")} toggle={() => changeTemplateStatus(selectedTemplate)} remove={() => deleteTemplate(selectedTemplate)} close={() => { setForm(null); setSelectedTemplate(null); }}/>}
       {confirmDelete && <ConfirmModal title="Delete task?" message="This permanently removes the task and its recorded workflow history." confirmLabel="Delete task" onClose={() => setConfirmDelete(false)} onConfirm={remove}/>}
     </div>
   );

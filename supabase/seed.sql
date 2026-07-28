@@ -1,0 +1,1 @@
+-- Local Supabase seed file. SiteOps bootstrap data is currently created by FastAPI.

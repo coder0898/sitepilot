@@ -3,3 +3,9 @@ node_modules
 .env.local
 .env
 npm-debug.log*
+# Never commit runtime secrets
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example

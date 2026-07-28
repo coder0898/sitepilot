@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { clearSession } from "../../api/client";
 import { dashboardApi } from "../../api/dashboardApi";
 import { AppLayout } from "../../components/layout/AppLayout";
 import { visibleTabs } from "../../config/tabs";
@@ -7,7 +6,7 @@ import { DashboardTab } from "./DashboardTab";
 
 export function Dashboard({ initialUser, onLogout }) {
   const [data, setData] = useState(null);
-  const [tab, setTab] = useState("execution");
+  const [tab, setTab] = useState("projects");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -18,12 +17,11 @@ export function Dashboard({ initialUser, onLogout }) {
     } catch (error) {
       const message = String(error.message || "").toLowerCase();
       if (message.includes("login") || message.includes("session") || message.includes("inactive")) {
-        clearSession();
         onLogout();
         return;
       }
       setNotice(error.message);
-      setData({ user: initialUser, users: [], module_permissions: ["execution", "communication"] });
+      setData({ user: initialUser, users: [], module_permissions: ["projects", "execution", "communication"] });
     } finally {
       setLoading(false);
     }
@@ -34,7 +32,7 @@ export function Dashboard({ initialUser, onLogout }) {
   }, []);
 
   const user = data?.user || initialUser;
-  const tabs = visibleTabs(data?.module_permissions || ["execution"]);
+  const tabs = visibleTabs(data?.module_permissions || ["users"], user.role);
 
   useEffect(() => {
     if (data && !tabs.some(([key]) => key === tab)) {

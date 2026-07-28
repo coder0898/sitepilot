@@ -1,40 +1,58 @@
-﻿const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:8000`;
+import { supabase } from "../lib/supabase";
+
+const API_BASE = import.meta.env.VITE_API_BASE || (window.location.protocol + "//" + window.location.hostname + ":8000");
+
+export class ApiError extends Error {
+  constructor(message, status, details = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.details = details;
+  }
+}
 
 export function assetUrl(path) {
   if (!path) return "";
   if (path.startsWith("http")) return path;
-  return `${API_BASE}${path}`;
+  return API_BASE + path;
 }
 
-function token() {
-  return localStorage.getItem("siteops_token");
-}
+async function request(path, options, allowRefresh) {
+  const { authFailure = "redirect", ...fetchOptions } = options;
+  const headers = { ...(fetchOptions.headers || {}) };
+  if (!(fetchOptions.body instanceof FormData)) headers["Content-Type"] = "application/json";
 
-export async function api(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  if (token()) headers.Authorization = `Bearer ${token()}`;
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) headers.Authorization = "Bearer " + session.access_token;
+
+  let response = await fetch(API_BASE + path, { ...fetchOptions, headers });
+
+  if (response.status === 401 && authFailure !== "preserve" && allowRefresh) {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (!error && data.session?.access_token) {
+      headers.Authorization = "Bearer " + data.session.access_token;
+      response = await fetch(API_BASE + path, { ...fetchOptions, headers });
+    }
+  }
+
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!response.ok) throw new Error(data?.detail || data?.message || "Something went wrong");
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; }
+  catch { data = { message: text }; }
+
+  if (!response.ok) {
+    const message = data?.detail || data?.message || "Something went wrong";
+    if (response.status === 401 && authFailure !== "preserve") {
+      await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+      window.dispatchEvent(new CustomEvent("siteops:session-expired", {
+        detail: { message: "Your session expired. Sign in again to continue." },
+      }));
+    }
+    throw new ApiError(message, response.status, data);
+  }
   return data;
 }
 
-export function saveSession(data) {
-  localStorage.setItem("siteops_token", data.token);
-  localStorage.setItem("siteops_user", JSON.stringify(data.user));
-}
-
-export function clearSession() {
-  localStorage.removeItem("siteops_token");
-  localStorage.removeItem("siteops_user");
-}
-
-export function cachedUser() {
-  try {
-    return JSON.parse(localStorage.getItem("siteops_user") || "null");
-  } catch {
-    return null;
-  }
+export function api(path, options = {}) {
+  return request(path, options, true);
 }

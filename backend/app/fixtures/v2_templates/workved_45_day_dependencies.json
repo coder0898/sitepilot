@@ -1,0 +1,348 @@
+{
+  "template_code": "workved_45_day_permanent",
+  "version": "1.0.0",
+  "dependencies": [
+    {
+      "code": "D001",
+      "predecessor_task_code": "T001",
+      "successor_task_code": "T010",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Approved layout before site marking",
+      "sequence": 1
+    },
+    {
+      "code": "D002",
+      "predecessor_task_code": "T009",
+      "successor_task_code": "T005",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Verified measurements before final shop drawings",
+      "sequence": 2
+    },
+    {
+      "code": "D003",
+      "predecessor_task_code": "T010",
+      "successor_task_code": "T023",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Partition setting-out before coordinated service routes",
+      "sequence": 3
+    },
+    {
+      "code": "D004",
+      "predecessor_task_code": "T023",
+      "successor_task_code": "T020",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Approved routes before cutting/chasing/core cutting",
+      "sequence": 4
+    },
+    {
+      "code": "D005",
+      "predecessor_task_code": "T016",
+      "successor_task_code": "T021",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Dismantling before new masonry",
+      "sequence": 5
+    },
+    {
+      "code": "D006",
+      "predecessor_task_code": "T031",
+      "successor_task_code": "T024",
+      "dependency_type": "start_to_start",
+      "blocking": true,
+      "rule_text": "Electrical containment may proceed within partition framing",
+      "sequence": 6
+    },
+    {
+      "code": "D007",
+      "predecessor_task_code": "T030",
+      "successor_task_code": "T037",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Concealed-services inspection before first-side closure",
+      "sequence": 7
+    },
+    {
+      "code": "D008",
+      "predecessor_task_code": "T030",
+      "successor_task_code": "T046",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Concealed-services inspection before final partition closure",
+      "sequence": 8
+    },
+    {
+      "code": "D009",
+      "predecessor_task_code": "T035",
+      "successor_task_code": "T036",
+      "dependency_type": "start_to_start",
+      "blocking": true,
+      "rule_text": "Ceiling framework coordinated with MEP services",
+      "sequence": 9
+    },
+    {
+      "code": "D010",
+      "predecessor_task_code": "T041",
+      "successor_task_code": "T048",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "HVAC pressure testing before ceiling closure",
+      "sequence": 10
+    },
+    {
+      "code": "D011",
+      "predecessor_task_code": "T042",
+      "successor_task_code": "T048",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Fire pressure testing before ceiling closure",
+      "sequence": 11
+    },
+    {
+      "code": "D012",
+      "predecessor_task_code": "T039",
+      "successor_task_code": "T040",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Waterproofing and curing before pond test/tiling",
+      "sequence": 12
+    },
+    {
+      "code": "D013",
+      "predecessor_task_code": "T038",
+      "successor_task_code": "T059",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Accepted floor level before sensitive floor finishes",
+      "sequence": 13
+    },
+    {
+      "code": "D014",
+      "predecessor_task_code": "T034",
+      "successor_task_code": "T051",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Stable channels/openings before final glass measurement",
+      "sequence": 14
+    },
+    {
+      "code": "D015",
+      "predecessor_task_code": "T051",
+      "successor_task_code": "T052",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Glass fabrication release before installation",
+      "sequence": 15
+    },
+    {
+      "code": "D016",
+      "predecessor_task_code": "T047",
+      "successor_task_code": "T053",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Jointing and sanding before primer",
+      "sequence": 16
+    },
+    {
+      "code": "D017",
+      "predecessor_task_code": "T053",
+      "successor_task_code": "T054",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Primer before paint coats",
+      "sequence": 17
+    },
+    {
+      "code": "D018",
+      "predecessor_task_code": "T048",
+      "successor_task_code": "T059",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Major ceiling closure before final flooring",
+      "sequence": 18
+    },
+    {
+      "code": "D019",
+      "predecessor_task_code": "T059",
+      "successor_task_code": "T062",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Finished flooring ready before workstation installation",
+      "sequence": 19
+    },
+    {
+      "code": "D020",
+      "predecessor_task_code": "T054",
+      "successor_task_code": "T062",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Primary wall finish complete before furniture installation",
+      "sequence": 20
+    },
+    {
+      "code": "D021",
+      "predecessor_task_code": "T043",
+      "successor_task_code": "T056",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Cable pulling before electrical second fix",
+      "sequence": 21
+    },
+    {
+      "code": "D022",
+      "predecessor_task_code": "T044",
+      "successor_task_code": "T069",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Data cable pulling before termination",
+      "sequence": 22
+    },
+    {
+      "code": "D023",
+      "predecessor_task_code": "T069",
+      "successor_task_code": "T070",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Data termination before network equipment testing",
+      "sequence": 23
+    },
+    {
+      "code": "D024",
+      "predecessor_task_code": "T056",
+      "successor_task_code": "T077",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Electrical installation before testing",
+      "sequence": 24
+    },
+    {
+      "code": "D025",
+      "predecessor_task_code": "T057",
+      "successor_task_code": "T079",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "HVAC second fix before commissioning",
+      "sequence": 25
+    },
+    {
+      "code": "D026",
+      "predecessor_task_code": "T058",
+      "successor_task_code": "T080",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Plumbing second fix before testing",
+      "sequence": 26
+    },
+    {
+      "code": "D027",
+      "predecessor_task_code": "T073",
+      "successor_task_code": "T081",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Fire device installation before system testing",
+      "sequence": 27
+    },
+    {
+      "code": "D028",
+      "predecessor_task_code": "T071",
+      "successor_task_code": "T082",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Security-device installation before testing",
+      "sequence": 28
+    },
+    {
+      "code": "D029",
+      "predecessor_task_code": "T077",
+      "successor_task_code": "T083",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Electrical testing before joint inspection",
+      "sequence": 29
+    },
+    {
+      "code": "D030",
+      "predecessor_task_code": "T079",
+      "successor_task_code": "T083",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "HVAC testing before joint inspection",
+      "sequence": 30
+    },
+    {
+      "code": "D031",
+      "predecessor_task_code": "T081",
+      "successor_task_code": "T083",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Fire testing before joint inspection",
+      "sequence": 31
+    },
+    {
+      "code": "D032",
+      "predecessor_task_code": "T083",
+      "successor_task_code": "T084",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Joint inspection before rectification",
+      "sequence": 32
+    },
+    {
+      "code": "D033",
+      "predecessor_task_code": "T085",
+      "successor_task_code": "T086",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Snag list before finish rectification",
+      "sequence": 33
+    },
+    {
+      "code": "D034",
+      "predecessor_task_code": "T084",
+      "successor_task_code": "T095",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Critical technical defects rectified before client inspection",
+      "sequence": 34
+    },
+    {
+      "code": "D035",
+      "predecessor_task_code": "T090",
+      "successor_task_code": "T095",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Deep cleaning before client inspection",
+      "sequence": 35
+    },
+    {
+      "code": "D036",
+      "predecessor_task_code": "T093",
+      "successor_task_code": "T097",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Handover dossier compiled before submission",
+      "sequence": 36
+    },
+    {
+      "code": "D037",
+      "predecessor_task_code": "T094",
+      "successor_task_code": "T097",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "As-built drawings finalized before submission",
+      "sequence": 37
+    },
+    {
+      "code": "D038",
+      "predecessor_task_code": "T095",
+      "successor_task_code": "T099",
+      "dependency_type": "finish_to_start",
+      "blocking": true,
+      "rule_text": "Client inspection before final handover sign-off",
+      "sequence": 38
+    }
+  ]
+}

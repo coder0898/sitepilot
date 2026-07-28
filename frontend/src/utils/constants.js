@@ -3,6 +3,7 @@
   admin: "Admin",
   project_manager: "Project Manager",
   supervisor: "Supervisor",
+  internal_employee: "Internal Employee",
 };
 
 export const categories = [
