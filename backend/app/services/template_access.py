@@ -61,3 +61,7 @@ def published_template_statuses(role_or_user: UserRole | User) -> frozenset[str]
     """Return a reusable published-only filter after the module role check."""
     require_template_module_access(role_or_user)
     return frozenset({"published"})
+
+# Phase 2 mutation authorization is intentionally separate from read visibility.
+# Re-exported here for discoverability while preserving all Phase 1 behavior.
+from app.services.template_mutation_access import require_template_mutator  # noqa: E402,F401

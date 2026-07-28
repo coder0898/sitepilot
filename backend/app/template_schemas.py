@@ -64,6 +64,7 @@ class TemplateVersionResponse(BaseModel):
     gate_count: int
     created_at: datetime
     published_at: datetime | None
+    revision_token: str
 
 
 class TemplateTaskItem(BaseModel):

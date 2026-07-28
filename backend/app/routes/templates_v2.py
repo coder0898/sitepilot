@@ -1,15 +1,26 @@
-"""Read-only V2 template list, version, and task APIs."""
+"""V2 template query and controlled mutation APIs."""
 from __future__ import annotations
 
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import User, UserRole
 from app.services.template_access import require_template_reader
+from app.services.template_commands import TemplateCommandService
+from app.services.template_task_commands import TemplateTaskCommandService
+from app.services.template_dependency_commands import TemplateDependencyCommandService
+from app.services.template_gate_commands import TemplateGateCommandService
+from app.services.template_draft_validator import TemplateDraftValidationService
+from app.services.template_publish_service import TemplatePublishService
+from app.services.template_lifecycle_service import TemplateLifecycleService
+from app.services.template_mutation_access import (
+    concurrency_token,
+    require_template_mutator,
+)
 from app.services.template_queries import TemplateQueryService
 from app.template_schemas import (
     PaginationMetadata,
@@ -19,9 +30,260 @@ from app.template_schemas import (
     TemplateTaskListResponse,
     TemplateVersionResponse,
 )
+from app.template_mutation_schemas import (
+    TemplateCloneMutationResponse,
+    TemplateCloneRequest,
+    TemplateCreateRequest,
+    TemplateDraftMutationResponse,
+)
 
-
+from app.template_dependency_mutation_schemas import (
+    TemplateDependencyCreateRequest,
+    TemplateDependencyDeleteResponse,
+    TemplateDependencyMutationResponse,
+    TemplateDependencyUpdateRequest,
+)
+from app.template_gate_mutation_schemas import (
+    TemplateGateCreateRequest,
+    TemplateGateDeleteResponse,
+    TemplateGateMappingRequest,
+    TemplateGateMutationResponse,
+    TemplateGateUpdateRequest,
+)
+from app.template_validation_schemas import TemplateValidationResponse
+from app.template_publish_schemas import TemplatePublishRequest, TemplatePublishResponse
+from app.template_lifecycle_schemas import TemplateArchiveVersionRequest, TemplateArchiveVersionResponse, TemplateDeleteDraftRequest, TemplateDeleteDraftResponse
+from app.template_task_mutation_schemas import (
+    TemplateTaskCreateRequest,
+    TemplateTaskDeleteResponse,
+    TemplateTaskMutationResponse,
+    TemplateTaskReorderRequest,
+    TemplateTaskReorderResponse,
+    TemplateTaskUpdateRequest,
+)
 router = APIRouter(prefix="/api/v2/templates", tags=["v2-templates"])
+
+@router.delete("/versions/{version_id}", response_model=TemplateDeleteDraftResponse)
+def delete_draft_template_version(
+    version_id: uuid.UUID,
+    payload: TemplateDeleteDraftRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateDeleteDraftResponse:
+    return TemplateLifecycleService(db).delete_unused_draft(actor, version_id, payload)
+
+@router.post("/versions/{version_id}/archive", response_model=TemplateArchiveVersionResponse)
+def archive_template_version(
+    version_id: uuid.UUID,
+    payload: TemplateArchiveVersionRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateArchiveVersionResponse:
+    return TemplateLifecycleService(db).archive_published_version(actor, version_id, payload)
+
+@router.post("/versions/{version_id}/publish", response_model=TemplatePublishResponse)
+def publish_template_version(
+    version_id: uuid.UUID,
+    payload: TemplatePublishRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplatePublishResponse:
+    return TemplatePublishService(db).publish(actor, version_id, payload)
+
+@router.post("/versions/{version_id}/validate", response_model=TemplateValidationResponse)
+def validate_template_version(
+    version_id: uuid.UUID,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateValidationResponse:
+    return TemplateDraftValidationService(db).validate(actor, version_id)
+
+@router.post("", response_model=TemplateDraftMutationResponse, status_code=status.HTTP_201_CREATED)
+def create_template(
+    payload: TemplateCreateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateDraftMutationResponse:
+    return TemplateCommandService(db).create_template(actor, payload)
+
+
+@router.post(
+    "/versions/{version_id}/clone",
+    response_model=TemplateCloneMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def clone_template_version(
+    version_id: uuid.UUID,
+    payload: TemplateCloneRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateCloneMutationResponse:
+    return TemplateCommandService(db).clone_version(actor, version_id, payload)
+
+
+@router.post(
+    "/versions/{version_id}/tasks",
+    response_model=TemplateTaskMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_template_task(
+    version_id: uuid.UUID,
+    payload: TemplateTaskCreateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateTaskMutationResponse:
+    return TemplateTaskCommandService(db).create_task(actor, version_id, payload)
+
+
+@router.post(
+    "/versions/{version_id}/tasks/reorder",
+    response_model=TemplateTaskReorderResponse,
+)
+def reorder_template_tasks(
+    version_id: uuid.UUID,
+    payload: TemplateTaskReorderRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateTaskReorderResponse:
+    return TemplateTaskCommandService(db).reorder_tasks(actor, version_id, payload)
+
+
+@router.patch(
+    "/versions/{version_id}/tasks/{task_id}",
+    response_model=TemplateTaskMutationResponse,
+)
+def update_template_task(
+    version_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TemplateTaskUpdateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateTaskMutationResponse:
+    return TemplateTaskCommandService(db).update_task(actor, version_id, task_id, payload)
+
+
+@router.delete(
+    "/versions/{version_id}/tasks/{task_id}",
+    response_model=TemplateTaskDeleteResponse,
+)
+def delete_template_task(
+    version_id: uuid.UUID,
+    task_id: uuid.UUID,
+    revision_token: str = Query(min_length=1, max_length=100),
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateTaskDeleteResponse:
+    return TemplateTaskCommandService(db).delete_task(
+        actor,
+        version_id,
+        task_id,
+        revision_token=revision_token,
+    )
+
+@router.post(
+    "/versions/{version_id}/dependencies",
+    response_model=TemplateDependencyMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_template_dependency(
+    version_id: uuid.UUID,
+    payload: TemplateDependencyCreateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateDependencyMutationResponse:
+    return TemplateDependencyCommandService(db).create_dependency(actor, version_id, payload)
+
+
+@router.patch(
+    "/versions/{version_id}/dependencies/{dependency_id}",
+    response_model=TemplateDependencyMutationResponse,
+)
+def update_template_dependency(
+    version_id: uuid.UUID,
+    dependency_id: uuid.UUID,
+    payload: TemplateDependencyUpdateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateDependencyMutationResponse:
+    return TemplateDependencyCommandService(db).update_dependency(
+        actor, version_id, dependency_id, payload
+    )
+
+
+@router.delete(
+    "/versions/{version_id}/dependencies/{dependency_id}",
+    response_model=TemplateDependencyDeleteResponse,
+)
+def delete_template_dependency(
+    version_id: uuid.UUID,
+    dependency_id: uuid.UUID,
+    revision_token: str = Query(min_length=1, max_length=100),
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateDependencyDeleteResponse:
+    return TemplateDependencyCommandService(db).delete_dependency(
+        actor, version_id, dependency_id, revision_token=revision_token
+    )
+
+
+@router.post(
+    "/versions/{version_id}/gates",
+    response_model=TemplateGateMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_template_gate(
+    version_id: uuid.UUID,
+    payload: TemplateGateCreateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateGateMutationResponse:
+    return TemplateGateCommandService(db).create_gate(actor, version_id, payload)
+
+
+@router.patch(
+    "/versions/{version_id}/gates/{gate_id}",
+    response_model=TemplateGateMutationResponse,
+)
+def update_template_gate(
+    version_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    payload: TemplateGateUpdateRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateGateMutationResponse:
+    return TemplateGateCommandService(db).update_gate(actor, version_id, gate_id, payload)
+
+
+@router.put(
+    "/versions/{version_id}/gates/{gate_id}/mappings",
+    response_model=TemplateGateMutationResponse,
+)
+def configure_template_gate_mappings(
+    version_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    payload: TemplateGateMappingRequest,
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateGateMutationResponse:
+    return TemplateGateCommandService(db).configure_mappings(
+        actor, version_id, gate_id, payload
+    )
+
+
+@router.delete(
+    "/versions/{version_id}/gates/{gate_id}",
+    response_model=TemplateGateDeleteResponse,
+)
+def delete_template_gate(
+    version_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    revision_token: str = Query(min_length=1, max_length=100),
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateGateDeleteResponse:
+    return TemplateGateCommandService(db).delete_gate(
+        actor, version_id, gate_id, revision_token=revision_token
+    )
 
 
 @router.get("", response_model=TemplateListResponse)
@@ -51,7 +313,10 @@ def get_template_version(
     actor: User = Depends(require_template_reader),
     db: Session = Depends(get_db),
 ) -> TemplateVersionResponse:
-    return TemplateVersionResponse.model_validate(TemplateQueryService(db).get_version(actor, version_id))
+    version = TemplateQueryService(db).get_version(actor, version_id)
+    return TemplateVersionResponse.model_validate(
+        {**version.to_dict(), "revision_token": concurrency_token(version)}
+    )
 
 
 @router.get("/versions/{version_id}/tasks", response_model=TemplateTaskListResponse)

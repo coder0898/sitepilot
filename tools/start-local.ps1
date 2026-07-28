@@ -32,7 +32,8 @@ $supabaseStartOutput = & npx supabase start -x realtime,storage-api,imgproxy,pos
 $supabaseStartExitCode = $LASTEXITCODE
 $ErrorActionPreference = $previousErrorActionPreference
 if ($supabaseStartExitCode -ne 0) {
-    throw "Supabase local stack failed to start."
+    $supabaseStartOutput | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+    throw "Supabase local stack failed to start. Review the Supabase output above."
 }
 
 $statusOutput = & npx supabase status -o env
@@ -50,10 +51,16 @@ $statusOutput | ForEach-Object {
 $apiUrl = First-Value $local @("API_URL", "SUPABASE_URL")
 $publishableKey = First-Value $local @("PUBLISHABLE_KEY", "ANON_KEY")
 $secretKey = First-Value $local @("SECRET_KEY", "SERVICE_ROLE_KEY")
+$dbUrl = First-Value $local @("DB_URL")
+$mailpitUrl = First-Value $local @("INBUCKET_URL")
 
-if (-not $apiUrl -or -not $publishableKey -or -not $secretKey) {
-    throw "Supabase started, but the required local API keys were not returned."
+if (-not $apiUrl -or -not $publishableKey -or -not $secretKey -or -not $dbUrl) {
+    throw "Supabase started, but the required local API keys or database URL were not returned."
 }
+
+$backendApiUrl = $apiUrl -replace '^https?://(127\.0\.0\.1|localhost)', 'http://host.docker.internal'
+$backendDbUrl = $dbUrl -replace '^postgresql://', 'postgresql+psycopg://'
+$backendDbUrl = $backendDbUrl -replace '@(127\.0\.0\.1|localhost):', '@host.docker.internal:'
 
 $existing = Read-ExistingEnv
 $bootstrapEmail = First-Value $existing @("BOOTSTRAP_SUPER_ADMIN_EMAIL")
@@ -67,11 +74,11 @@ if (-not $migrationPassword) { $migrationPassword = "LocalMigration!2026" }
 $envLines = @(
     "# Generated for the local Supabase CLI stack. Git ignored.",
     "SUPABASE_PUBLIC_URL=$apiUrl",
-    "SUPABASE_BACKEND_URL=http://host.docker.internal:54321",
+    "SUPABASE_BACKEND_URL=$backendApiUrl",
     "SUPABASE_PUBLISHABLE_KEY=$publishableKey",
     "SUPABASE_SECRET_KEY=$secretKey",
     "FRONTEND_URL=http://localhost:3000",
-    "DATABASE_URL=postgresql+psycopg://postgres:postgres@host.docker.internal:54322/postgres",
+    "DATABASE_URL=$backendDbUrl",
     "",
     "BOOTSTRAP_SUPER_ADMIN_EMAIL=$bootstrapEmail",
     "BOOTSTRAP_SUPER_ADMIN_PASSWORD=$bootstrapPassword",
@@ -91,6 +98,6 @@ if ($LASTEXITCODE -ne 0) { throw "SiteOps containers failed to start." }
 Write-Host ""
 Write-Host "Local SiteOps is starting."
 Write-Host "Portal: http://localhost:3000"
-Write-Host "Local email inbox: http://127.0.0.1:54324"
+if ($mailpitUrl) { Write-Host "Local email inbox: $mailpitUrl" }
 Write-Host "Super Admin: $bootstrapEmail"
 Write-Host "Run 'npm run local:status' to verify health."

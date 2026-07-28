@@ -39,9 +39,9 @@ Local endpoints:
 
 - Portal: `http://localhost:3000`
 - FastAPI: `http://localhost:8000`
-- Supabase API/Auth: `http://127.0.0.1:54321`
-- Supabase PostgreSQL: `127.0.0.1:54322`
-- Local Auth email inbox: `http://127.0.0.1:54324`
+- Supabase API/Auth: `http://127.0.0.1:15431`
+- Supabase PostgreSQL: `127.0.0.1:15432`
+- Local Auth email inbox: `http://127.0.0.1:15434`
 
 Default local login:
 
@@ -64,7 +64,7 @@ npm run local:stop
 
 Do not run `supabase stop --no-backup` or delete Docker volumes unless a destructive local reset is intended.
 
-Password recovery messages are captured locally at `http://127.0.0.1:54324`; no real email is sent.
+Password recovery messages are captured locally at `http://127.0.0.1:15434`; no real email is sent.
 
 ## Internal testing and production
 

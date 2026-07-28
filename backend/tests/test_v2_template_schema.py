@@ -12,6 +12,7 @@ from app.database import Base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / "20260725083225_v2_template_schema.sql"
+TASK_DURATION_MIGRATION = REPO_ROOT / "supabase" / "migrations" / "202607280001_v2_template_configured_duration_tasks.sql"
 TABLE_NAMES = {
     "v2_templates",
     "v2_template_versions",
@@ -26,6 +27,7 @@ class V2TemplateSchemaTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.sql = MIGRATION.read_text(encoding="utf-8")
+        cls.task_duration_sql = TASK_DURATION_MIGRATION.read_text(encoding="utf-8")
 
     def test_sql_and_sqlalchemy_table_names_match(self) -> None:
         sql_tables = set(re.findall(r"create table if not exists siteops_v2\.(v2_[a-z_]+)", self.sql))
@@ -56,6 +58,24 @@ class V2TemplateSchemaTests(unittest.TestCase):
             for value in values:
                 self.assertIn(f"'{value}'", self.sql)
                 self.assertIn(f"'{value}'", model_check_sql)
+
+    def test_configured_duration_constraint_is_owned_by_service(self) -> None:
+        self.assertIn(
+            "drop constraint if exists ck_v2_template_tasks_schedule_days",
+            self.task_duration_sql.lower(),
+        )
+        self.assertNotIn("between 1 and 45", self.task_duration_sql.lower())
+        self.assertIn("planned_start_day >= 1", self.task_duration_sql)
+        task_table = Base.metadata.tables["siteops_v2.v2_template_tasks"]
+        schedule_checks = [
+            str(constraint.sqltext)
+            for constraint in task_table.constraints
+            if isinstance(constraint, CheckConstraint)
+            and constraint.name == "ck_v2_template_tasks_schedule_days"
+        ]
+        self.assertEqual(len(schedule_checks), 1)
+        self.assertNotIn("between 1 and 45", schedule_checks[0])
+        self.assertIn("planned_start_day >= 1", schedule_checks[0])
 
     def test_primary_relationships_are_correct(self) -> None:
         expected_foreign_keys = {

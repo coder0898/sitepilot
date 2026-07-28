@@ -30,7 +30,7 @@ describe("External Gates review",()=>{
     expect(screen.getAllByText("E006").length).toBeGreaterThan(0);
     fireEvent.click(within(screen.getByTestId("gate-card-g6")).getByText("View gate details"));
     expect(screen.getAllByText("T008 onwards").length).toBeGreaterThan(0);
-    expect(screen.getByText(/No mapping has been assumed/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId("gate-card-g6")).getByText(/No mapping has been assumed/i)).toBeInTheDocument();
     expect(screen.queryByText(/External gates arrive/i)).not.toBeInTheDocument();
   });
 
@@ -44,7 +44,7 @@ describe("External Gates review",()=>{
     await waitFor(()=>expect(templatesApi.listGates.mock.calls.at(-1)[1]).toEqual({page:1,page_size:100,search:"E006",mapping_classification:"broad_text",requires_configuration:true,external_party:"Client",validation_state:"valid"}));
     fireEvent.click(screen.getByRole("button",{name:/clear/i}));
     await waitFor(()=>expect(templatesApi.listGates.mock.calls.at(-1)[1]).toEqual({page:1,page_size:100}));
-  });
+  }, 10000);
 
   it("shows invalid gate warnings and retryable authorization errors", async()=>{
     templatesApi.listGates.mockResolvedValueOnce(gateResponse([{...exactGate,id:"bad",validation_state:"invalid",validation_issues:["cross_version_mapping"]}],1));

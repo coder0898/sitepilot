@@ -62,9 +62,9 @@ function errorWithStatus(message, status) {
   return error;
 }
 
-function Harness({ role = "admin", versionId = "version-published", onBack = vi.fn() }) {
+function Harness({ role = "admin", versionId = "version-published", onBack = vi.fn(), onClone, onArchive, onDeleteDraft, onOpenDraftEditor }) {
   const [tab, setTab] = useState("tasks");
-  return <TemplateDetails versionId={versionId} user={{ role }} onBack={onBack} activeTemplateTab={tab} onTabChange={setTab} debounceMs={0}/>;
+  return <TemplateDetails versionId={versionId} user={{ role }} onBack={onBack} onClone={onClone} onArchive={onArchive} onDeleteDraft={onDeleteDraft} onOpenDraftEditor={onOpenDraftEditor} activeTemplateTab={tab} onTabChange={setTab} debounceMs={0}/>;
 }
 
 beforeEach(() => {
@@ -95,6 +95,24 @@ describe("TemplateDetails", () => {
     expect(screen.queryByRole("button", { name: /create|edit|delete|archive/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /back to templates/i }));
     expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it("shows prominent Super Admin archive and draft deletion actions", async () => {
+    const onArchive = vi.fn();
+    const onClone = vi.fn();
+    const publishedView = render(<Harness role="super_admin" onArchive={onArchive} onClone={onClone}/>);
+    await screen.findByText("Workved 45-Day Interior Delivery");
+    fireEvent.click(screen.getByRole("button", { name: /archive version/i }));
+    expect(onArchive).toHaveBeenCalledWith(expect.objectContaining({ version_id: "version-published" }));
+    publishedView.unmount();
+
+    templatesApi.getVersion.mockResolvedValue({ ...summary, version_id: "version-draft", status: "draft", is_current_published: false, published_at: null });
+    const onDeleteDraft = vi.fn();
+    const onOpenDraftEditor = vi.fn();
+    render(<Harness role="super_admin" versionId="version-draft" onDeleteDraft={onDeleteDraft} onOpenDraftEditor={onOpenDraftEditor}/>);
+    await screen.findByText("Workved 45-Day Interior Delivery");
+    fireEvent.click(screen.getByRole("button", { name: /delete draft/i }));
+    expect(onDeleteDraft).toHaveBeenCalledWith(expect.objectContaining({ version_id: "version-draft" }));
   });
 
   it("preserves backend order and sends all API filters after trimming text", async () => {

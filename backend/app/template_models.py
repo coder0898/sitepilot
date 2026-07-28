@@ -63,6 +63,7 @@ class V2TemplateVersion(Base):
             "template_id",
             unique=True,
             postgresql_where=text("is_current_published"),
+            sqlite_where=text("is_current_published"),
         ),
         Index("ix_v2_template_versions_template", "template_id", text("version_no DESC")),
         Index("ix_v2_template_versions_status", "status", text("updated_at DESC")),
@@ -111,7 +112,7 @@ class V2TemplateTask(Base):
         ),
         CheckConstraint(
             "(schedule_classification = 'pre_activation' and planned_start_day is null and planned_end_day is null) "
-            "or (schedule_classification = 'execution' and planned_start_day between 1 and 45 and planned_end_day between 1 and 45)",
+            "or (schedule_classification = 'execution' and planned_start_day >= 1 and planned_end_day >= 1)",
             name="ck_v2_template_tasks_schedule_days",
         ),
         Index("ix_v2_template_tasks_version", "template_version_id", "sequence_no"),

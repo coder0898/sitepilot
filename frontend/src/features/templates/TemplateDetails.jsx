@@ -1,20 +1,24 @@
 import {
   AlertTriangle,
+  Archive,
   ArrowLeft,
   BookOpenCheck,
   CalendarDays,
   CheckCircle2,
   Clock3,
+  Copy,
   DatabaseZap,
   FilterX,
   GitBranch,
   Layers3,
   Link2,
   ListChecks,
+  PencilLine,
   RefreshCw,
   Search,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { templatesApi } from "../../api/templatesApi";
@@ -110,7 +114,7 @@ function DependencySummary({ counts }) {
   return <section aria-label="Dependency summary" className="grid grid-cols-2 gap-3 lg:grid-cols-5">{cards.map(card => <SummaryMetric key={card.label} {...card}/>)}</section>;
 }
 
-export function TemplateDetails({ versionId, user, onBack, activeTemplateTab, onTabChange, debounceMs = 350 }) {
+export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, onDeleteDraft, onOpenDraftEditor, activeTemplateTab, onTabChange, debounceMs = 350 }) {
   const [summary, setSummary] = useState(null);
   const [versionLoading, setVersionLoading] = useState(true);
   const [versionError, setVersionError] = useState(null);
@@ -298,7 +302,15 @@ export function TemplateDetails({ versionId, user, onBack, activeTemplateTab, on
     <header className="relative overflow-hidden rounded-[26px] bg-slate-950 p-5 text-white shadow-[0_24px_70px_rgba(15,23,42,.18)] sm:p-7">
       <div aria-hidden="true" className="absolute -right-20 -top-24 size-72 rounded-full border-[42px] border-blue-500/15"/>
       <div className="relative">
-        <Button variant="ghost" className="-ml-3 text-slate-300 hover:bg-white/10 hover:text-white" onClick={onBack}><ArrowLeft size={17}/> Back to Templates</Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <Button variant="ghost" className="-ml-3 w-fit text-slate-300 hover:bg-white/10 hover:text-white" onClick={onBack}><ArrowLeft size={17}/> Back to Templates</Button>
+          <div className="grid gap-2 sm:flex sm:flex-wrap sm:justify-end" aria-label="Template version actions">
+            {onClone && summary.status !== "archived" && <Button variant="secondary" className="border-white/15 bg-white/10 text-white hover:bg-white/15" onClick={() => onClone(summary)}><Copy size={17}/> Clone as Draft</Button>}
+            {onArchive && summary.status === "published" && <Button className="bg-amber-500 text-slate-950 hover:bg-amber-400" onClick={() => onArchive(summary)}><Archive size={17}/> Archive Version</Button>}
+            {summary.status === "draft" && onOpenDraftEditor && <Button className="bg-blue-600 hover:bg-blue-500" onClick={() => onOpenDraftEditor(summary)}><PencilLine size={17}/> Open Draft Editor</Button>}
+            {summary.status === "draft" && onDeleteDraft && <Button variant="secondary" className="border-rose-300/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/25" onClick={() => onDeleteDraft(summary)}><Trash2 size={17}/> Delete Draft</Button>}
+          </div>
+        </div>
         <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[11px] font-black uppercase tracking-[.18em] text-blue-300">{summary.template_code}</span><Pill tone={statusTone(summary.status)}>{summary.status}</Pill>{summary.is_current_published && <span className="inline-flex items-center gap-1 text-xs font-black text-emerald-300"><CheckCircle2 size={15}/> Current published</span>}</div><h2 className="mt-3 max-w-3xl text-2xl font-black tracking-[-.04em] sm:text-4xl">{summary.template_name}</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">{summary.template_description || "Governed project execution schedule."}</p></div>
           <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:flex"><span className="rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3"><b className="block text-white">Version {summary.version_no}</b><small className="text-slate-400">Controlled release</small></span><span className="rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3"><b className="block text-white">{summary.duration_days} days</b><small className="text-slate-400">Planned duration</small></span><span className="col-span-2 rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3 sm:col-span-1"><b className="block text-white">{formatTemplateDate(summary.published_at)}</b><small className="text-slate-400">Published</small></span></div>
@@ -375,6 +387,6 @@ export function TemplateDetails({ versionId, user, onBack, activeTemplateTab, on
       </section>}
     </>}
 
-    <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-semibold text-slate-500"><span className="inline-flex items-center gap-2"><BookOpenCheck size={16} className="text-blue-700"/> Read-only governed template</span><span className="inline-flex items-center gap-2"><CalendarDays size={16} className="text-emerald-700"/> Accessed as {user.role.replaceAll("_", " ")}</span></footer>
+    <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-semibold text-slate-500"><span className="inline-flex items-center gap-2"><BookOpenCheck size={16} className="text-blue-700"/> {summary.status === "published" ? "Published version is view-only" : "Draft details remain unchanged until edited"}</span><span className="inline-flex items-center gap-2"><CalendarDays size={16} className="text-emerald-700"/> Accessed as {user.role.replaceAll("_", " ")}</span></footer>
   </div>;
 }
