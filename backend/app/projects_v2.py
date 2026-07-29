@@ -1,7 +1,6 @@
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
@@ -14,12 +13,6 @@ from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
 from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
 from app.schemas.projects import ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectStatusIn, ProjectUpdateIn
-from app.schemas.project_template_review import ProjectTemplateReviewSummaryOut, ProjectTemplateReviewTaskPage
-from app.schemas.project_task_applicability import ProjectTaskApplicabilityDecisionIn, ProjectTaskApplicabilityDecisionOut, ProjectTaskApplicabilityHistoryItem
-from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectManualTaskCreateOut
-from app.services.project_manual_task import ProjectManualTaskService
-from app.services.project_task_applicability import ProjectTaskApplicabilityService
-from app.services.project_template_review import ProjectTemplateReviewService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
 
@@ -428,8 +421,6 @@ def generate_project_tasks(
             duration_days=task.duration_days,
             source_type="template",
             lifecycle_status="draft",
-            included=True,
-            decision_state="pending_review",
         )
         for task in template_tasks
     ]
@@ -464,78 +455,6 @@ def generate_project_tasks(
         "created_task_count": len(generated),
         "no_op": False,
     }
-
-
-
-@router.get("/{project_id}/template-review/tasks", response_model=ProjectTemplateReviewTaskPage)
-def project_template_review_tasks(
-    project_id: uuid.UUID,
-    search: str | None = None,
-    phase: str | None = None,
-    category: str | None = None,
-    applicability: Literal["mandatory", "conditional"] | None = None,
-    included: bool | None = None,
-    source: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    return ProjectTemplateReviewService(db).list_tasks(
-        project_id,
-        actor,
-        search=search,
-        phase=phase,
-        category=category,
-        applicability=applicability,
-        included=included,
-        source=source,
-        page=page,
-        page_size=page_size,
-    )
-
-
-@router.get("/{project_id}/template-review/summary", response_model=ProjectTemplateReviewSummaryOut)
-def project_template_review_summary(
-    project_id: uuid.UUID,
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    return ProjectTemplateReviewService(db).summary(project_id, actor)
-
-
-@router.post("/{project_id}/tasks", response_model=ProjectManualTaskCreateOut, status_code=201)
-def create_project_manual_task(
-    project_id: uuid.UUID,
-    payload: ProjectManualTaskCreateIn,
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    return ProjectManualTaskService(db).create(project_id, actor, payload)
-
-
-@router.post(
-    "/{project_id}/tasks/{task_id}/applicability-decisions",
-    response_model=ProjectTaskApplicabilityDecisionOut,
-)
-def decide_project_task_applicability(
-    project_id: uuid.UUID,
-    task_id: uuid.UUID,
-    payload: ProjectTaskApplicabilityDecisionIn,
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    return ProjectTaskApplicabilityService(db).decide(project_id, task_id, actor, payload)
-
-
-@router.get(
-    "/{project_id}/tasks/{task_id}/applicability-decisions",
-    response_model=list[ProjectTaskApplicabilityHistoryItem],
-)
-def project_task_applicability_history(
-    project_id: uuid.UUID, task_id: uuid.UUID, actor: User = Depends(current_user), db: Session = Depends(get_db),
-):
-    return ProjectTaskApplicabilityService(db).history(project_id, task_id, actor)
 
 
 @router.get("/{project_id}")

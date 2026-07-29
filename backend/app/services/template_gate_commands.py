@@ -45,7 +45,7 @@ def _not_found() -> HTTPException:
 
 def _invalid(message: str, **details: Any) -> HTTPException:
     return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail={"code": "invalid_template_gate", "message": message, **details},
     )
 

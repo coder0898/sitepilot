@@ -109,7 +109,7 @@ describe("draft task authoring",()=>{
     view(); await screen.findByTestId("draft-task-T001");
     fireEvent.click(screen.getByRole("button",{name:/add task/i}));
     const dialog=screen.getByRole("dialog",{name:/add draft task/i});
-    fireEvent.change(within(dialog).getByLabelText("Task code"),{target:{value:"T003"}});
+    fireEvent.change(within(dialog).getByLabelText("Task code"),{target:{value:"T004"}});
     fireEvent.click(within(dialog).getByRole("button",{name:/cancel/i}));
     expect(confirm).toHaveBeenCalledWith("Discard unsaved task changes?");
     expect(dialog).toBeInTheDocument();

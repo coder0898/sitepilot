@@ -36,6 +36,12 @@ if ($supabaseStartExitCode -ne 0) {
     throw "Supabase local stack failed to start. Review the Supabase output above."
 }
 
+Write-Host "Applying pending Supabase migrations..."
+& npx supabase migration up --local
+if ($LASTEXITCODE -ne 0) {
+    throw "Pending Supabase migrations could not be applied."
+}
+
 $statusOutput = & npx supabase status -o env
 if ($LASTEXITCODE -ne 0) {
     throw "Could not read local Supabase credentials."

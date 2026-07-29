@@ -82,11 +82,9 @@ describe("draft dependency authoring",()=>{
     fireEvent.click(within(dialog).getByRole("button",{name:/save dependency/i}));
     await waitFor(()=>expect(templatesApi.updateDependency).toHaveBeenCalledWith("draft-1","dep-1",expect.objectContaining({dependency_type:"start_to_start",revision_token:"rev-1"})));
 
-    // Fresh render for deletion because save refreshes asynchronously.
-    document.body.innerHTML="";
-    await openDependencies();
+    await waitFor(()=>expect(screen.queryByRole("dialog",{name:/edit draft dependency/i})).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button",{name:/delete dependency 1/i}));
-    fireEvent.click(screen.getByRole("button",{name:/delete dependency/i}));
+    const deleteDialog=screen.getByRole("dialog",{name:/delete dependency/i}); fireEvent.click(within(deleteDialog).getByRole("button",{name:/^delete dependency$/i}));
     await waitFor(()=>expect(templatesApi.deleteDependency).toHaveBeenCalledWith("draft-1","dep-1","rev-1"));
   });
 
