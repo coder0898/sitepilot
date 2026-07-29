@@ -65,7 +65,7 @@ def _conflict(code: str, message: str, **details: Any) -> HTTPException:
 
 def _invalid_task(message: str, **details: Any) -> HTTPException:
     return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail={"code": "invalid_template_task", "message": message, **details},
     )
 

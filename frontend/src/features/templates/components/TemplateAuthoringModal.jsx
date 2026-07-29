@@ -55,7 +55,7 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
   const submittingRef = useRef(false);
 
   useEffect(() => {
-    setValues(isClone ? { ...emptyCreate, change_note: `Draft cloned from version ${source?.version_no ?? ""} for further authoring.` } : { ...emptyCreate });
+    setValues(isClone ? { ...emptyCreate, change_note: "" } : { ...emptyCreate });
     setErrors({});
     setRequestError("");
   }, [isClone, source?.version_id, source?.version_no]);

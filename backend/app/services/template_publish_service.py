@@ -89,7 +89,7 @@ class TemplatePublishService:
             lock = self.publish_repo.lock_for_publish(version_id, payload.revision_token)
             change_note = payload.change_note or lock.version.change_note
             if not change_note or not change_note.strip():
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"code": "change_note_required", "message": "A change note is required before publication."})
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "change_note_required", "message": "A change note is required before publication."})
 
             aggregate = self.validation_repo.load(version_id)
             if aggregate is None:

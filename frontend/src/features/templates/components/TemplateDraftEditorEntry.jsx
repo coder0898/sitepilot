@@ -176,6 +176,15 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
+    setSummary(current => current?.version_id === initialSummary.version_id
+      ? { ...current, ...initialSummary }
+      : initialSummary);
+  }, [
+    initialSummary.version_id, initialSummary.revision_token,
+    initialSummary.status, initialSummary.updated_at,
+  ]);
+
+  useEffect(() => {
     if (!dirty) return undefined;
     const warn = event => { event.preventDefault(); event.returnValue=""; };
     window.addEventListener("beforeunload",warn);
@@ -298,7 +307,8 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
        </> : activeEditorTab === "gates" ? <>
       <div className="flex flex-col gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><ShieldAlert className="mt-0.5 shrink-0 text-violet-700" size={19}/><div><strong className="text-violet-950">External gates · Draft authoring</strong><p className="mt-1 text-xs font-semibold leading-5 text-violet-800">Configure exact mappings explicitly or preserve broad source wording without inferred task links.</p></div></div><Button className="w-full sm:w-auto" onClick={openAddGate}><Plus size={17}/> Add gate</Button></div>
       {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading draft external gates..."/></div> : loadError ? <Alert tone="danger"><strong>Draft gates unavailable</strong><span>{apiMessage(loadError)}</span></Alert> : gates.length===0 ? <EmptyState className="min-h-64 bg-white" title="This draft has no external gates" description="Add the first approval or readiness gate." action={<Button onClick={openAddGate}><Plus size={16}/> Add first gate</Button>}/> : <div className="grid gap-3">{gates.map(gate=><GateRow key={gate.id} gate={gate} onEdit={openEditGate} onDelete={item=>{setDeleteGate(item);setGateDeleteError(null)}}/>)}</div>}
-    </> : <TemplateValidationPublishPanel summary={summary} onNavigate={setActiveEditorTab} onRefresh={refresh} onPublished={onPublished}/>}
+    </> : null}
+    <div className={activeEditorTab === "validation" ? "block" : "hidden"} aria-hidden={activeEditorTab !== "validation"}><TemplateValidationPublishPanel summary={summary} onNavigate={setActiveEditorTab} onRefresh={refresh} onPublished={onPublished}/></div>
 
     {editorOpen && <TemplateTaskEditorModal task={editorTask} tasks={tasks} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={tasks.length+1} suggestedCode={nextStructuredCode(tasks, "T")} onClose={()=>{setEditorOpen(false);setFormDirty(false);}} onSaved={saveTask} onDirtyChange={setFormDirty}/>}
     {deleteTask && <DeleteTaskModal task={deleteTask} busy={deleting} error={deleteError} onClose={()=>{setDeleteTask(null);setDeleteError(null);}} onConfirm={confirmDelete}/>}

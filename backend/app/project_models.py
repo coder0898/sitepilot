@@ -1,7 +1,7 @@
-import uuid
+﻿import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Text, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,13 +23,80 @@ class V2Project(Base):
     description: Mapped[str | None] = mapped_column(Text)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     target_handover_date: Mapped[date | None] = mapped_column(Date)
-    template_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    template_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.v2_template_versions.id", ondelete="RESTRICT"),
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     activated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class V2ProjectTask(Base):
+    __tablename__ = "project_tasks"
+    __table_args__ = (
+        UniqueConstraint("project_id", "template_task_id", name="uq_v2_project_tasks_project_template_task"),
+        UniqueConstraint("project_id", "original_code", name="uq_v2_project_tasks_project_code"),
+        CheckConstraint("template_sequence > 0", name="ck_v2_project_tasks_sequence_positive"),
+        CheckConstraint("source_type in ('template', 'project_manual')", name="ck_v2_project_tasks_source_type"),
+        CheckConstraint(
+            "(source_type = 'template' and template_task_id is not null) or "
+            "(source_type = 'project_manual' and template_task_id is null)",
+            name="ck_v2_project_tasks_source_reference",
+        ),
+        CheckConstraint("lifecycle_status = 'draft'", name="ck_v2_project_tasks_draft_lifecycle"),
+        CheckConstraint("applicability in ('mandatory', 'conditional')", name="ck_v2_project_tasks_applicability"),
+        CheckConstraint("schedule_classification in ('pre_activation', 'execution')", name="ck_v2_project_tasks_schedule_classification"),
+        CheckConstraint("decision_state in ('pending_review', 'included', 'excluded')", name="ck_v2_project_tasks_decision_state"),
+        CheckConstraint(
+            "(included = true and decision_state in ('pending_review', 'included')) or "
+            "(included = false and decision_state = 'excluded')",
+            name="ck_v2_project_tasks_review_state_consistency",
+        ),
+        Index("ix_v2_project_tasks_project_sequence", "project_id", "template_sequence"),
+        Index("ix_v2_project_tasks_template_task", "template_task_id"),
+        Index("ix_v2_project_tasks_project_review", "project_id", "included", "decision_state", "template_sequence"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    template_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.v2_template_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    template_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.v2_template_tasks.id", ondelete="RESTRICT"),
+    )
+    original_code: Mapped[str] = mapped_column(Text, nullable=False)
+    template_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    schedule_classification: Mapped[str] = mapped_column(Text, nullable=False)
+    planned_start_day: Mapped[int | None] = mapped_column(SmallInteger)
+    planned_end_day: Mapped[int | None] = mapped_column(SmallInteger)
+    phase: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text)
+    applicability: Mapped[str] = mapped_column(Text, nullable=False)
+    task_class: Mapped[str | None] = mapped_column(Text)
+    task_kind: Mapped[str | None] = mapped_column(Text)
+    evidence_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    duration_days: Mapped[int | None] = mapped_column(Integer)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False, default="template")
+    lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
+    included: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    decision_state: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
 
 
 class V2ProjectMembership(Base):
