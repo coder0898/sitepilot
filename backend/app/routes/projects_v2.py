@@ -20,6 +20,14 @@ from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectMa
 from app.services.project_manual_task import ProjectManualTaskService
 from app.services.project_task_applicability import ProjectTaskApplicabilityService
 from app.services.project_template_review import ProjectTemplateReviewService
+from app.services.project_gate_generation import ProjectGateGenerationService
+from app.schemas.project_gates import ProjectGateGenerateOut, ProjectGateListOut
+from app.schemas.project_gate_applicability import ProjectGateApplicabilityDecisionIn, ProjectGateApplicabilityDecisionOut, ProjectGateApplicabilityHistoryItem
+from app.services.project_gate_applicability import ProjectGateApplicabilityService
+from app.schemas.project_manual_gate import ProjectManualGateCreateIn, ProjectManualGateCreateOut
+from app.services.project_manual_gate import ProjectManualGateService
+from app.schemas.project_dependencies import ProjectDependencyGenerateOut, ProjectDependencyListOut
+from app.services.project_dependency_generation import ProjectDependencyGenerationService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
 
@@ -465,6 +473,74 @@ def generate_project_tasks(
         "no_op": False,
     }
 
+
+
+@router.post("/{project_id}/gates", response_model=ProjectManualGateCreateOut, status_code=201)
+def create_project_manual_gate(
+    project_id: uuid.UUID,
+    payload: ProjectManualGateCreateIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectManualGateService(db).create(project_id, actor, payload)
+
+
+
+
+@router.post("/{project_id}/generate-dependencies", response_model=ProjectDependencyGenerateOut)
+def generate_project_dependencies(project_id: uuid.UUID, actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)), db: Session = Depends(get_db)):
+    project = get_project(db, project_id, actor)
+    return ProjectDependencyGenerationService(db).generate(project, actor)
+
+
+@router.get("/{project_id}/dependencies", response_model=ProjectDependencyListOut)
+def list_project_dependencies(project_id: uuid.UUID, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = get_project(db, project_id, actor)
+    return ProjectDependencyGenerationService(db).list(project)
+
+@router.post("/{project_id}/generate-gates", response_model=ProjectGateGenerateOut)
+def generate_project_gates(
+    project_id: uuid.UUID,
+    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateGenerationService(db).generate(project_id, actor)
+
+
+@router.get("/{project_id}/external-gates", response_model=ProjectGateListOut)
+def list_project_gates(
+    project_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateGenerationService(db).list(project_id, actor)
+
+
+@router.post(
+    "/{project_id}/gates/{gate_id}/applicability-decisions",
+    response_model=ProjectGateApplicabilityDecisionOut,
+)
+def decide_project_gate_applicability(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    payload: ProjectGateApplicabilityDecisionIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateApplicabilityService(db).decide(project_id, gate_id, actor, payload)
+
+
+@router.get(
+    "/{project_id}/gates/{gate_id}/applicability-decisions",
+    response_model=list[ProjectGateApplicabilityHistoryItem],
+)
+def project_gate_applicability_history(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateApplicabilityService(db).history(project_id, gate_id, actor)
 
 
 @router.get("/{project_id}/template-review/tasks", response_model=ProjectTemplateReviewTaskPage)

@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import date, datetime
 
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func
@@ -92,11 +92,85 @@ class V2ProjectTask(Base):
     evidence_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     duration_days: Mapped[int | None] = mapped_column(Integer)
     source_type: Mapped[str] = mapped_column(Text, nullable=False, default="template")
+    reason: Mapped[str | None] = mapped_column(Text)
     lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     included: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     decision_state: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+
+
+class V2ProjectExternalGate(Base):
+    __tablename__ = "project_external_gates"
+    __table_args__ = (
+        UniqueConstraint("project_id", "template_gate_id", name="uq_v2_project_external_gates_project_template_gate"),
+        UniqueConstraint("project_id", "original_code", name="uq_v2_project_external_gates_project_code"),
+        CheckConstraint("template_sequence > 0", name="ck_v2_project_external_gates_sequence_positive"),
+        CheckConstraint("mapping_classification in ('exact', 'broad_text', 'unmapped')", name="ck_v2_project_external_gates_mapping"),
+        CheckConstraint("status = 'pending_review'", name="ck_v2_project_external_gates_status"),
+        CheckConstraint("source_type in ('template', 'project_manual')", name="ck_v2_project_external_gates_source"),
+        CheckConstraint("(source_type = 'template' and template_version_id is not null and template_gate_id is not null) or (source_type = 'project_manual' and template_version_id is null and template_gate_id is null)", name="ck_v2_project_external_gates_source_reference"),
+        CheckConstraint("(mapping_classification = 'broad_text' and nullif(btrim(broad_mapping_text), '') is not null) or (mapping_classification <> 'broad_text' and broad_mapping_text is null)", name="ck_v2_project_external_gates_broad_text"),
+        Index("ix_v2_project_external_gates_project_sequence", "project_id", "template_sequence"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="CASCADE"), nullable=False)
+    template_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.v2_template_versions.id", ondelete="RESTRICT"))
+    template_gate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.v2_template_external_gates.id", ondelete="RESTRICT"))
+    original_code: Mapped[str] = mapped_column(Text, nullable=False)
+    template_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    approval_name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    external_party: Mapped[str | None] = mapped_column(Text)
+    required_by_type: Mapped[str | None] = mapped_column(Text)
+    required_by_value: Mapped[str | None] = mapped_column(Text)
+    impact: Mapped[str | None] = mapped_column(Text)
+    mapping_classification: Mapped[str] = mapped_column(Text, nullable=False)
+    broad_mapping_text: Mapped[str | None] = mapped_column(Text)
+    requires_configuration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    applicability_state: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    source_type: Mapped[str] = mapped_column(Text, nullable=False, default="template")
+    accountable_pm_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    creation_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class V2ProjectExternalGateTask(Base):
+    __tablename__ = "project_external_gate_tasks"
+    __table_args__ = (
+        UniqueConstraint("project_gate_id", "project_task_id", name="uq_v2_project_external_gate_tasks_pair"),
+        Index("ix_v2_project_external_gate_tasks_gate", "project_gate_id"),
+        Index("ix_v2_project_external_gate_tasks_task", "project_task_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_gates.id", ondelete="CASCADE"), nullable=False)
+    project_task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_tasks.id", ondelete="RESTRICT"), nullable=False)
+    template_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.v2_template_tasks.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class V2ProjectExternalGateApplicabilityDecision(Base):
+    __tablename__ = "project_external_gate_applicability_decisions"
+    __table_args__ = (
+        CheckConstraint("decision in ('applicable', 'not_applicable')", name="ck_v2_project_gate_applicability_decision"),
+        Index("ix_v2_project_gate_applicability_history", "project_gate_id", "decided_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="CASCADE"), nullable=False)
+    project_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_gates.id", ondelete="CASCADE"), nullable=False)
+    previous_state: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class V2ProjectMembership(Base):
@@ -130,3 +204,35 @@ class V2AuditEvent(Base):
     after_json: Mapped[dict | None] = mapped_column(JSONB)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class V2ProjectTaskDependency(Base):
+    __tablename__ = "project_task_dependencies"
+    __table_args__ = (
+        UniqueConstraint("project_id", "template_dependency_id", name="uq_v2_project_dependencies_project_template"),
+        UniqueConstraint("project_id", "predecessor_project_task_id", "successor_project_task_id", "dependency_type", name="uq_v2_project_dependencies_edge"),
+        CheckConstraint("predecessor_project_task_id <> successor_project_task_id", name="ck_v2_project_dependencies_not_self"),
+        CheckConstraint("dependency_type in ('finish_to_start', 'start_to_start')", name="ck_v2_project_dependencies_type"),
+        CheckConstraint("template_sequence > 0", name="ck_v2_project_dependencies_sequence_positive"),
+        CheckConstraint("source_type in ('template','project_manual')", name="ck_v2_project_dependencies_source"),
+        CheckConstraint("lifecycle_status = 'draft'", name="ck_v2_project_dependencies_lifecycle"),
+        Index("ix_v2_project_dependencies_project_sequence", "project_id", "template_sequence"),
+        Index("ix_v2_project_dependencies_predecessor", "predecessor_project_task_id"),
+        Index("ix_v2_project_dependencies_successor", "successor_project_task_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="CASCADE"), nullable=False)
+    template_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.v2_template_versions.id", ondelete="RESTRICT"))
+    template_dependency_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.v2_template_task_dependencies.id", ondelete="RESTRICT"))
+    predecessor_project_task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_tasks.id", ondelete="RESTRICT"), nullable=False)
+    successor_project_task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_tasks.id", ondelete="RESTRICT"), nullable=False)
+    dependency_type: Mapped[str] = mapped_column(Text, nullable=False)
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    rule_text: Mapped[str | None] = mapped_column(Text)
+    template_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    excluded_task_warning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False, default="template")
+    reason: Mapped[str | None] = mapped_column(Text)
+    lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
