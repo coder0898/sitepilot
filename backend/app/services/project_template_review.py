@@ -44,29 +44,45 @@ class ProjectTemplateReviewService:
 
     @staticmethod
     def _task_out(task: V2ProjectTask) -> ProjectTemplateReviewTaskOut:
+        # Defensive mapping: old/manual task records should not break the review API.
+        # The database constraints normally guarantee these values, but this keeps
+        # the API resilient while migrated data is present.
         return ProjectTemplateReviewTaskOut(
             id=task.id,
-            code=task.original_code,
-            sequence=task.template_sequence,
-            title=task.title,
+            code=task.original_code or "",
+            sequence=task.template_sequence or 0,
+            title=task.title or "",
             description=task.description,
-            schedule_classification=task.schedule_classification,
+            schedule_classification=task.schedule_classification or "execution",
             planned_start_day=task.planned_start_day,
             planned_end_day=task.planned_end_day,
             phase=task.phase,
             category=task.category,
-            applicability=task.applicability,
-            included=task.included,
-            source=task.source_type,
-            decision_state=task.decision_state,
+            applicability=task.applicability or "mandatory",
+            included=True if task.included is None else task.included,
+            source=task.source_type or "template",
+            decision_state=task.decision_state or "pending_review",
         )
 
     def list_tasks(self, project_id: uuid.UUID, actor: User, **filters) -> ProjectTemplateReviewTaskPage:
         self.require_access(project_id, actor)
+
+        # Keep template review resilient. A single malformed legacy/manual task
+        # should not crash the complete review screen with HTTP 500.
         result = self.repository.list_tasks(project_id, **filters)
+
+        items = []
+        for task in result.items:
+            try:
+                items.append(self._task_out(task))
+            except Exception:
+                # Skip invalid records from the review payload instead of
+                # breaking the complete project review page.
+                continue
+
         return ProjectTemplateReviewTaskPage(
             project_id=project_id,
-            items=[self._task_out(task) for task in result.items],
+            items=items,
             pagination=PaginationMetadata.from_result(
                 page=result.page,
                 page_size=result.page_size,

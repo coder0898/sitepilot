@@ -47,6 +47,21 @@ class ProjectDependencyGenerationService:
         tasks={t.id:t for t in self.db.scalars(select(V2ProjectTask).where(V2ProjectTask.id.in_(task_ids or [uuid.uuid4()]))) }
         items=[]
         for row in rows:
-            p=tasks[row.predecessor_project_task_id]; s=tasks[row.successor_project_task_id]
+            p=tasks.get(row.predecessor_project_task_id)
+            s=tasks.get(row.successor_project_task_id)
+            if not p or not s:
+                # Keep review endpoint stable if a historical dependency references a missing task.
+                # Do not fail the complete dependency page.
+                items.append({
+                    "id":row.id,"sequence":row.template_sequence,"dependency_type":row.dependency_type,
+                    "blocking":row.blocking,"rule_text":row.rule_text,
+                    "predecessor_project_task_id":row.predecessor_project_task_id,
+                    "successor_project_task_id":row.successor_project_task_id,
+                    "predecessor_code":None,"predecessor_title":"Missing task reference",
+                    "predecessor_included":False,"successor_code":None,
+                    "successor_title":"Missing task reference","successor_included":False,
+                    "excluded_task_warning":True,"source":row.source_type
+                })
+                continue
             items.append({"id":row.id,"sequence":row.template_sequence,"dependency_type":row.dependency_type,"blocking":row.blocking,"rule_text":row.rule_text,"predecessor_project_task_id":p.id,"predecessor_code":p.original_code,"predecessor_title":p.title,"predecessor_included":p.included,"successor_project_task_id":s.id,"successor_code":s.original_code,"successor_title":s.title,"successor_included":s.included,"excluded_task_warning":(not p.included or not s.included),"source":row.source_type})
         return {"project_id":project.id,"total":len(items),"excluded_warning_count":sum(1 for x in items if x["excluded_task_warning"]),"items":items}

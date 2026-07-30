@@ -9,6 +9,8 @@ from app.auth import current_user
 from app.database import get_db
 from app.models import User, UserRole
 from app.project_models import V2Project, V2ProjectTask, V2ProjectTaskDependency
+from app.services.project_dependency_generation import ProjectDependencyGenerationService
+from app.schemas.project_dependencies import ProjectDependencyGenerateOut, ProjectDependencyListOut
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-project-dependencies"])
 
@@ -43,33 +45,24 @@ def ensure_acyclic(db, project_id, start, end):
         )).all())
     return True
 
-@router.get("/{project_id}/dependencies")
-def review_dependencies(project_id: uuid.UUID, db: Session=Depends(get_db), user: User=Depends(current_user),
-                        phase: str|None=None, search: str|None=None,
-                        source: str|None=None, validation: str|None=None,
-                        page:int=1, page_size:int=50):
-    assert_project(db, project_id)
-    stmt=select(V2ProjectTaskDependency).where(V2ProjectTaskDependency.project_id==project_id)
-    if source:
-        stmt=stmt.where(V2ProjectTaskDependency.source_type==source)
-    rows=list(db.scalars(stmt.order_by(V2ProjectTaskDependency.template_sequence)).all())
-    task_ids={x for d in rows for x in (d.predecessor_project_task_id,d.successor_project_task_id)}
-    task_map={t.id:t for t in db.scalars(select(V2ProjectTask).where(V2ProjectTask.id.in_(task_ids))).all()}
-    items=[]
-    for d in rows:
-        pre=task_map[d.predecessor_project_task_id]
-        suc=task_map[d.successor_project_task_id]
-        if search and search.lower() not in ((pre.original_code+" "+suc.original_code).lower()):
-            continue
-        items.append({
-            "id":str(d.id),"predecessor":str(d.predecessor_project_task_id),
-            "successor":str(d.successor_project_task_id),
-            "predecessor_code":pre.original_code,"successor_code":suc.original_code,
-            "type":d.dependency_type,"rule":d.rule_text,
-            "source":d.source_type,"validation":"excluded_task_warning" if d.excluded_task_warning else "valid",
-            "excluded_flag":d.excluded_task_warning,"reason":d.reason
-        })
-    return {"total":len(items),"items":items[(page-1)*page_size:page*page_size]}
+@router.get("/{project_id}/dependencies", response_model=ProjectDependencyListOut)
+def review_dependencies(project_id: uuid.UUID, db: Session=Depends(get_db), user: User=Depends(current_user)):
+    """Read generated dependencies safely.
+
+    Dependency generation remains manual. This endpoint only loads existing
+    dependency records. The previous route duplicated mapping logic and could
+    fail with 500 when task references were incomplete.
+    """
+    project = assert_project(db, project_id)
+    return ProjectDependencyGenerationService(db).list(project)
+
+@router.post("/{project_id}/generate-dependencies", response_model=ProjectDependencyGenerateOut)
+def generate_dependencies(project_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    project = assert_project(db, project_id)
+    if not can_edit(user):
+        raise HTTPException(403, "Not allowed.")
+    return ProjectDependencyGenerationService(db).generate(project, user)
+
 
 @router.post("/{project_id}/dependencies")
 def create_manual_dependency(project_id:uuid.UUID, payload:ManualDependencyIn, db:Session=Depends(get_db), user:User=Depends(current_user)):
