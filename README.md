@@ -4,7 +4,7 @@ Framework
 - Frontend: React.js + Tailwind CSS
 - Backend: Python FastAPI
 - Database: PostgreSQL/Supabase
-- Migrations: Alembic(depreciate)
+- Migrations: Alembic(depreciated)
 - Runtime: Docker Compose
 
 ## Local run
