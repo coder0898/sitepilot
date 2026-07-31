@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
 from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
-from app.schemas.projects import ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectStatusIn, ProjectUpdateIn
+from app.schemas.projects import ProjectActivateIn, ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectStatusIn, ProjectUpdateIn
 from app.schemas.project_template_review import ProjectTemplateReviewSummaryOut, ProjectTemplateReviewTaskPage
 from app.schemas.project_task_applicability import ProjectTaskApplicabilityDecisionIn, ProjectTaskApplicabilityDecisionOut, ProjectTaskApplicabilityHistoryItem
 from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectManualTaskCreateOut
@@ -699,6 +699,109 @@ def end_membership(project_id: uuid.UUID, membership_id: uuid.UUID, payload: Pro
     return membership_json(db, membership)
 
 
+# Phase 8: actions a future task-execution engine would record. None of these
+# are written anywhere in the codebase today (no execution workflow exists
+# yet), so this set exists purely so the deletion guard below activates
+# automatically once that engine ships, instead of needing to be revisited.
+EXECUTION_AUDIT_ACTIONS = {
+    "TASK_STARTED",
+    "TASK_PROGRESS_SUBMITTED",
+    "TASK_EVIDENCE_SUBMITTED",
+    "TASK_VERIFIED",
+    "TASK_REJECTED",
+    "TASK_APPROVAL_DECIDED",
+    "TASK_COMPLETED",
+}
+
+
+def execution_activity_reasons(db: Session, project: V2Project) -> list[str]:
+    """Detect whether task execution has started for this project.
+
+    Checked against fields/tables that already exist:
+    - V2ProjectTask.lifecycle_status leaving "draft" (its authoritative
+      execution-state field). This branch is currently unreachable in
+      practice: the column carries a database CheckConstraint pinning it to
+      "draft" until a later phase relaxes it, so it cannot fire today.
+    - V2AuditEvent rows recording an execution action for this project.
+    Both are read-only checks; neither creates or assumes an execution
+    workflow, which is explicitly out of scope for this phase.
+    """
+    reasons: list[str] = []
+    non_draft_tasks = db.scalar(
+        select(func.count()).select_from(V2ProjectTask).where(
+            V2ProjectTask.project_id == project.id,
+            V2ProjectTask.lifecycle_status != "draft",
+        )
+    )
+    if non_draft_tasks:
+        reasons.append(f"{non_draft_tasks} task(s) have progressed beyond planning status")
+    execution_events = db.scalar(
+        select(func.count()).select_from(V2AuditEvent).where(
+            V2AuditEvent.project_id == project.id,
+            V2AuditEvent.action.in_(EXECUTION_AUDIT_ACTIONS),
+        )
+    )
+    if execution_events:
+        reasons.append(f"{execution_events} task execution audit event(s) recorded")
+    return reasons
+
+
+@router.post("/{project_id}/activate")
+def activate_project(project_id: uuid.UUID, payload: ProjectActivateIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Dedicated Phase 8 activation endpoint.
+
+    This mirrors the draft-to-active eligibility rules already enforced by
+    POST /{project_id}/status, but adds an explicit duplicate-activation
+    guard, a distinct PROJECT_ACTIVATED audit action, and an atomic
+    rollback on any failure. POST /{project_id}/status is left completely
+    unmodified so its existing Phase 1/2 behaviour (including its own
+    draft-to-active path) is unaffected.
+    """
+    project = get_project(db, project_id, actor)
+
+    if project.status == "active":
+        raise HTTPException(409, "This project is already active. Activation cannot be requested again.")
+    if project.status != "draft":
+        raise HTTPException(409, f"A {project.status.replace('_', ' ')} project cannot be activated. Only a draft project is eligible.")
+    if actor.role != UserRole.admin:
+        raise HTTPException(403, "Only Admin can activate a project.")
+
+    roles = {item.project_role for item in active_memberships(db, project.id)}
+    missing = []
+    if "project_manager" not in roles: missing.append("Project Manager")
+    if "site_supervisor" not in roles: missing.append("Site Supervisor")
+    if not project.template_version_id: missing.append("approved 45-day template")
+    if not project.target_handover_date: missing.append("target handover date")
+    if missing:
+        raise HTTPException(409, "Project activation requires: " + ", ".join(missing) + ".")
+
+    template_version = db.get(V2TemplateVersion, project.template_version_id)
+    if not template_version or template_version.status != "published":
+        raise HTTPException(409, "The attached template version is no longer published. Re-attach a published version before activating.")
+
+    before = project_snapshot(project)
+    try:
+        project.status = "active"
+        project.activated_at = datetime.now(timezone.utc)
+        project.activated_by = actor.id
+        db.flush()
+        # Template/version reference lock: PATCH /{project_id} already
+        # refuses to change template_version_id once status != "draft"
+        # (see update_project below), so no additional enforcement is
+        # needed here beyond this project having just left "draft".
+        add_audit(
+            db, actor, project, "PROJECT_ACTIVATED", payload.reason.strip(),
+            before, {**project_snapshot(project), "template_version_locked": True},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(project)
+    return project_json(db, project, True)
+
+
 @router.post("/{project_id}/status")
 def change_status(project_id: uuid.UUID, payload: ProjectStatusIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     project = get_project(db, project_id, actor)
@@ -741,15 +844,122 @@ def project_activity(project_id: uuid.UUID, actor: User = Depends(current_user),
     return [{"id": str(event.id), "action": event.action, "entity_type": event.entity_type, "entity_id": str(event.entity_id), "actor_name": user.name if user else "System", "reason": event.reason, "before": event.before_json, "after": event.after_json, "occurred_at": event.occurred_at.isoformat()} for event, user in rows]
 
 
-@router.delete("/{project_id}")
-def delete_draft_project(project_id: uuid.UUID, payload: ProjectDeleteIn, actor: User = Depends(require_roles(UserRole.admin)), db: Session = Depends(get_db)):
+@router.get("/{project_id}/execution-tasks")
+def project_execution_tasks(project_id: uuid.UUID, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Phase 9: read-only task baseline for an activated project.
+
+    This intentionally returns only what the Phase 3 task-generation and
+    Phase 8 activation capabilities already produced - the project's
+    generated task snapshot, its planning/applicability fields, and its
+    lifecycle_status (always "draft" today, since no task-execution engine
+    exists yet). No status, evidence, verification or assignment mutation
+    is exposed here; this endpoint has no write path at all.
+    """
     project = get_project(db, project_id, actor)
-    if project.status != "draft" or project.template_version_id or active_memberships(db, project.id):
-        raise HTTPException(409, "Only an unreferenced draft with no team or template can be permanently deleted. Archive this project instead.")
+    if not project.activated_at:
+        raise HTTPException(409, "This project has not been activated yet. No task baseline is available to view.")
+
+    tasks = list(db.scalars(
+        select(V2ProjectTask)
+        .where(V2ProjectTask.project_id == project.id)
+        .order_by(V2ProjectTask.template_sequence.asc(), V2ProjectTask.original_code.asc())
+    ).all())
+
+    return {
+        "project_id": str(project.id),
+        "project_name": project.name,
+        "project_code": project.code,
+        "project_status": project.status,
+        "activated_at": project.activated_at.isoformat(),
+        "total_tasks": len(tasks),
+        "included_task_count": sum(1 for task in tasks if task.included),
+        "excluded_task_count": sum(1 for task in tasks if not task.included),
+        "tasks": [
+            {
+                "id": str(task.id),
+                "code": task.original_code,
+                "sequence": task.template_sequence,
+                "title": task.title,
+                "description": task.description,
+                "phase": task.phase,
+                "category": task.category,
+                "task_kind": task.task_kind,
+                "task_class": task.task_class,
+                "applicability": task.applicability,
+                "schedule_classification": task.schedule_classification,
+                "planned_start_day": task.planned_start_day,
+                "planned_end_day": task.planned_end_day,
+                "duration_days": task.duration_days,
+                "evidence_required": task.evidence_required,
+                "lifecycle_status": task.lifecycle_status,
+                "included": task.included,
+                "decision_state": task.decision_state,
+            }
+            for task in tasks
+        ],
+    }
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: uuid.UUID, payload: ProjectDeleteIn, actor: User = Depends(require_roles(UserRole.admin)), db: Session = Depends(get_db)):
+    """Controlled Phase 8 project deletion.
+
+    - Draft projects are permanently removed (hard delete). Membership rows
+      are deleted explicitly first because V2ProjectMembership.project_id is
+      declared ON DELETE RESTRICT (not CASCADE) at the schema level -
+      Postgres would otherwise reject the delete. Every other project child
+      table (tasks, external gates, dependencies, gate-applicability
+      decisions) is ON DELETE CASCADE and is left to the database.
+    - Activated projects (active/on_hold) with no detected execution
+      activity are soft-deleted by moving them into the existing "archived"
+      status - the same terminal state POST /{project_id}/status already
+      supports. No row is removed.
+    - Completed or already-archived projects, and any project where
+      execution activity is detected, are blocked with a clear reason.
+    - Template tables (V2Template/V2TemplateVersion/V2TemplateTask/...) are
+      never read for writes and never touched by this endpoint.
+    """
+    project = get_project(db, project_id, actor)
+
+    if project.status == "archived":
+        raise HTTPException(409, "This project has already been archived and cannot be deleted again.")
+    if project.status == "completed":
+        raise HTTPException(409, "Completed projects cannot be deleted through this action.")
+
+    activity = execution_activity_reasons(db, project)
+    if activity:
+        raise HTTPException(
+            409,
+            "This project cannot be deleted because execution activity already exists: "
+            + "; ".join(activity)
+            + ". Deletion is only allowed before execution starts.",
+        )
+
     if payload.confirmation.strip().upper() != project.code:
-        raise HTTPException(422, f"Type {project.code} to confirm permanent deletion.")
-    add_audit(db, actor, project, "PROJECT_DRAFT_DELETED", payload.reason.strip(), before=project_snapshot(project))
-    db.flush()
-    db.delete(project)
-    db.commit()
-    return {"deleted": True, "project_id": str(project_id)}
+        raise HTTPException(422, f"Type {project.code} to confirm this action.")
+
+    before = project_snapshot(project)
+    try:
+        if project.status == "draft":
+            add_audit(db, actor, project, "PROJECT_DRAFT_DELETED", payload.reason.strip(), before=before)
+            db.flush()
+            memberships = db.scalars(select(V2ProjectMembership).where(V2ProjectMembership.project_id == project.id)).all()
+            for membership in memberships:
+                db.delete(membership)
+            db.flush()
+            db.delete(project)
+            db.commit()
+            return {"deleted": True, "deletion_type": "hard", "project_id": str(project_id), "status": None}
+
+        # Activated project (active/on_hold) with no execution activity:
+        # soft delete by archiving, never by removing the row.
+        project.status = "archived"
+        db.flush()
+        add_audit(db, actor, project, "PROJECT_ARCHIVED", payload.reason.strip(), before, project_snapshot(project))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(project)
+    return {"deleted": True, "deletion_type": "soft", "project_id": str(project_id), "status": project.status}

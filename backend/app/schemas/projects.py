@@ -60,3 +60,15 @@ class ProjectStatusIn(BaseModel):
 class ProjectDeleteIn(BaseModel):
     confirmation: str
     reason: str = Field(min_length=4)
+
+
+class ProjectActivateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=4)
+
+
+class ProjectTeamUpdateIn(BaseModel):
+    project_manager_employee_id: uuid.UUID | None = None
+    supervisor_employee_id: uuid.UUID | None = None
+    reason: str = Field(min_length=4)

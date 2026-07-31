@@ -5,6 +5,7 @@ import { projectsApi } from "../../../api/projectsApi";
 import { ProjectTemplateReview } from "./ProjectTemplateReview";
 import { ProjectExternalGates } from "./ProjectExternalGates";
 import { ProjectDependencies } from "./ProjectDependencies";
+import { ProjectTeamReplaceModal } from "./ProjectTeamReplaceModal";
 
 const statusTone = { draft: "gray", active: "green", on_hold: "orange", completed: "blue", archived: "gray" };
 const roleLabel = { project_manager: "Project Manager", site_supervisor: "Site Supervisor", internal_employee: "Internal Employee" };
@@ -29,21 +30,32 @@ function Overview({ project }) {
 }
 
 function Team({ project, references, user, onChanged }) {
-  const availableRoles = user.role === "admin" ? ["project_manager", "site_supervisor", "internal_employee"] : user.role === "project_manager" ? ["site_supervisor", "internal_employee"] : ["internal_employee"];
-  const [role, setRole] = useState(availableRoles[0]);
-  const [saving, setSaving] = useState(false);
-  const candidates = role === "project_manager" ? references.project_managers : role === "site_supervisor" ? references.supervisors : references.internal_employees;
-  const canAssign = availableRoles.length > 0 && ["admin", "project_manager", "supervisor"].includes(user.role);
-  async function submit(event) {
-    event.preventDefault(); setSaving(true);
-    const form = new FormData(event.currentTarget);
-    try { await projectsApi.setMembership(project.id, { project_role: role, employee_id: form.get("employee_id"), reason: form.get("reason") }); await onChanged(); event.currentTarget.reset(); }
-    finally { setSaving(false); }
-  }
+  const [replaceRole, setReplaceRole] = useState(null);
+  const pm = project.memberships?.find(m => m.project_role === "project_manager");
+  const supervisor = project.memberships?.find(m => m.project_role === "site_supervisor");
+
   return <div className="grid gap-4">
-    <div className="grid gap-3 sm:grid-cols-2">{project.memberships.map(member => <article key={member.id} className="rounded-2xl border border-slate-200 bg-white p-4"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-slate-950 text-xs font-black text-white">{member.name.split(" ").map(word => word[0]).slice(0,2).join("")}</span><div className="min-w-0"><Pill tone={member.project_role === "project_manager" ? "blue" : member.project_role === "site_supervisor" ? "green" : "gray"}>{roleLabel[member.project_role]}</Pill><h4 className="mt-2 truncate font-black text-slate-950">{member.name}</h4><p className="truncate text-xs text-slate-500">{member.designation} - {member.employee_code}</p></div></div></article>)}</div>
-    {!project.memberships.length && <EmptyState icon={<UsersRound size={20}/>} title="No project team assigned" description="Assign the accountable PM and Supervisor before activation."/>}
-    {canAssign && project.status !== "archived" && project.status !== "completed" && <form onSubmit={submit} className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4 sm:p-5"><div className="mb-4 flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-blue-700 text-white"><UserPlus size={18}/></span><div><h3 className="font-black text-slate-950">Assign or replace</h3><p className="text-xs text-slate-500">The previous accountable assignment is retained in history.</p></div></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Project role"><Select value={role} onChange={event => setRole(event.target.value)}>{availableRoles.map(value => <option key={value} value={value}>{roleLabel[value]}</option>)}</Select></Field><Field label="Employee"><Select name="employee_id" required><option value="">Select active employee</option>{(candidates || []).map(item => <option key={item.employee_id} value={item.employee_id}>{item.name} - {item.designation}</option>)}</Select></Field><Field label="Reason" className="sm:col-span-2"><Input name="reason" required minLength={4} placeholder="Initial assignment, replacement or support requirement" /></Field></div><Button type="submit" loading={saving} className="mt-4 w-full sm:w-auto">Save assignment</Button></form>}
+    <section className="grid gap-3 sm:grid-cols-3">
+      {[
+        ["Creator", project.creator?.name || project.created_by_name || "—"],
+        ["Project Manager", pm?.name || "Not assigned"],
+        ["Supervisor", supervisor?.name || "Not assigned"]
+      ].map(([label,value]) => <article key={label} className="rounded-2xl border bg-white p-4">
+        <p className="text-xs text-slate-500">{label}</p>
+        <h4 className="mt-2 font-black">{value}</h4>
+        {(label==="Project Manager" || label==="Supervisor") && project.status==="draft" && user.role==="admin" &&
+          <Button className="mt-3" onClick={()=>setReplaceRole(label==="Project Manager"?"project_manager":"site_supervisor")}>Change</Button>}
+      </article>)}
+    </section>
+
+    <section className="rounded-2xl border bg-white p-4">
+      <h3 className="font-black">Memberships</h3>
+      <div className="mt-3 grid gap-2">{(project.memberships || []).map(m=>
+        <div key={m.id} className="rounded-xl border p-3">{m.name} - {roleLabel[m.project_role]}</div>
+      )}</div>
+    </section>
+
+    {replaceRole && <ProjectTeamReplaceModal project={project} role={replaceRole} references={references} onClose={()=>setReplaceRole(null)} onChanged={onChanged}/>}
   </div>;
 }
 
