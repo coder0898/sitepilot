@@ -1,11 +1,12 @@
-import { BookOpenCheck, BriefcaseBusiness, CalendarCheck, FolderKanban, UsersRound } from "lucide-react";
+import { BookOpenCheck, BriefcaseBusiness, CalendarCheck, FolderKanban, UsersRound, Tags } from "lucide-react";
 
 export const TAB_REGISTRY = {
   projects: { label: "Projects", help: "Project setup, ownership and lifecycle", icon: FolderKanban },
   templates: { label: "Templates", help: "Approved project schedule library", icon: BookOpenCheck },
-  execution: { label: "Execution", help: "Project execution workspace", icon: CalendarCheck },
+  execution: { label: "Execution", help: "Read-only task baseline for activated projects", icon: CalendarCheck },
   communication: { label: "Communication Hub", help: "Project contacts & quick actions", icon: BriefcaseBusiness },
-  users: { label: "Users & Access", help: "People, access and your account", icon: UsersRound },
+  users: { label: "Users & Access", help: "People, access and your account", icon: UsersRound, Tags },
+  vendor_category_mapping: { label: "Vendor Category Mapping", help: "Manage task category to vendor category mappings", icon: Tags },
 };
 
 export const labels = Object.fromEntries(Object.entries(TAB_REGISTRY).map(([key, item]) => [key, item.label]));

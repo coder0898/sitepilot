@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+import unittest
+import uuid
+from datetime import date, datetime, timezone
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.auth import current_user
+from app.database import get_db
+from app.models import EmployeeProfile, User, UserRole
+from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
+from app.routes.projects_v2 import router
+from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(_type, _compiler, **_kw):
+    return "JSON"
+
+
+ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
+SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
+
+
+class ProjectActivationDeletionApiTests(unittest.TestCase):
+    """Phase 8 activation-foundation and controlled-deletion coverage.
+
+    Mirrors the setup pattern established in test_project_create_v2.py so
+    this file stays consistent with the rest of the V2 project test suite.
+    """
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+
+        @event.listens_for(self.engine, "connect")
+        def attach_schema(dbapi_connection, _connection_record):
+            dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+
+        for table in (
+            User.__table__,
+            EmployeeProfile.__table__,
+            V2Template.__table__,
+            V2TemplateVersion.__table__,
+            V2TemplateTask.__table__,
+            V2Project.__table__,
+            V2ProjectMembership.__table__,
+            V2ProjectTask.__table__,
+            V2AuditEvent.__table__,
+        ):
+            table.create(self.engine)
+
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        self._seed()
+
+        self.app = FastAPI()
+        self.app.include_router(router)
+
+        def override_db():
+            with self.Session() as session:
+                yield session
+
+        self.app.dependency_overrides[get_db] = override_db
+        self.app.dependency_overrides[current_user] = lambda: User(
+            id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True,
+        )
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.client.close()
+        self.engine.dispose()
+
+    def _seed(self):
+        with self.Session.begin() as session:
+            admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
+            pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
+            supervisor = User(
+                id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+                role=UserRole.supervisor, active=True,
+            )
+            session.add_all([admin, pm, supervisor])
+            session.flush()
+            session.add_all([
+                EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                EmployeeProfile(
+                    user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
+                ),
+            ])
+            template = V2Template(code="WORKVED-45", name="Workved 45 Day")
+            session.add(template)
+            session.flush()
+            published = V2TemplateVersion(
+                template_id=template.id, version_no=1, status="published", duration_days=45,
+                content_hash="published-hash", is_current_published=True,
+                created_by=ADMIN_ID, published_by=ADMIN_ID, published_at=datetime.now(timezone.utc),
+            )
+            session.add(published)
+            session.flush()
+            session.add(V2TemplateTask(
+                template_version_id=published.id, code="T001", sequence_no=1, title="Existing template task",
+                schedule_classification="execution", planned_start_day=1, planned_end_day=1,
+                applicability="mandatory", evidence_required=False, duration_days=1,
+            ))
+            self.published_version_id = published.id
+
+    def create_draft(self, **overrides):
+        payload = {
+            "project_name": "Futurex Fitout",
+            "client": "Example Client",
+            "location": "Mumbai",
+            "proposed_start_date": "2026-08-01",
+            "target_handover_date": "2026-09-14",
+            "pm_user_id": str(PM_ID),
+            "supervisor_user_id": str(SUPERVISOR_ID),
+            "template_version_id": str(self.published_version_id),
+        }
+        payload.update(overrides)
+        response = self.client.post("/api/v2/projects", json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()
+
+    # ---- Activation ----------------------------------------------------
+
+    def test_activate_succeeds_when_eligible_and_writes_single_audit_entry(self):
+        project = self.create_draft()
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Setup complete, ready to start."})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "active")
+        self.assertIsNotNone(body["activated_at"])
+
+        with self.Session() as session:
+            events = session.scalars(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_ACTIVATED")).all()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].actor_user_id, ADMIN_ID)
+            self.assertTrue(events[0].after_json["template_version_locked"])
+
+    def test_activate_rejects_project_missing_target_handover_date(self):
+        project = self.create_draft(target_handover_date=None)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt activation."})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("target handover date", response.json()["detail"])
+        with self.Session() as session:
+            self.assertEqual(session.get(V2Project, uuid.UUID(project["id"])).status, "draft")
+
+    def test_activate_rejects_when_accountable_role_missing(self):
+        project = self.create_draft()
+        # End the Supervisor membership so activation eligibility fails.
+        supervisor_membership = next(m for m in project["memberships"] if m["project_role"] == "site_supervisor")
+        end_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships/{supervisor_membership['id']}/end",
+            json={"reason": "Testing missing accountable role."},
+        )
+        self.assertEqual(end_response.status_code, 200, end_response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt activation."})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("Site Supervisor", response.json()["detail"])
+
+    def test_activate_prevents_duplicate_activation(self):
+        project = self.create_draft()
+        first = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "First activation."})
+        self.assertEqual(first.status_code, 200, first.text)
+        second = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Second attempt."})
+        self.assertEqual(second.status_code, 409, second.text)
+        self.assertIn("already active", second.json()["detail"])
+        with self.Session() as session:
+            count = session.scalar(select(func.count()).select_from(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_ACTIVATED"))
+            self.assertEqual(count, 1)
+
+    def test_only_admin_can_activate(self):
+        project = self.create_draft()
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee, UserRole.super_admin):
+            self.app.dependency_overrides[current_user] = lambda role=role: User(
+                id=ADMIN_ID, name=role.value, email=f"{role.value}@example.com", role=role, active=True,
+            )
+            response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt."})
+            self.assertIn(response.status_code, (403,), (role, response.text))
+
+    def test_activation_rolls_back_on_audit_failure_leaving_project_in_draft(self):
+        project = self.create_draft()
+
+        def fail_audit(_mapper, _connection, _target):
+            raise RuntimeError("audit write failed")
+
+        event.listen(V2AuditEvent, "before_insert", fail_audit)
+        try:
+            with self.assertRaises(RuntimeError):
+                self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt."})
+        finally:
+            event.remove(V2AuditEvent, "before_insert", fail_audit)
+
+        with self.Session() as session:
+            refreshed = session.get(V2Project, uuid.UUID(project["id"]))
+            self.assertEqual(refreshed.status, "draft")
+            self.assertIsNone(refreshed.activated_at)
+
+    def test_template_version_reference_is_locked_after_activation(self):
+        project = self.create_draft()
+        activate = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(activate.status_code, 200, activate.text)
+        response = self.client.patch(
+            f"/api/v2/projects/{project['id']}",
+            json={"template_version_id": str(self.published_version_id), "reason": "Attempt to re-attach template."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+
+    # ---- Deletion --------------------------------------------------------
+
+    def test_delete_draft_hard_deletes_and_removes_restricted_memberships(self):
+        project = self.create_draft()
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Draft no longer needed."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["deleted"])
+        self.assertEqual(body["deletion_type"], "hard")
+
+        with self.Session() as session:
+            self.assertIsNone(session.get(V2Project, uuid.UUID(project["id"])))
+            remaining_memberships = session.scalar(
+                select(func.count()).select_from(V2ProjectMembership).where(V2ProjectMembership.project_id == uuid.UUID(project["id"]))
+            )
+            self.assertEqual(remaining_memberships, 0)
+            audit = session.scalar(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_DRAFT_DELETED"))
+            # Audit integrity: the event row survives the project delete.
+            # (V2AuditEvent.project_id is declared ON DELETE SET NULL in the
+            # real Postgres schema; this SQLite test harness does not enable
+            # FK-action enforcement - matching test_project_create_v2.py's
+            # existing setup - so nulling isn't observable here. That part of
+            # the guarantee is a database-level constraint, not application
+            # code, and is unaffected by this change.)
+            self.assertIsNotNone(audit)
+
+    def test_delete_active_project_with_no_execution_activity_archives_instead_of_removing(self):
+        project = self.create_draft()
+        self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Cancelled before work started."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["deletion_type"], "soft")
+        self.assertEqual(body["status"], "archived")
+
+        with self.Session() as session:
+            refreshed = session.get(V2Project, uuid.UUID(project["id"]))
+            self.assertIsNotNone(refreshed, "Active project must be soft-deleted, not removed.")
+            self.assertEqual(refreshed.status, "archived")
+            audit = session.scalar(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_ARCHIVED"))
+            self.assertIsNotNone(audit)
+
+    def test_delete_blocked_when_execution_audit_event_exists(self):
+        project = self.create_draft()
+        self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        with self.Session.begin() as session:
+            session.add(V2AuditEvent(
+                actor_user_id=PM_ID, action="TASK_VERIFIED", entity_type="task",
+                entity_id=uuid.uuid4(), project_id=uuid.UUID(project["id"]), reason="Simulated future execution activity.",
+            ))
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Attempt deletion."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("execution activity", response.json()["detail"])
+        with self.Session() as session:
+            self.assertEqual(session.get(V2Project, uuid.UUID(project["id"])).status, "active")
+
+    def test_delete_blocked_for_completed_project(self):
+        project = self.create_draft()
+        self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        status_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/status", json={"status": "completed", "reason": "Marked complete for test."},
+        )
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Attempt deletion."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("Completed", response.json()["detail"])
+
+    def test_delete_blocked_for_already_archived_project(self):
+        project = self.create_draft()
+        archive_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/status", json={"status": "archived", "reason": "Archiving draft directly."},
+        )
+        self.assertEqual(archive_response.status_code, 200, archive_response.text)
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Attempt deletion."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("already been archived", response.json()["detail"])
+
+    def test_delete_requires_matching_confirmation_code(self):
+        project = self.create_draft()
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": "WRONG-CODE", "reason": "Attempt deletion."},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        with self.Session() as session:
+            self.assertIsNotNone(session.get(V2Project, uuid.UUID(project["id"])))
+
+    def test_delete_does_not_touch_template_tables(self):
+        project = self.create_draft()
+        with self.Session() as session:
+            template_count_before = session.scalar(select(func.count()).select_from(V2Template))
+            version_count_before = session.scalar(select(func.count()).select_from(V2TemplateVersion))
+            task_count_before = session.scalar(select(func.count()).select_from(V2TemplateTask))
+
+        self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Draft no longer needed."},
+        )
+
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2Template)), template_count_before)
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2TemplateVersion)), version_count_before)
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2TemplateTask)), task_count_before)
+
+    def test_only_admin_can_delete(self):
+        project = self.create_draft()
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee, UserRole.super_admin):
+            self.app.dependency_overrides[current_user] = lambda role=role: User(
+                id=ADMIN_ID, name=role.value, email=f"{role.value}@example.com", role=role, active=True,
+            )
+            response = self.client.request(
+                "DELETE", f"/api/v2/projects/{project['id']}",
+                json={"confirmation": project["code"], "reason": "Attempt."},
+            )
+            self.assertEqual(response.status_code, 403, (role, response.text))
+
+
+if __name__ == "__main__":
+    unittest.main()

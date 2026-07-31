@@ -12,7 +12,7 @@ from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
 from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
-from app.schemas.projects import ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectStatusIn, ProjectUpdateIn
+from app.schemas.projects import ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectStatusIn, ProjectTeamUpdateIn, ProjectUpdateIn
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
 
@@ -500,6 +500,27 @@ def update_project(project_id: uuid.UUID, payload: ProjectUpdateIn, actor: User 
     add_audit(db, actor, project, "PROJECT_DETAILS_UPDATED", payload.reason.strip(), before, project_snapshot(project))
     db.commit()
     db.refresh(project)
+    return project_json(db, project, True)
+
+
+@router.get("/{project_id}/team")
+def get_project_team(project_id: uuid.UUID, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = get_project(db, project_id, actor)
+    return project_json(db, project, True)
+
+
+@router.patch("/{project_id}/team")
+def update_project_team(project_id: uuid.UUID, payload: ProjectTeamUpdateIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = get_project(db, project_id, actor)
+    if project.status != "draft":
+        raise HTTPException(409, "Project team can only be changed while Draft.")
+    if actor.role not in {UserRole.super_admin, UserRole.admin}:
+        raise HTTPException(403, "Only Admin can replace PM or Supervisor during Draft.")
+    if payload.project_manager_employee_id:
+        assign_membership(db, project, payload.project_manager_employee_id, "project_manager", payload.reason, actor)
+    if payload.supervisor_employee_id:
+        assign_membership(db, project, payload.supervisor_employee_id, "site_supervisor", payload.reason, actor)
+    db.commit()
     return project_json(db, project, True)
 
 
