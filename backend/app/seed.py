@@ -58,6 +58,18 @@ def _ensure_super_admin(db: Session) -> User:
 
 
 def ensure_seed_data(db: Session) -> None:
+    """Local-only convenience seeding: dev Super Admin + sample execution template.
+
+    Guarded here (in addition to the ENVIRONMENT check in main.py's startup
+    hook) so any other caller - a script, a shell, a future entrypoint - can't
+    accidentally run local seed data against staging/production by skipping
+    the startup-hook gate.
+    """
+    if settings.environment != "local":
+        raise RuntimeError(
+            f"ensure_seed_data() is local-only dev seeding and refuses to run when ENVIRONMENT={settings.environment!r}. "
+            "Use `python -m app.scripts.bootstrap_super_admin` (opt-in via BOOTSTRAP_SUPER_ADMIN=true) for staging/production."
+        )
     super_admin = _ensure_super_admin(db)
     template = db.scalar(select(ExecutionTemplate).where(ExecutionTemplate.name == "Interior Fit-out · 3 Day Standard"))
     if not template:

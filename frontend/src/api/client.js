@@ -1,6 +1,8 @@
 import { supabase } from "../lib/supabase";
 
-const API_BASE = import.meta.env.VITE_API_BASE || (window.location.protocol + "//" + window.location.hostname + ":8000");
+// VITE_API_BASE is the primary name; VITE_API_BASE_URL is accepted as an
+// alias for deploy tooling that expects that name.
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || (window.location.protocol + "//" + window.location.hostname + ":8000");
 
 export class ApiError extends Error {
   constructor(message, status, details = null) {

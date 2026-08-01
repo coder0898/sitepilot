@@ -13,9 +13,10 @@ from app.seed import ensure_seed_data
 def create_app() -> FastAPI:
     app = FastAPI(title="SiteOps API")
 
+    cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -39,8 +40,14 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def startup() -> None:
-        with SessionLocal() as db:
-            ensure_seed_data(db)
+        # Local-only convenience seeding (dev super admin + sample execution
+        # template). Never runs in staging/production - those environments
+        # get their Super Admin via the explicit, opt-in
+        # `python -m app.scripts.bootstrap_super_admin` script instead
+        # (see Phase 3 of the staging deployment prep).
+        if settings.environment == "local":
+            with SessionLocal() as db:
+                ensure_seed_data(db)
 
     return app
 

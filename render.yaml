@@ -1,0 +1,70 @@
+# Render Blueprint for the SiteOps backend API.
+#
+# This deploys only the FastAPI backend (backend/). The frontend is a static
+# Vite build intended for Vercel (see vercel.json / the frontend deployment
+# notes) - Render's static-site product could also host it, but is not
+# configured here to avoid duplicating the Vercel setup.
+#
+# No secret values are set here. Every secret-bearing var uses `sync: false`,
+# meaning Render will prompt for it in the dashboard and will NOT store it in
+# this file or in git. Fill them in via the Render dashboard after the first
+# deploy is created from this blueprint.
+#
+# Migrations: the start command runs `alembic upgrade head` before starting
+# uvicorn, same as backend/Dockerfile's CMD. This only applies the
+# non-namespaced legacy-table migrations under backend/alembic/. The
+# siteops_v2.* schema migrations under supabase/migrations/*.sql are NOT
+# applied by this command - they must be applied separately via the
+# Supabase CLI/dashboard against the target Supabase Postgres instance
+# (see the deployment runbook for exact steps). This is a known, documented
+# gap, not an oversight.
+services:
+  - type: web
+    name: siteops-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/health
+    autoDeploy: false
+    # Matches backend/Dockerfile's own CMD exactly; listed explicitly here
+    # per spec even though it's redundant with the image default, so the
+    # migrate-then-serve behavior is visible directly in this file too.
+    dockerCommand: "sh -c \"alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+    envVars:
+      # --- Required, non-secret ---
+      - key: ENVIRONMENT
+        value: staging
+      - key: PORT
+        value: 8000
+      - key: UPLOAD_DIR
+        value: uploads/task-proofs
+      - key: CORS_ORIGINS
+        sync: false # set to the deployed frontend origin(s), comma-separated, no wildcards in staging/prod
+      - key: FRONTEND_URL
+        sync: false # e.g. https://siteops-staging.vercel.app
+
+      # --- Required, secret (fill in via Render dashboard, never in this file) ---
+      - key: DATABASE_URL
+        sync: false # staging Supabase Postgres connection string (postgresql+psycopg://...)
+      - key: SUPABASE_URL
+        sync: false # staging Supabase project URL (server-reachable form)
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false # Supabase publishable/anon key (also used server-side for the /auth/v1 fallback path)
+      - key: SUPABASE_SECRET_KEY
+        sync: false # Supabase service_role key. NEVER expose to frontend/browser code.
+
+      # --- One-time bootstrap only - leave unset day-to-day ---
+      - key: BOOTSTRAP_SUPER_ADMIN
+        sync: false # set to "true" only for the single run of `python -m app.scripts.bootstrap_super_admin`, then unset
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SUPER_ADMIN_NAME
+        sync: false
+
+      # --- One-time legacy user migration only - leave unset day-to-day ---
+      - key: MIGRATION_TEMP_PASSWORD
+        sync: false

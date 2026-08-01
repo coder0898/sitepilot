@@ -4,24 +4,24 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import require_roles
+from app.auth import current_user, require_roles
 from app.database import get_db
 from app.models import User, UserRole, VendorCategory, TaskVendorCategoryMapping, TaskVendorCategoryMappingAudit, ExecutionTemplateTask
 
 router = APIRouter(prefix="/api/v2/vendor-category-mapping", tags=["vendor-category-mapping"])
 
 @router.get("/task-categories")
-def task_categories(db: Session = Depends(get_db)):
+def task_categories(_: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.execute(select(ExecutionTemplateTask.category).distinct()).scalars().all()
     return {"items": [{"id": c, "name": c} for c in rows if c]}
 
 @router.get("/vendor-categories")
-def vendor_categories(db: Session = Depends(get_db)):
+def vendor_categories(_: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(VendorCategory).where(VendorCategory.active.is_(True)).order_by(VendorCategory.name)).all()
     return {"items": [{"id": str(x.id), "name": x.name} for x in rows]}
 
 @router.get("")
-def mappings(db: Session = Depends(get_db)):
+def mappings(_: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(TaskVendorCategoryMapping)).all()
     return {"items": [{"id": str(x.id), "task_category_id": x.task_category, "vendor_category_id": str(x.vendor_category_id) if x.vendor_category_id else None} for x in rows]}
 
