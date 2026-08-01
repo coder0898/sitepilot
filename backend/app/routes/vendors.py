@@ -37,7 +37,7 @@ def update_vendor(vendor_id: uuid.UUID, payload: VendorIn, _: User = Depends(req
 
 
 @router.delete("/{vendor_id}")
-def delete_vendor(vendor_id: uuid.UUID, _: User = Depends(require_roles(UserRole.super_admin, UserRole.admin, UserRole.project_manager)), db: Session = Depends(get_db)):
+def delete_vendor(vendor_id: uuid.UUID, actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin, UserRole.project_manager)), db: Session = Depends(get_db)):
     vendor = db.get(Vendor, vendor_id)
     if not vendor:
         raise HTTPException(404, "Vendor not found.")
@@ -46,9 +46,13 @@ def delete_vendor(vendor_id: uuid.UUID, _: User = Depends(require_roles(UserRole
         noun = "sub-vendor" if linked_sub_vendor_count == 1 else "sub-vendors"
         verb = "is" if linked_sub_vendor_count == 1 else "are"
         raise HTTPException(409, f"This main vendor cannot be deleted because {linked_sub_vendor_count} {noun} {verb} still linked. Transfer or delete them first, or mark the main vendor inactive.")
+    assigned_task_count = len(db.scalars(select(ExecutionTask.id).where(
+        (ExecutionTask.assigned_contractor_id == vendor_id) | (ExecutionTask.assigned_subcontractor_id == vendor_id)
+    )).all())
+    if assigned_task_count:
+        noun = "task" if assigned_task_count == 1 else "tasks"
+        raise HTTPException(409, f"This vendor cannot be deleted because it is assigned to {assigned_task_count} execution {noun}. Reassign those tasks or mark the vendor inactive to preserve assignment history.")
     db.query(ProjectTask).filter(ProjectTask.vendor_id == vendor_id).update({ProjectTask.vendor_id: None})
-    db.query(ExecutionTask).filter(ExecutionTask.assigned_subcontractor_id == vendor_id).update({ExecutionTask.assigned_subcontractor_id: None}, synchronize_session=False)
-    db.query(ExecutionTask).filter(ExecutionTask.assigned_contractor_id == vendor_id).update({ExecutionTask.assigned_contractor_id: None, ExecutionTask.assigned_subcontractor_id: None}, synchronize_session=False)
     db.delete(vendor)
     try:
         db.commit()

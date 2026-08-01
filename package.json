@@ -1,0 +1,32 @@
+{
+    "name":  "siteops-mvp",
+    "version":  "1.0.0",
+    "description":  "Framework\r - Frontend: React.js + Tailwind CSS\r - Backend: Python FastAPI\r - Database: PostgreSQL\r - Migrations: Alembic\r - Runtime: Docker Compose",
+    "main":  "index.js",
+    "directories":  {
+                        "doc":  "docs"
+                    },
+    "scripts":  {
+                    "local:start":  "powershell -ExecutionPolicy Bypass -File tools/start-local.ps1",
+                    "local:stop":  "powershell -ExecutionPolicy Bypass -File tools/stop-local.ps1",
+                    "local:status":  "powershell -ExecutionPolicy Bypass -File tools/status-local.ps1",
+                    "test":  "echo \"Error: no test specified\" \u0026\u0026 exit 1"
+                },
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/603cws/workved-siteops.git"
+                   },
+    "keywords":  [
+
+                 ],
+    "author":  "",
+    "license":  "ISC",
+    "type":  "commonjs",
+    "bugs":  {
+                 "url":  "https://github.com/603cws/workved-siteops/issues"
+             },
+    "homepage":  "https://github.com/603cws/workved-siteops#readme",
+    "devDependencies":  {
+                            "supabase":  "^2.109.1"
+                        }
+}

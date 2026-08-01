@@ -6,10 +6,25 @@ from pydantic import BaseModel
 from app.models import TaskStatus, UserRole
 
 
-class LoginIn(BaseModel):
-    email: str
-    password: str
 
+class AccessRequestCreateIn(BaseModel):
+    name: str
+    email: str
+    phone: str | None = None
+    employee_code: str | None = None
+    designation: str | None = None
+    department: str | None = None
+    requested_role: UserRole
+    project_reference: str | None = None
+    justification: str
+
+
+class AccessRequestReviewIn(BaseModel):
+    role: UserRole | None = None
+    employee_code: str | None = None
+    designation: str | None = None
+    department: str | None = None
+    reason: str | None = None
 
 class UserCreateIn(BaseModel):
     name: str
@@ -17,6 +32,9 @@ class UserCreateIn(BaseModel):
     phone: str | None = None
     password: str
     role: UserRole
+    employee_code: str | None = None
+    designation: str | None = None
+    department: str | None = None
 
 
 class UserUpdateIn(BaseModel):
@@ -24,24 +42,25 @@ class UserUpdateIn(BaseModel):
     email: str
     phone: str | None = None
     role: UserRole | None = None
+    employee_code: str | None = None
+    designation: str | None = None
+    department: str | None = None
+    reason: str | None = None
 
 
-class PasswordIn(BaseModel):
-    password: str
 
 
-class ChangePasswordIn(BaseModel):
-    current_password: str
-    new_password: str
+class UserLifecycleIn(BaseModel):
+    reason: str
 
 
-class ResetRequestIn(BaseModel):
-    email: str
+class UserDeleteIn(BaseModel):
+    reason: str
+    confirmation: str
 
-
-class ResetPasswordIn(BaseModel):
-    token: str
-    password: str
+class MyProfileUpdateIn(BaseModel):
+    name: str
+    phone: str | None = None
 
 
 class VendorIn(BaseModel):
@@ -134,6 +153,9 @@ class ReviewIn(BaseModel):
 
 class ModulePermissionRow(BaseModel):
     role: UserRole
+    employee_code: str | None = None
+    designation: str | None = None
+    department: str | None = None
     module_key: str
     can_view: bool
 
@@ -141,6 +163,7 @@ class ModulePermissionRow(BaseModel):
 class ModulePermissionIn(BaseModel):
     permissions: list[ModulePermissionRow]
 class ExecutionTemplateTaskIn(BaseModel):
+    id: uuid.UUID | None = None
     day_no: int
     title: str
     category: str = "General"
@@ -157,6 +180,9 @@ class ExecutionTemplateIn(BaseModel):
     project_type: str
     duration_days: int = 3
     tasks: list[ExecutionTemplateTaskIn]
+
+class ExecutionTemplateStatusIn(BaseModel):
+    active: bool
 
 class ExecutionProjectIn(BaseModel):
     name: str
@@ -186,6 +212,13 @@ class ExecutionTaskIn(BaseModel):
     assigned_contractor_id: uuid.UUID | None = None
     assigned_subcontractor_id: uuid.UUID | None = None
     priority: str = "medium"
+    assignment_reason: str | None = None
+
+
+class ExecutionTaskAssignmentIn(BaseModel):
+    assigned_contractor_id: uuid.UUID | None = None
+    assigned_subcontractor_id: uuid.UUID | None = None
+    reason: str | None = None
 
 class ExecutionProjectContractorIn(BaseModel):
     project_id: uuid.UUID

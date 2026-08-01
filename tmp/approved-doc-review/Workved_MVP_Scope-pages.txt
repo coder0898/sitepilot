@@ -1,0 +1,20 @@
+===== PAGE 1 =====
+Workved Site Operations Platform
+MVP Scope Document
+Version: 1.1Purpose: Development Scope Definition - Release 1Audience: Management + Product + Development TeamStatus: Draft - subject to PRD approval
+1. Objective
+Build a project execution control system that enables Workved to create projects, assign ownership, track execution, manage controlled reassignment, manage approvals and provide management visibility. The first release focuses only on operational control from project creation to completion with clear accountability and ownership continuity.
+2. MVP Users
+Super Admin: Platform governance, role management and permissions.Admin: Project setup and operational management.Project Manager: Project ownership, coordination and approvals.Supervisor: Site execution monitoring and task supervision.Internal Employee: Assigned task execution and support activities.Management: Dashboard visibility and performance review.Vendor: Task communication and acknowledgement only.
+3. MVP Modules
+===== PAGE 2 =====
+Module 1: User & Role Management- User creation- Role-based access control- Permission management- Active/inactive users- Basic employee availability status for task reassignment onlyModule 2: Project & Template Management- Create projects- Select project templates- Assign Project Manager and Supervisor- Generate project tasks- Lock baseline after project startModule 3: Task Management- Create and assign tasks- Track execution progress- Update task status- Upload evidence- Capture blockers and delaysModule 4: Ownership & Reassignment Management- Every active task must have exactly one primary owner- Supporting employees can assist but cannot replace primary ownership- Primary ownership may be reassigned due to absence, unavailability or operational requirement- Reassignment requires approval before the new primary owner becomes active- Record previous owner, new owner, reason, requester, approver and effective date/time- Preserve complete assignment and reassignment history- Notify the previous owner, new owner, Project Manager and SupervisorModule 5: Approval Management- Track society, client, government and internal approvals with ownership and statusModule 6: Vendor Management- Vendor database- Vendor-task mapping- Acknowledgement trackingModule 7: Communication- WhatsApp notifications- Task reminders- Delay alerts- Reassignment notificationsModule 8: Dashboard & Reports- Project progress- Pending tasks- Delays- Blockers- Approval status- Current task ownership and reassignment history
+4. Technical Stack
+Backend: FastAPI + PostgreSQLFrontend: ReactDeployment: Docker + CloudIntegration: WhatsApp API
+===== PAGE 3 =====
+5. MVP Success Metrics
+- 100% active tasks have exactly one primary owner- 100% ownership changes are approved and recorded- 100% approvals have responsible owners- Daily execution updates above 90%- Project status available anytime- Reduction in manual follow-ups
+6. Out of MVP Scope
+- AI-based allocation- Automatic skill-based allocation- Mobile application- Client portal- Vendor portal- Attendance, leave and payroll management- GPS tracking- AI prediction- Advanced scheduling- Automatic reassignment without approval
+7. Development Priority
+Phase 1: Execution Backbone1. Login and roles2. Project creation3. Templates4. Task management5. Ownership and support assignments6. Basic employee availability status7. Controlled task reassignment8. Assignment and reassignment audit capturePhase 2: Control Layer9. Approvals10. Vendors11. WhatsApp notifications and reassignment alertsPhase 3: Visibility12. Dashboard13. Reports14. Audit history view

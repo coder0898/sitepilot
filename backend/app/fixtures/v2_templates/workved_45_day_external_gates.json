@@ -1,0 +1,548 @@
+{
+  "template_code": "workved_45_day_permanent",
+  "version": "1.0.0",
+  "external_gates": [
+    {
+      "code": "E001",
+      "approval_name": "Formal site handover letter",
+      "description": null,
+      "external_party": "Client / Landlord",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T008"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 1
+    },
+    {
+      "code": "E002",
+      "approval_name": "Approved architectural layout",
+      "description": null,
+      "external_party": "Client / Design Consultant",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T010"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 2
+    },
+    {
+      "code": "E003",
+      "approval_name": "Approved coordinated MEP drawings",
+      "description": null,
+      "external_party": "Client / MEP Consultant",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T023",
+        "T024",
+        "T025",
+        "T026",
+        "T027",
+        "T028",
+        "T029"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 3
+    },
+    {
+      "code": "E004",
+      "approval_name": "Approved BOQ and material specifications",
+      "description": null,
+      "external_party": "Client / Management",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T003",
+        "T004",
+        "T005",
+        "T006"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 4
+    },
+    {
+      "code": "E005",
+      "approval_name": "Material and finish sample approval",
+      "description": null,
+      "external_party": "Client / Designer",
+      "required_by_type": "source_text",
+      "required_by_value": "Before procurement",
+      "impact": "Partial/Full",
+      "mapping_classification": "broad_text",
+      "task_codes": [],
+      "broad_mapping_text": "Relevant procurement and finish tasks",
+      "requires_configuration": true,
+      "sequence": 5
+    },
+    {
+      "code": "E006",
+      "approval_name": "Building/Society work NOC",
+      "description": null,
+      "external_party": "Building Management / Society",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "broad_text",
+      "task_codes": [],
+      "broad_mapping_text": "T008 onwards",
+      "requires_configuration": true,
+      "sequence": 6
+    },
+    {
+      "code": "E007",
+      "approval_name": "Contractor registration and worker passes",
+      "description": null,
+      "external_party": "Building Management",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T008",
+        "T009",
+        "T010",
+        "T011",
+        "T012",
+        "T013",
+        "T014",
+        "T015",
+        "T016",
+        "T017",
+        "T018",
+        "T019"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 7
+    },
+    {
+      "code": "E008",
+      "approval_name": "Approved work hours / night work permission",
+      "description": null,
+      "external_party": "Building Management",
+      "required_by_type": "source_text",
+      "required_by_value": "Before mobilisation",
+      "impact": "Partial",
+      "mapping_classification": "broad_text",
+      "task_codes": [],
+      "broad_mapping_text": "Affected activities",
+      "requires_configuration": true,
+      "sequence": 8
+    },
+    {
+      "code": "E009",
+      "approval_name": "Freight/service-lift permission",
+      "description": null,
+      "external_party": "Building Management",
+      "required_by_type": "source_text",
+      "required_by_value": "Before deliveries",
+      "impact": "Partial/Full",
+      "mapping_classification": "broad_text",
+      "task_codes": [],
+      "broad_mapping_text": "Material delivery tasks",
+      "requires_configuration": true,
+      "sequence": 9
+    },
+    {
+      "code": "E010",
+      "approval_name": "Debris-removal route and timing approval",
+      "description": null,
+      "external_party": "Building Management",
+      "required_by_type": "source_text",
+      "required_by_value": "Before demolition",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T019"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 10
+    },
+    {
+      "code": "E011",
+      "approval_name": "Hot-work permit",
+      "description": null,
+      "external_party": "Building / Fire Safety",
+      "required_by_type": "source_text",
+      "required_by_value": "Before activity",
+      "impact": "Full for task",
+      "mapping_classification": "broad_text",
+      "task_codes": [],
+      "broad_mapping_text": "Relevant welding/cutting tasks",
+      "requires_configuration": true,
+      "sequence": 11
+    },
+    {
+      "code": "E012",
+      "approval_name": "Core-cutting approval",
+      "description": null,
+      "external_party": "Building / Structural Consultant",
+      "required_by_type": "source_text",
+      "required_by_value": "Before core cutting",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T020"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 12
+    },
+    {
+      "code": "E013",
+      "approval_name": "Structural alteration approval",
+      "description": null,
+      "external_party": "Structural Consultant / Building",
+      "required_by_type": "source_text",
+      "required_by_value": "Before structural work",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T020",
+        "T021"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 13
+    },
+    {
+      "code": "E014",
+      "approval_name": "Fire-system shutdown permission",
+      "description": null,
+      "external_party": "Building Fire Team",
+      "required_by_type": "source_text",
+      "required_by_value": "Before fire modification",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T028",
+        "T042"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 14
+    },
+    {
+      "code": "E015",
+      "approval_name": "Approved sprinkler/fire-alarm drawings",
+      "description": null,
+      "external_party": "Fire Consultant / Building",
+      "required_by_type": "source_text",
+      "required_by_value": "Before fire execution",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T028",
+        "T042",
+        "T073"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 15
+    },
+    {
+      "code": "E016",
+      "approval_name": "Electrical load confirmation",
+      "description": null,
+      "external_party": "Landlord / Building / Utility",
+      "required_by_type": "source_text",
+      "required_by_value": "Before panel finalization",
+      "impact": "Partial/Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T066",
+        "T077",
+        "T078"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 16
+    },
+    {
+      "code": "E017",
+      "approval_name": "Temporary construction power confirmation",
+      "description": null,
+      "external_party": "Building / Landlord",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 1",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T011"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 17
+    },
+    {
+      "code": "E018",
+      "approval_name": "Permanent electrical energisation approval",
+      "description": null,
+      "external_party": "Building / Landlord",
+      "required_by_type": "source_text",
+      "required_by_value": "Before final testing",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T077",
+        "T078"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 18
+    },
+    {
+      "code": "E019",
+      "approval_name": "HVAC outdoor-unit/location approval",
+      "description": null,
+      "external_party": "Building / MEP Consultant",
+      "required_by_type": "source_text",
+      "required_by_value": "Before procurement/install",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T027",
+        "T041"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 19
+    },
+    {
+      "code": "E020",
+      "approval_name": "Condensate drain route approval",
+      "description": null,
+      "external_party": "Building / MEP Consultant",
+      "required_by_type": "source_text",
+      "required_by_value": "Before first fix",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T027"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 20
+    },
+    {
+      "code": "E021",
+      "approval_name": "Plumbing connection-point approval",
+      "description": null,
+      "external_party": "Building / MEP Consultant",
+      "required_by_type": "source_text",
+      "required_by_value": "Before first fix",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T026",
+        "T045"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 21
+    },
+    {
+      "code": "E022",
+      "approval_name": "Client IT requirements and rack/network schedule",
+      "description": null,
+      "external_party": "Client IT Team",
+      "required_by_type": "source_text",
+      "required_by_value": "Before data first fix",
+      "impact": "Partial/Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T025",
+        "T044",
+        "T066",
+        "T069",
+        "T070"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 22
+    },
+    {
+      "code": "E023",
+      "approval_name": "Client IT equipment delivery confirmation",
+      "description": null,
+      "external_party": "Client / IT Vendor",
+      "required_by_type": "source_text",
+      "required_by_value": "Before commissioning",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T070",
+        "T082"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 23
+    },
+    {
+      "code": "E024",
+      "approval_name": "CCTV and access-control design approval",
+      "description": null,
+      "external_party": "Client / Security Team",
+      "required_by_type": "source_text",
+      "required_by_value": "Before procurement",
+      "impact": "Partial/Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T071",
+        "T072"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 24
+    },
+    {
+      "code": "E025",
+      "approval_name": "Branding and signage artwork approval",
+      "description": null,
+      "external_party": "Client / Brand Team",
+      "required_by_type": "source_text",
+      "required_by_value": "Before fabrication",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T074",
+        "T075"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 25
+    },
+    {
+      "code": "E026",
+      "approval_name": "External signage permission",
+      "description": null,
+      "external_party": "Building / Society",
+      "required_by_type": "source_text",
+      "required_by_value": "Before fabrication/install",
+      "impact": "Full for task",
+      "mapping_classification": "broad_text",
+      "task_codes": [],
+      "broad_mapping_text": "External signage task",
+      "requires_configuration": true,
+      "sequence": 26
+    },
+    {
+      "code": "E027",
+      "approval_name": "Furniture shop-drawing approval",
+      "description": null,
+      "external_party": "Client / Designer",
+      "required_by_type": "source_text",
+      "required_by_value": "Before production",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T061",
+        "T062",
+        "T063",
+        "T064",
+        "T065"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 27
+    },
+    {
+      "code": "E028",
+      "approval_name": "Client-supplied equipment schedule",
+      "description": null,
+      "external_party": "Client",
+      "required_by_type": "source_text",
+      "required_by_value": "Before fabrication",
+      "impact": "Partial/Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T049",
+        "T066",
+        "T067"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 28
+    },
+    {
+      "code": "E029",
+      "approval_name": "Fire integration test attendance confirmation",
+      "description": null,
+      "external_party": "Building Fire Team",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 40",
+      "impact": "Full for task",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T081"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 29
+    },
+    {
+      "code": "E030",
+      "approval_name": "Client IT testing attendance confirmation",
+      "description": null,
+      "external_party": "Client IT Team",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 40",
+      "impact": "Partial/Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T082"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 30
+    },
+    {
+      "code": "E031",
+      "approval_name": "Client final-inspection availability",
+      "description": null,
+      "external_party": "Client",
+      "required_by_type": "source_text",
+      "required_by_value": "Before Day 43",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T095"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 31
+    },
+    {
+      "code": "E032",
+      "approval_name": "Occupancy/fire compliance approval where applicable",
+      "description": null,
+      "external_party": "Authority / Building",
+      "required_by_type": "source_text",
+      "required_by_value": "Before occupancy/handover",
+      "impact": "Full",
+      "mapping_classification": "exact",
+      "task_codes": [
+        "T099"
+      ],
+      "broad_mapping_text": null,
+      "requires_configuration": false,
+      "sequence": 32
+    }
+  ]
+}
