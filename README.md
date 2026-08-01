@@ -5,7 +5,7 @@ Framework
 - Backend: Python FastAPI
 - Database: PostgreSQL/Supabase
 - Migrations: Alembic(depreciated)
-- Runtime: Docker Compose
+- Runtime: Docker Compose Command
 
 ## Local run
 
