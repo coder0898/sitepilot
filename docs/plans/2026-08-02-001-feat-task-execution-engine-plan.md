@@ -1,7 +1,7 @@
 ---
 title: Task Execution Engine (Release 1, Phase 1 completion)
 type: feat
-status: active
+status: completed
 date: 2026-08-02
 origin: docs/brainstorms/release-1-completion-requirements.md
 ---
