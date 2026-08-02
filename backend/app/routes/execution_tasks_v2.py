@@ -21,16 +21,26 @@ from app.models import User
 from app.schemas.execution_tasks import (
     TaskApprovalIn,
     TaskApprovalOut,
+    TaskBlockerCreateIn,
+    TaskBlockerOut,
+    TaskDelayCreateIn,
+    TaskDelayOut,
     TaskEvidenceOut,
     TaskOut,
     TaskProgressUpdateOut,
     TaskStatusTransitionIn,
+    TaskSupportAssignmentCreateIn,
+    TaskSupportAssignmentEndIn,
+    TaskSupportAssignmentOut,
     TaskVerificationIn,
     TaskVerificationOut,
 )
 from app.services.task_approval import TaskApprovalService
+from app.services.task_blocker import TaskBlockerService
+from app.services.task_delay import TaskDelayService
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.task_progress import TaskProgressService
+from app.services.task_support_assignment import TaskSupportAssignmentService
 from app.services.task_verification import TaskVerificationService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-execution-tasks"])
@@ -160,6 +170,78 @@ def approve_task(
         decided_by=approval.decided_by,
         decided_at=approval.decided_at,
         task=TaskOut.model_validate(task),
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/blockers", response_model=TaskBlockerOut)
+def create_task_blocker(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskBlockerCreateIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return TaskBlockerService(db).create_blocker(
+        project_id, task_id, actor,
+        type_=payload.type,
+        description=payload.description,
+        owner_employee_id=payload.owner_employee_id,
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/blockers/{blocker_id}/resolve", response_model=TaskBlockerOut)
+def resolve_task_blocker(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    blocker_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return TaskBlockerService(db).resolve_blocker(project_id, task_id, blocker_id, actor)
+
+
+@router.post("/{project_id}/tasks/{task_id}/delays", response_model=TaskDelayOut)
+def create_task_delay(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskDelayCreateIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return TaskDelayService(db).create_delay(
+        project_id, task_id, actor,
+        responsibility_type=payload.responsibility_type,
+        reason=payload.reason,
+        impact_days=payload.impact_days,
+        responsible_vendor_id=payload.responsible_vendor_id,
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/support-assignments", response_model=TaskSupportAssignmentOut)
+def assign_task_support(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskSupportAssignmentCreateIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return TaskSupportAssignmentService(db).assign_support(
+        project_id, task_id, payload.employee_id, payload.responsibility, actor,
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/support-assignments/{assignment_id}/end", response_model=TaskSupportAssignmentOut)
+def end_task_support(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    payload: TaskSupportAssignmentEndIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return TaskSupportAssignmentService(db).end_support(
+        project_id, task_id, assignment_id, actor,
+        reason_code=payload.reason_code, reason_detail=payload.reason_detail,
     )
 
 

@@ -1,0 +1,368 @@
+from __future__ import annotations
+
+import unittest
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.auth import current_user
+from app.database import get_db
+from app.execution_models import (
+    BaselineTask,
+    FileObject,
+    ProjectBaseline,
+    SupportAssignmentChange,
+    Task,
+    TaskDependency,
+    TaskEvidence,
+    TaskProgressUpdate,
+    TaskSupportAssignment,
+)
+from app.models import EmployeeProfile, User, UserRole
+from app.project_models import ProjectRoleChange, V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.routes.execution_tasks_v2 import router as execution_tasks_router
+from app.routes.projects_v2 import router as projects_router
+from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(_type, _compiler, **_kw):
+    return "JSON"
+
+
+ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
+SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
+OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
+INTERNAL_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
+SECOND_INTERNAL_ID = uuid.UUID("ffffffff-ffff-4fff-8fff-fffffffffff6")
+
+
+class TaskSupportAssignmentApiTests(unittest.TestCase):
+    """U6: task-level support-employee assignment (BR-005), against real
+    execution tasks produced by U1's baseline-lock activation flow.
+    Follows the same SQLite-ATTACHed-schema harness pattern as
+    test_task_blockers_delays_v2.py.
+    """
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+
+        @event.listens_for(self.engine, "connect")
+        def attach_schema(dbapi_connection, _connection_record):
+            dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+
+        for table in (
+            User.__table__,
+            EmployeeProfile.__table__,
+            V2Template.__table__,
+            V2TemplateVersion.__table__,
+            V2TemplateTask.__table__,
+            V2TemplateTaskDependency.__table__,
+            V2Project.__table__,
+            V2ProjectMembership.__table__,
+            V2ProjectTask.__table__,
+            V2ProjectTaskDependency.__table__,
+            V2AuditEvent.__table__,
+            ProjectRoleChange.__table__,
+            ProjectBaseline.__table__,
+            BaselineTask.__table__,
+            Task.__table__,
+            TaskDependency.__table__,
+            TaskProgressUpdate.__table__,
+            FileObject.__table__,
+            TaskEvidence.__table__,
+            TaskSupportAssignment.__table__,
+            SupportAssignmentChange.__table__,
+        ):
+            table.create(self.engine)
+
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        self._seed()
+
+        self.app = FastAPI()
+        self.app.include_router(projects_router)
+        self.app.include_router(execution_tasks_router)
+
+        def override_db():
+            with self.Session() as session:
+                yield session
+
+        self.app.dependency_overrides[get_db] = override_db
+        self._current_actor = User(
+            id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True,
+        )
+        self.app.dependency_overrides[current_user] = lambda: self._current_actor
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.client.close()
+        self.engine.dispose()
+
+    def act_as(self, user: User) -> None:
+        self._current_actor = user
+
+    def act_as_admin(self) -> None:
+        self.act_as(User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True))
+
+    def act_as_pm(self) -> None:
+        self.act_as(User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True))
+
+    def act_as_supervisor(self) -> None:
+        self.act_as(User(
+            id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+            role=UserRole.supervisor, active=True,
+        ))
+
+    def act_as_outsider(self) -> None:
+        self.act_as(User(
+            id=OUTSIDER_ID, name="Outsider", email="outsider@example.com",
+            role=UserRole.supervisor, active=True,
+        ))
+
+    # ---- seeding -------------------------------------------------------
+
+    def _seed(self):
+        """Seeds a 2-task template: T001 (work), T002 (approval_gate), plus
+        two Internal Employees (one added as a project member at
+        create-time via generate/activate flow, a second seeded but not a
+        project member for the "non-member cannot be support" edge case)."""
+        with self.Session.begin() as session:
+            admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
+            pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
+            supervisor = User(
+                id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+                role=UserRole.supervisor, active=True,
+            )
+            outsider = User(
+                id=OUTSIDER_ID, name="Outsider", email="outsider@example.com",
+                role=UserRole.supervisor, active=True,
+            )
+            internal = User(
+                id=INTERNAL_ID, name="Internal One", email="internal1@example.com",
+                role=UserRole.internal_employee, active=True,
+            )
+            second_internal = User(
+                id=SECOND_INTERNAL_ID, name="Internal Two", email="internal2@example.com",
+                role=UserRole.internal_employee, active=True,
+            )
+            session.add_all([admin, pm, supervisor, outsider, internal, second_internal])
+            session.flush()
+            session.add_all([
+                EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                EmployeeProfile(
+                    user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
+                ),
+                EmployeeProfile(
+                    user_id=OUTSIDER_ID, employee_code="OUT-001", designation="Supervisor", availability="available",
+                ),
+                EmployeeProfile(
+                    user_id=INTERNAL_ID, employee_code="INT-001", designation="Site Assistant", availability="available",
+                ),
+                EmployeeProfile(
+                    user_id=SECOND_INTERNAL_ID, employee_code="INT-002", designation="Site Assistant", availability="available",
+                ),
+            ])
+            template = V2Template(code="WORKVED-45", name="Workved 45 Day")
+            session.add(template)
+            session.flush()
+            published = V2TemplateVersion(
+                template_id=template.id, version_no=1, status="published", duration_days=45,
+                content_hash="published-hash", is_current_published=True,
+                created_by=ADMIN_ID, published_by=ADMIN_ID, published_at=datetime.now(timezone.utc),
+            )
+            session.add(published)
+            session.flush()
+
+            specs = [("T001", "work", "standard"), ("T002", "approval_gate", "class_a")]
+            for i, (code, kind, klass) in enumerate(specs, start=1):
+                session.add(V2TemplateTask(
+                    template_version_id=published.id, code=code, sequence_no=i, title=f"Task {code}",
+                    schedule_classification="execution", planned_start_day=i, planned_end_day=i,
+                    applicability="mandatory", task_class=klass, task_kind=kind,
+                    evidence_required=False, duration_days=1, phase="Setup", category="Site",
+                ))
+            session.flush()
+            self.published_version_id = published.id
+
+    def create_draft(self, **overrides):
+        payload = {
+            "project_name": "Futurex Fitout",
+            "client": "Example Client",
+            "location": "Mumbai",
+            "proposed_start_date": "2026-08-01",
+            "target_handover_date": "2026-09-14",
+            "pm_user_id": str(PM_ID),
+            "supervisor_user_id": str(SUPERVISOR_ID),
+            "template_version_id": str(self.published_version_id),
+        }
+        payload.update(overrides)
+        response = self.client.post("/api/v2/projects", json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()
+
+    def activate_project(self) -> dict:
+        project = self.create_draft()
+        response = self.client.post(f"/api/v2/projects/{project['id']}/generate-tasks")
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/generate-dependencies")
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(response.status_code, 200, response.text)
+        return project
+
+    def add_internal_member(self, project_id: str, employee_id: uuid.UUID) -> None:
+        self.act_as_pm()
+        response = self.client.post(
+            f"/api/v2/projects/{project_id}/memberships",
+            json={"employee_id": str(employee_id), "project_role": "internal_employee", "reason": "Add support staff."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def task_by_code(self, project_id: str, code: str) -> Task:
+        with self.Session() as session:
+            return session.scalar(
+                select(Task).where(Task.project_id == uuid.UUID(project_id), Task.original_code == code)
+            )
+
+    def assign_support(self, project_id, task_id, employee_id, responsibility="Material staging."):
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/tasks/{task_id}/support-assignments",
+            json={"employee_id": str(employee_id), "responsibility": responsibility},
+        )
+
+    def end_support(self, project_id, task_id, assignment_id, reason_code="workload"):
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/tasks/{task_id}/support-assignments/{assignment_id}/end",
+            json={"reason_code": reason_code},
+        )
+
+    # ---- happy paths ----------------------------------------------------
+
+    def test_supervisor_assigns_support_employee_to_work_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        response = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["employee_id"], str(INTERNAL_ID))
+        self.assertEqual(body["status"], "active")
+        self.assertIsNone(body["ends_at"])
+
+        with self.Session() as session:
+            rows = session.scalars(select(TaskSupportAssignment).where(TaskSupportAssignment.task_id == t001.id)).all()
+            self.assertEqual(len(rows), 1)
+
+    def test_pm_assigns_followup_support_to_approval_gate_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t002 = self.task_by_code(project["id"], "T002")
+
+        self.act_as_pm()
+        response = self.assign_support(project["id"], t002.id, INTERNAL_ID)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["employee_id"], str(INTERNAL_ID))
+
+    def test_supervisor_cannot_assign_support_to_approval_gate(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t002 = self.task_by_code(project["id"], "T002")
+
+        self.act_as_supervisor()
+        response = self.assign_support(project["id"], t002.id, INTERNAL_ID)
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_pm_cannot_assign_support_to_work_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_pm()
+        response = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        self.assertEqual(response.status_code, 403, response.text)
+
+    # ---- edge cases -------------------------------------------------------
+
+    def test_internal_employee_cannot_be_assigned_twice_for_overlapping_periods(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        first = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        self.assertEqual(first.status_code, 200, first.text)
+
+        second = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        self.assertEqual(second.status_code, 409, second.text)
+
+    def test_non_internal_employee_cannot_be_assigned_as_support(self):
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        # PM (not an internal_employee) attempted as support.
+        response = self.assign_support(project["id"], t001.id, self._pm_employee_id())
+        self.assertEqual(response.status_code, 422, response.text)
+
+    def _pm_employee_id(self) -> uuid.UUID:
+        with self.Session() as session:
+            return session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == PM_ID))
+
+    def test_non_project_member_internal_employee_cannot_be_assigned_as_support(self):
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+        # SECOND_INTERNAL_ID never added as a project member.
+        self.act_as_supervisor()
+        response = self.assign_support(project["id"], t001.id, SECOND_INTERNAL_ID)
+        self.assertEqual(response.status_code, 422, response.text)
+
+    # ---- end support --------------------------------------------------------
+
+    def test_end_support_assignment_sets_ends_at_and_status(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        created = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        assignment_id = created.json()["id"]
+
+        response = self.end_support(project["id"], t001.id, assignment_id)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "ended")
+        self.assertIsNotNone(body["ends_at"])
+
+        with self.Session() as session:
+            changes = session.scalars(select(SupportAssignmentChange)).all()
+            self.assertEqual(len(changes), 1)
+            self.assertEqual(changes[0].previous_employee_id, INTERNAL_ID)
+
+    # ---- error path: no project membership ---------------------------------
+
+    def test_actor_with_no_membership_cannot_assign_support(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_outsider()
+        response = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        self.assertEqual(response.status_code, 403, response.text)
+
+
+if __name__ == "__main__":
+    unittest.main()

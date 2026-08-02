@@ -267,6 +267,77 @@ class TaskVerification(Base):
     verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class TaskBlocker(Base):
+    """U5: an independently queryable blocker condition on a task (BR-010).
+
+    Blockers never touch `Task.lifecycle_status` - a task can be
+    `in_progress` (or any other state) with an unresolved blocker logged
+    against it at the same time. Any active project member may log one;
+    only the accountable Supervisor/PM (or admin/super_admin fallback) may
+    resolve it - see `backend/app/services/task_blocker.py`.
+    """
+
+    __tablename__ = "task_blockers"
+    __table_args__ = (
+        CheckConstraint(
+            "(resolved_at is null and resolved_by is null) or (resolved_at is not null and resolved_by is not null)",
+            name="ck_v2_task_blockers_resolution_pair",
+        ),
+        Index("ix_v2_task_blockers_task", "task_id"),
+        Index("ix_v2_task_blockers_project", "project_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskDelayEvent(Base):
+    """U5: an independently queryable delay record on a task (BR-010).
+
+    Never touches `Task.lifecycle_status`. `responsible_vendor_id` is a
+    plain nullable uuid (not an FK - no vendor V2 table exists yet);
+    required when `responsibility_type == 'vendor'`, must be null
+    otherwise - enforced both at the DB (check constraint, migration) and
+    application layer (`backend/app/services/task_delay.py`).
+    """
+
+    __tablename__ = "task_delay_events"
+    __table_args__ = (
+        CheckConstraint(
+            "responsibility_type in ('vendor', 'client', 'approval', 'design', 'site_readiness', 'internal', 'other')",
+            name="ck_v2_task_delay_events_responsibility_type",
+        ),
+        CheckConstraint("impact_days > 0", name="ck_v2_task_delay_events_impact_days_positive"),
+        CheckConstraint(
+            "(responsibility_type = 'vendor' and responsible_vendor_id is not null) "
+            "or (responsibility_type <> 'vendor' and responsible_vendor_id is null)",
+            name="ck_v2_task_delay_events_vendor_id_pairing",
+        ),
+        Index("ix_v2_task_delay_events_task", "task_id"),
+        Index("ix_v2_task_delay_events_project", "project_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    responsibility_type: Mapped[str] = mapped_column(Text, nullable=False)
+    responsible_vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    impact_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class TaskApprovalDecision(Base):
     """U4: a PM's (or audited Admin fallback's) approval decision (BR-008).
 
@@ -293,3 +364,64 @@ class TaskApprovalDecision(Base):
     remarks: Mapped[str | None] = mapped_column(Text)
     decided_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskSupportAssignment(Base):
+    """U6: a delegated Internal Employee's support assignment on a task
+    (BR-005). Supervisor controls support for `work` tasks; PM controls
+    follow-up support for `approval_gate` tasks - see
+    `backend/app/services/task_support_assignment.py`.
+
+    Never alters task accountability: `Task` accountability stays derived
+    from the active project Supervisor/PM membership (BR-004), never from
+    this table. The assignee must be an active `internal_employee` project
+    member. Unique active assignment per task/employee is enforced both at
+    the DB level (`uq_v2_task_support_assignments_active_task_employee`,
+    migration) and the service layer.
+    """
+
+    __tablename__ = "task_support_assignments"
+    __table_args__ = (
+        CheckConstraint("status in ('active', 'ended')", name="ck_v2_task_support_assignments_status"),
+        CheckConstraint(
+            "(status = 'active' and ends_at is null) or (status = 'ended' and ends_at is not null)",
+            name="ck_v2_task_support_assignments_status_ends_at_pair",
+        ),
+        Index("ix_v2_task_support_assignments_task", "task_id"),
+        Index("ix_v2_task_support_assignments_project", "project_id"),
+        Index("ix_v2_task_support_assignments_employee", "employee_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"), nullable=False)
+    responsibility: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SupportAssignmentChange(Base):
+    """U6: an audited change record for a `TaskSupportAssignment` (R7) -
+    written whenever a support assignment is ended or replaced, mirroring
+    `project_role_changes`'s audit shape but for the non-accountable
+    support-employee layer (BR-005/BR-007)."""
+
+    __tablename__ = "support_assignment_changes"
+    __table_args__ = (
+        Index("ix_v2_support_assignment_changes_assignment", "task_support_assignment_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_support_assignment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.task_support_assignments.id", ondelete="RESTRICT"), nullable=False)
+    previous_employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"))
+    replacement_employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"))
+    reason_code: Mapped[str] = mapped_column(Text, nullable=False)
+    reason_detail: Mapped[str | None] = mapped_column(Text)
+    changed_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

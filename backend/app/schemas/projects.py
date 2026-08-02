@@ -72,3 +72,18 @@ class ProjectTeamUpdateIn(BaseModel):
     project_manager_employee_id: uuid.UUID | None = None
     supervisor_employee_id: uuid.UUID | None = None
     reason: str = Field(min_length=4)
+
+
+class ProjectRoleChangeRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role_type: str
+    replacement_employee_id: uuid.UUID
+    change_type: str = "replacement"
+    reason: str = Field(min_length=4)
+
+
+class ProjectRoleChangeRejectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=4)

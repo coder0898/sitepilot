@@ -35,6 +35,13 @@ export const projectsApi = {
   team: projectId => api(`/api/v2/projects/${projectId}/team`),
   updateTeam: (projectId, payload) => api(`/api/v2/projects/${projectId}/team`, { method: "PATCH", body: JSON.stringify(payload) }),
   endMembership: (projectId, membershipId, reason) => api(`/api/v2/projects/${projectId}/memberships/${membershipId}/end`, { method: "POST", body: JSON.stringify({ reason }) }),
+  // U6: PM/Supervisor changes are a two-step request/approval flow
+  // (BR-007) - requesting no longer takes immediate effect.
+  requestRoleChange: (projectId, payload) => api(`/api/v2/projects/${projectId}/role-changes`, { method: "POST", body: JSON.stringify(payload) }),
+  roleChanges: (projectId, status) => api(`/api/v2/projects/${projectId}/role-changes${status ? `?status=${status}` : ""}`),
+  approveRoleChange: (projectId, changeId) => api(`/api/v2/projects/${projectId}/role-changes/${changeId}/approve`, { method: "POST" }),
+  rejectRoleChange: (projectId, changeId, reason) => api(`/api/v2/projects/${projectId}/role-changes/${changeId}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
+  reassignmentRequired: projectId => api(`/api/v2/projects/${projectId}/role-changes/reassignment-required`),
   setStatus: (projectId, status, reason) => api(`/api/v2/projects/${projectId}/status`, { method: "POST", body: JSON.stringify({ status, reason }) }),
   remove: (projectId, payload) => api(`/api/v2/projects/${projectId}`, { method: "DELETE", body: JSON.stringify(payload) }),
 };

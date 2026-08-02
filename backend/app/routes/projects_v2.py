@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from app.auth import current_user, require_roles
 from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
+from app.project_models import ProjectRoleChange, V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
 from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
-from app.schemas.projects import ProjectActivateIn, ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectStatusIn, ProjectUpdateIn
+from app.schemas.projects import ProjectActivateIn, ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectRoleChangeRejectIn, ProjectRoleChangeRequestIn, ProjectStatusIn, ProjectUpdateIn
 from app.schemas.project_template_review import ProjectTemplateReviewSummaryOut, ProjectTemplateReviewTaskPage
 from app.schemas.project_task_applicability import ProjectTaskApplicabilityDecisionIn, ProjectTaskApplicabilityDecisionOut, ProjectTaskApplicabilityHistoryItem
 from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectManualTaskCreateOut
@@ -29,6 +29,7 @@ from app.services.project_manual_gate import ProjectManualGateService
 from app.schemas.project_dependencies import ProjectDependencyGenerateOut, ProjectDependencyListOut
 from app.services.project_dependency_generation import ProjectDependencyGenerationService
 from app.services.project_baseline import ProjectBaselineService
+from app.services.project_role_change import ProjectRoleChangeService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
 
@@ -137,6 +138,27 @@ def membership_json(db: Session, item: V2ProjectMembership) -> dict:
         "starts_at": item.starts_at.isoformat(),
         "ends_at": item.ends_at.isoformat() if item.ends_at else None,
         "assignment_reason": item.assignment_reason,
+    }
+
+
+def role_change_json(db: Session, change: ProjectRoleChange) -> dict:
+    employee = db.get(EmployeeProfile, change.replacement_employee_id)
+    user = db.get(User, employee.user_id) if employee else None
+    return {
+        "id": str(change.id),
+        "project_id": str(change.project_id),
+        "role_type": change.role_type,
+        "previous_membership_id": str(change.previous_membership_id) if change.previous_membership_id else None,
+        "replacement_employee_id": str(change.replacement_employee_id),
+        "replacement_name": user.name if user else "Unknown employee",
+        "change_type": change.change_type,
+        "reason_code": change.reason_code,
+        "reason_detail": change.reason_detail,
+        "status": change.status,
+        "requested_by": str(change.requested_by),
+        "requested_at": change.requested_at.isoformat(),
+        "decided_by": str(change.decided_by) if change.decided_by else None,
+        "decided_at": change.decided_at.isoformat() if change.decided_at else None,
     }
 
 
@@ -671,6 +693,21 @@ def set_membership(project_id: uuid.UUID, payload: ProjectMembershipIn, actor: U
     allowed = (payload.project_role == "project_manager" and actor.role == UserRole.admin) or (payload.project_role == "site_supervisor" and (actor.role == UserRole.admin or is_pm)) or (payload.project_role == "internal_employee" and (actor.role == UserRole.admin or is_pm or is_supervisor))
     if not allowed:
         raise HTTPException(403, "You do not have permission to assign this project role.")
+    if payload.project_role in ACCOUNTABLE_ROLES and project.status == "active":
+        # U6: on an ACTIVE project, PM/Supervisor changes go through the
+        # two-step request/approval flow (BR-007) instead of taking
+        # immediate effect. Draft-phase team setup (before activation)
+        # stays on the immediate path below, unchanged from pre-U6
+        # behavior - BR-007's reassignment rules govern live execution,
+        # not initial project setup, and several existing tests
+        # (test_activate_rejects_when_accountable_role_missing,
+        # test_activation_without_active_pm_or_supervisor_is_rejected_...)
+        # rely on freely ending/reassigning an accountable role while the
+        # project is still draft.
+        change = ProjectRoleChangeService(db).request_role_change(
+            project.id, payload.project_role, payload.employee_id, payload.reason, actor,
+        )
+        return role_change_json(db, change)
     membership = assign_membership(db, project, payload.employee_id, payload.project_role, payload.reason, actor)
     try:
         db.commit()
@@ -692,12 +729,68 @@ def end_membership(project_id: uuid.UUID, membership_id: uuid.UUID, payload: Pro
     if not allowed:
         raise HTTPException(403, "You do not have permission to end this project assignment.")
     if project.status == "active" and membership.project_role in ACCOUNTABLE_ROLES:
-        raise HTTPException(409, "Replace this accountable role before ending it on an active project.")
+        # U6: on an ACTIVE project, an accountable role can no longer be
+        # ended directly - it must go through a role-change request naming
+        # a replacement, approved via
+        # POST /{project_id}/role-changes/{change_id}/approve, which
+        # atomically ends this membership and starts the replacement.
+        # Draft-phase projects keep the pre-U6 direct-end behavior (see
+        # matching note in set_membership above).
+        raise HTTPException(
+            409,
+            "A PM or Supervisor cannot be ended directly on an active project - request a replacement via the role change flow.",
+        )
     before = membership_json(db, membership)
     membership.ends_at = datetime.now(timezone.utc)
     add_audit(db, actor, project, "PROJECT_ROLE_ENDED", payload.reason.strip(), before, membership_json(db, membership), "project_membership", membership.id)
     db.commit()
     return membership_json(db, membership)
+
+
+@router.post("/{project_id}/role-changes")
+def create_role_change_request(project_id: uuid.UUID, payload: ProjectRoleChangeRequestIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Dedicated request endpoint for U6's two-step PM/Supervisor
+    reassignment flow (BR-007). POST /{project_id}/memberships also routes
+    PM/Supervisor role assignments here (see set_membership above) so both
+    the legacy membership-assignment path and this explicit endpoint reach
+    the same gated flow."""
+    if payload.role_type not in ACCOUNTABLE_ROLES:
+        raise HTTPException(422, "Only project_manager or site_supervisor role changes go through this flow.")
+    change = ProjectRoleChangeService(db).request_role_change(
+        project_id, payload.role_type, payload.replacement_employee_id, payload.reason, actor,
+        change_type=payload.change_type,
+    )
+    return role_change_json(db, change)
+
+
+@router.get("/{project_id}/role-changes")
+def list_role_changes(project_id: uuid.UUID, status_filter: str | None = Query(None, alias="status"), actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = get_project(db, project_id, actor)
+    statement = select(ProjectRoleChange).where(ProjectRoleChange.project_id == project.id).order_by(ProjectRoleChange.requested_at.desc())
+    if status_filter:
+        statement = statement.where(ProjectRoleChange.status == status_filter)
+    return [role_change_json(db, change) for change in db.scalars(statement).all()]
+
+
+@router.post("/{project_id}/role-changes/{change_id}/approve")
+def approve_role_change(project_id: uuid.UUID, change_id: uuid.UUID, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    membership = ProjectRoleChangeService(db).approve_role_change(project_id, change_id, actor)
+    return membership_json(db, membership)
+
+
+@router.post("/{project_id}/role-changes/{change_id}/reject")
+def reject_role_change(project_id: uuid.UUID, change_id: uuid.UUID, payload: ProjectRoleChangeRejectIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    change = ProjectRoleChangeService(db).reject_role_change(project_id, change_id, actor, payload.reason)
+    return role_change_json(db, change)
+
+
+@router.get("/{project_id}/role-changes/reassignment-required")
+def reassignment_required(project_id: uuid.UUID, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    """BR-007: employees currently holding an active accountable (PM/
+    Supervisor) membership on this project while marked
+    `availability = 'unavailable'` - a queryable condition surfaced for a
+    human to act on, never a silent auto-reassignment."""
+    return ProjectRoleChangeService(db).reassignment_required(project_id, actor)
 
 
 # Phase 8: actions a future task-execution engine would record. None of these
