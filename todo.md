@@ -1,4 +1,4 @@
-# TODO — Remaining Phase 1 Units (U5, U6)
+# TODO — Phase 1 Units (U1-U6): all implemented
 
 Plan: `docs/plans/2026-08-02-001-feat-task-execution-engine-plan.md`
 Branch: `feat/task-execution-engine`
@@ -8,8 +8,11 @@ Branch: `feat/task-execution-engine`
 - [x] U1: Baseline lock and task/dependency/gate instantiation — committed (`7022d42`)
 - [x] U2: Task lifecycle state machine — committed (`e538f9e`)
 - [x] U3: Progress updates and evidence submission — committed (`035fe7b`)
-- [x] U4: Supervisor verification and PM approval decisions — implemented, **not yet committed** (awaiting user approval)
-- [ ] U5: Blocker and delay capture — not started
+- [x] U4: Supervisor verification and PM approval decisions — committed (`f6b9520`)
+- [x] U5: Blocker and delay capture — committed (`fc6f360`)
+- [x] U6: Task-level accountability, support assignment, controlled reassignment — committed (`fc6f360`)
+
+All six implementation units of the plan are now committed. Remaining work is the plan's Quality Check and Shipping steps below — this file's per-unit specs are preserved for reference but no longer describe outstanding work.
 - [ ] U6: Task-level accountability, support assignment, controlled reassignment — not started
 
 ## U5 — Blocker and delay capture
