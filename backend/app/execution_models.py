@@ -161,3 +161,76 @@ class TaskDependency(Base):
     rule_text: Mapped[str | None] = mapped_column(Text)
     created_from_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskProgressUpdate(Base):
+    """U3: append-only progress note against an execution-layer task.
+
+    Never itself changes `Task.lifecycle_status` - it's evidence a later
+    `submitted` transition (U2's TaskLifecycleService) can reference. May
+    optionally carry evidence files via `TaskEvidence` link rows.
+    """
+
+    __tablename__ = "task_progress_updates"
+    __table_args__ = (
+        CheckConstraint("update_type in ('note', 'evidence')", name="ck_v2_task_progress_updates_update_type"),
+        CheckConstraint("source in ('portal', 'whatsapp', 'system')", name="ck_v2_task_progress_updates_source"),
+        Index("ix_v2_task_progress_updates_task", "task_id"),
+        Index("ix_v2_task_progress_updates_project", "project_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    update_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status_claim: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    submitted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="portal")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class FileObject(Base):
+    """U3: metadata for one uploaded file. Bytes live on disk under
+    `settings.evidence_upload_dir` - a directory deliberately never passed
+    to StaticFiles (see backend/app/main.py) - keyed by `storage_key`. This
+    table never stores a public URL, only enough metadata for the
+    authenticated download route to locate and validate the file."""
+
+    __tablename__ = "file_objects"
+    __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_v2_file_objects_storage_key"),
+        CheckConstraint("size_bytes > 0", name="ck_v2_file_objects_size_positive"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum: Mapped[str] = mapped_column(Text, nullable=False)
+    uploaded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskEvidence(Base):
+    """U3: real FK link between a progress update and an uploaded file -
+    deliberately NOT a polymorphic entity_type/entity_id reference, per the
+    plan's Key Technical Decisions."""
+
+    __tablename__ = "task_evidence"
+    __table_args__ = (
+        UniqueConstraint("task_progress_update_id", "file_id", name="uq_v2_task_evidence_update_file"),
+        Index("ix_v2_task_evidence_progress_update", "task_progress_update_id"),
+        Index("ix_v2_task_evidence_file", "file_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_progress_update_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.task_progress_updates.id", ondelete="RESTRICT"), nullable=False)
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"), nullable=False)
+    evidence_type: Mapped[str] = mapped_column(Text, nullable=False, default="photo")
+    caption: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

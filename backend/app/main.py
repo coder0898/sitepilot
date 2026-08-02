@@ -24,6 +24,11 @@ def create_app() -> FastAPI:
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+    # U3: evidence bytes are created on disk by TaskProgressService, but
+    # this directory is deliberately never mounted via StaticFiles - it
+    # must only ever be reachable through the authenticated download route.
+    Path(settings.evidence_upload_dir).mkdir(parents=True, exist_ok=True)
+
     app.include_router(dashboard.router)
     app.include_router(auth.router)
     app.include_router(access_requests.router)

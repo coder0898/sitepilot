@@ -44,3 +44,30 @@ class TaskOut(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaskEvidenceOut(BaseModel):
+    id: uuid.UUID
+    file_id: uuid.UUID
+    evidence_type: str
+    caption: str | None
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskProgressUpdateOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    project_id: uuid.UUID
+    update_type: str
+    status_claim: str | None
+    note: str | None
+    submitted_by: uuid.UUID
+    source: str
+    created_at: datetime
+    evidence: list[TaskEvidenceOut] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
