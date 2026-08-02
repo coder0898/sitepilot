@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.execution_models import TASK_LIFECYCLE_STATUSES, Task, TaskDependency
+from app.execution_models import TASK_LIFECYCLE_STATUSES, Task, TaskDependency, TaskVerification
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 
@@ -110,28 +110,55 @@ class TaskLifecycleService:
 
     # ---- dependency satisfaction -------------------------------------
 
-    def _predecessor_satisfied(self, predecessor: Task) -> bool:
-        """Whether a predecessor task satisfies a blocking dependency.
+    def _has_unrejected_verification(self, predecessor: Task) -> bool:
+        """Whether the most recent TaskVerification recorded against
+        `predecessor` is a 'verified' decision with no later rejection.
 
-        SIMPLIFICATION (U2, to be revisited by U4): BR-008 says the required
-        satisfying state varies by predecessor task_kind/task_class -
-        standard `work` needs verified/completed, `class_a` work or an
-        `approval_gate` needs PM-approved (i.e. it reached `completed` via
-        the `approval_pending` path), and a `milestone` needs `completed`.
-        Since U4 (verification/approval) does not exist yet, the
-        intermediate "verified but not yet approved" state is not reachable
-        by any code path in this codebase today - a task can only ever
-        reach `completed`, never linger observably at `verified` awaiting
-        approval from a caller's perspective within this unit. So, for all
-        predecessor kinds, "satisfied" is implemented here simply as
-        `lifecycle_status == 'completed'`. U4 must revisit this: once
-        verification/approval decisions are separately recorded, standard
-        `work` predecessors should likely be considered satisfied at
-        `verified` (not require the full `completed` state) per BR-008's
-        exact wording, while Class A/gate predecessors continue to require
-        the PM-approved `completed` state.
+        Since a rejection always moves lifecycle_status off 'verified' (back
+        to 'in_progress' via U4's TaskVerificationService, requiring
+        resubmission and a fresh verification), a predecessor that is
+        currently sitting at lifecycle_status == 'verified' can only be
+        there because its latest verification decision was 'verified' - but
+        we still query explicitly here (rather than trust the status alone)
+        so this check is correct even if called from a context that hasn't
+        re-read the task's current status.
         """
-        return predecessor.lifecycle_status == "completed"
+        latest = self.db.scalar(
+            select(TaskVerification)
+            .where(TaskVerification.task_id == predecessor.id)
+            .order_by(TaskVerification.verified_at.desc(), TaskVerification.id.desc())
+            .limit(1)
+        )
+        return latest is not None and latest.decision == "verified"
+
+    def _predecessor_satisfied(self, predecessor: Task) -> bool:
+        """Whether a predecessor task satisfies a blocking dependency,
+        per BR-008's exact per-kind rule:
+
+        - `standard` work: satisfied once Supervisor-verified (a
+          `task_verifications` row with decision='verified' and no later
+          rejection exists) - it does not need to also reach `completed`,
+          since BR-008 only requires PM approval for Class A work, not
+          standard work. `completed` also satisfies it (the standard-work
+          verify path immediately auto-completes it anyway, per U4's
+          TaskVerificationService, so this task is nearly always observed
+          at `completed`, not `verified` - but the `verified` case is
+          the "satisfied" moment we should not block on regardless).
+        - `class_a` work and `approval_gate`: require PM-approved
+          `completed` (BR-008: "Verified class_a work requires PM approval
+          before completion"; gates likewise complete only via PM
+          approval).
+        - `milestone`: requires `completed` (system-derived, BR-009).
+        """
+        if predecessor.lifecycle_status == "completed":
+            return True
+        if (
+            predecessor.task_kind == "work"
+            and predecessor.task_class == "standard"
+            and predecessor.lifecycle_status == "verified"
+        ):
+            return self._has_unrejected_verification(predecessor)
+        return False
 
     def _blocking_predecessors_satisfied(self, task: Task) -> bool:
         deps = self.db.scalars(

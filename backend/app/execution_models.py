@@ -234,3 +234,62 @@ class TaskEvidence(Base):
     evidence_type: Mapped[str] = mapped_column(Text, nullable=False, default="photo")
     caption: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskVerification(Base):
+    """U4: a Supervisor's (or audited PM/Admin fallback's) verification
+    decision on a `work` task's submitted evidence (BR-008). Never applies
+    to `approval_gate` tasks - those skip Supervisor verification entirely
+    and go straight to `TaskApprovalDecision`.
+
+    `submission_update_id` links back to the `TaskProgressUpdate` (U3) that
+    was being verified. On `decision == 'verified'`,
+    `TaskLifecycleService.transition` advances the task to `verified`
+    (and immediately to `completed` for `standard` work, since standard
+    work needs no PM step). On `decision == 'rejected'`, the task returns
+    to `in_progress` under Supervisor accountability again.
+    """
+
+    __tablename__ = "task_verifications"
+    __table_args__ = (
+        CheckConstraint("decision in ('verified', 'rejected')", name="ck_v2_task_verifications_decision"),
+        Index("ix_v2_task_verifications_task", "task_id"),
+        Index("ix_v2_task_verifications_task_verified_at", "task_id", "verified_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    submission_update_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.task_progress_updates.id", ondelete="RESTRICT"), nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    verified_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskApprovalDecision(Base):
+    """U4: a PM's (or audited Admin fallback's) approval decision (BR-008).
+
+    Required for every `class_a` work task (after Supervisor verification -
+    `verification_id` populated, and the verifying actor may not also be
+    the approving actor for the same decision cycle - enforced in
+    `TaskApprovalService`, not at the schema level) and every
+    `approval_gate` task (directly, no verification prerequisite -
+    `verification_id` is null).
+    """
+
+    __tablename__ = "task_approval_decisions"
+    __table_args__ = (
+        CheckConstraint("decision in ('approved', 'rejected')", name="ck_v2_task_approval_decisions_decision"),
+        Index("ix_v2_task_approval_decisions_task", "task_id"),
+        Index("ix_v2_task_approval_decisions_task_decided_at", "task_id", "decided_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    verification_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.task_verifications.id", ondelete="RESTRICT"))
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

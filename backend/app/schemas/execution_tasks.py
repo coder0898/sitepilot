@@ -58,6 +58,56 @@ class TaskEvidenceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TaskVerificationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["verified", "rejected"]
+    remarks: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("remarks")
+    @classmethod
+    def normalize_remarks(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskApprovalIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approved", "rejected"]
+    remarks: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("remarks")
+    @classmethod
+    def normalize_remarks(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskVerificationOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    submission_update_id: uuid.UUID
+    decision: str
+    remarks: str | None
+    verified_by: uuid.UUID
+    verified_at: datetime
+    task: TaskOut
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskApprovalOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    verification_id: uuid.UUID | None
+    decision: str
+    remarks: str | None
+    decided_by: uuid.UUID
+    decided_at: datetime
+    task: TaskOut
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TaskProgressUpdateOut(BaseModel):
     id: uuid.UUID
     task_id: uuid.UUID

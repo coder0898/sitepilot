@@ -16,16 +16,22 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import FileObject, TaskEvidence
+from app.execution_models import FileObject, TaskApprovalDecision, TaskEvidence, TaskVerification
 from app.models import User
 from app.schemas.execution_tasks import (
+    TaskApprovalIn,
+    TaskApprovalOut,
     TaskEvidenceOut,
     TaskOut,
     TaskProgressUpdateOut,
     TaskStatusTransitionIn,
+    TaskVerificationIn,
+    TaskVerificationOut,
 )
+from app.services.task_approval import TaskApprovalService
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.task_progress import TaskProgressService
+from app.services.task_verification import TaskVerificationService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-execution-tasks"])
 
@@ -97,6 +103,64 @@ async def submit_task_progress(
         evidence_content_type=evidence.content_type if evidence is not None else None,
     )
     return _progress_update_out(db, progress_update)
+
+
+@router.post("/{project_id}/tasks/{task_id}/verify", response_model=TaskVerificationOut)
+def verify_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskVerificationIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    task = TaskVerificationService(db).verify(
+        project_id, task_id, payload.decision, actor, remarks=payload.remarks,
+    )
+    verification = db.scalar(
+        select(TaskVerification)
+        .where(TaskVerification.task_id == task.id)
+        .order_by(TaskVerification.verified_at.desc(), TaskVerification.id.desc())
+        .limit(1)
+    )
+    return TaskVerificationOut(
+        id=verification.id,
+        task_id=verification.task_id,
+        submission_update_id=verification.submission_update_id,
+        decision=verification.decision,
+        remarks=verification.remarks,
+        verified_by=verification.verified_by,
+        verified_at=verification.verified_at,
+        task=TaskOut.model_validate(task),
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/approve", response_model=TaskApprovalOut)
+def approve_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskApprovalIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    task = TaskApprovalService(db).approve(
+        project_id, task_id, payload.decision, actor, remarks=payload.remarks,
+    )
+    approval = db.scalar(
+        select(TaskApprovalDecision)
+        .where(TaskApprovalDecision.task_id == task.id)
+        .order_by(TaskApprovalDecision.decided_at.desc(), TaskApprovalDecision.id.desc())
+        .limit(1)
+    )
+    return TaskApprovalOut(
+        id=approval.id,
+        task_id=approval.task_id,
+        verification_id=approval.verification_id,
+        decision=approval.decision,
+        remarks=approval.remarks,
+        decided_by=approval.decided_by,
+        decided_at=approval.decided_at,
+        task=TaskOut.model_validate(task),
+    )
 
 
 @router.get("/{project_id}/tasks/{task_id}/evidence/{file_id}")
