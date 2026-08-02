@@ -164,6 +164,10 @@ class SupervisorReadOnlyViewApiTests(unittest.TestCase):
 
     def activate(self, project_id):
         self.as_admin()
+        # U1: activation now locks a real baseline snapshot and requires at
+        # least one included task, so ensure the template task(s) exist
+        # first (generate-tasks is itself idempotent/no-op on retry).
+        self.client.post(f"/api/v2/projects/{project_id}/generate-tasks")
         response = self.client.post(f"/api/v2/projects/{project_id}/activate", json={"reason": "Go live."})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()

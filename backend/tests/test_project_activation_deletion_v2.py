@@ -128,7 +128,13 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
         payload.update(overrides)
         response = self.client.post("/api/v2/projects", json=payload)
         self.assertEqual(response.status_code, 201, response.text)
-        return response.json()
+        project = response.json()
+        # U1 activation now requires at least one included task snapshot to
+        # lock a baseline, so generate the template-derived task(s) for every
+        # draft project this fixture produces.
+        generate_response = self.client.post(f"/api/v2/projects/{project['id']}/generate-tasks")
+        self.assertEqual(generate_response.status_code, 200, generate_response.text)
+        return project
 
     # ---- Activation ----------------------------------------------------
 

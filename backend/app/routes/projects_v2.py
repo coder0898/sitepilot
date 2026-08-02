@@ -28,6 +28,7 @@ from app.schemas.project_manual_gate import ProjectManualGateCreateIn, ProjectMa
 from app.services.project_manual_gate import ProjectManualGateService
 from app.schemas.project_dependencies import ProjectDependencyGenerateOut, ProjectDependencyListOut
 from app.services.project_dependency_generation import ProjectDependencyGenerationService
+from app.services.project_baseline import ProjectBaselineService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
 
@@ -781,6 +782,10 @@ def activate_project(project_id: uuid.UUID, payload: ProjectActivateIn, actor: U
 
     before = project_snapshot(project)
     try:
+        # U1: lock the immutable baseline and instantiate execution tasks
+        # before flipping status, in the same transaction, so no path can
+        # activate a project without both succeeding together.
+        baseline = ProjectBaselineService(db).lock_and_instantiate(project, actor)
         project.status = "active"
         project.activated_at = datetime.now(timezone.utc)
         project.activated_by = actor.id
@@ -791,7 +796,7 @@ def activate_project(project_id: uuid.UUID, payload: ProjectActivateIn, actor: U
         # needed here beyond this project having just left "draft".
         add_audit(
             db, actor, project, "PROJECT_ACTIVATED", payload.reason.strip(),
-            before, {**project_snapshot(project), "template_version_locked": True},
+            before, {**project_snapshot(project), "template_version_locked": True, "baseline_id": str(baseline.id) if baseline else None},
         )
         db.commit()
     except Exception:
@@ -827,12 +832,21 @@ def change_status(project_id: uuid.UUID, payload: ProjectStatusIn, actor: User =
         if not project.target_handover_date: missing.append("target handover date")
         if missing:
             raise HTTPException(409, "Project activation requires: " + ", ".join(missing) + ".")
+        # U1: lock the immutable baseline and instantiate execution tasks
+        # before flipping status, in the same transaction as this status
+        # change - this is the second (of two) independent draft->active
+        # code paths, so it must call the same baseline-lock service.
+        ProjectBaselineService(db).lock_and_instantiate(project, actor)
         project.activated_at = datetime.now(timezone.utc)
         project.activated_by = actor.id
     before = project_snapshot(project)
     project.status = target
-    add_audit(db, actor, project, "PROJECT_STATUS_CHANGED", payload.reason.strip(), before, project_snapshot(project))
-    db.commit()
+    try:
+        add_audit(db, actor, project, "PROJECT_STATUS_CHANGED", payload.reason.strip(), before, project_snapshot(project))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(project)
     return project_json(db, project, True)
 
