@@ -2,6 +2,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, CircleUserRound, ClipboardList, 
 import { useEffect, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
+import { TaskProgressForm } from "./TaskProgressForm";
 
 // U2: forward status-progression buttons, mirrored from
 // TaskLifecycleService.ALLOWED_TRANSITIONS on the backend. This is a UX
@@ -149,7 +150,8 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
     </section>}
 
     {/* U4 mount point: TaskDecisionModal (verify/approve/reject) renders here. */}
-    {/* U3 mount point: TaskProgressForm renders here. */}
+
+    {detail.lifecycle_status === "in_progress" && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
 
     {detail.progress_updates.length > 0 && <section className="rounded-xl border border-slate-200 bg-white p-4">
       <h4 className="text-xs font-black uppercase tracking-wide text-slate-500">Progress updates</h4>

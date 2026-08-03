@@ -86,6 +86,20 @@ describe("TaskExecutionBoard", () => {
     await waitFor(() => expect(taskExecutionApi.transitionStatus).toHaveBeenCalledWith("p1", "t1", { target_status: "cancelled", reason: "Scope dropped." }));
   });
 
+  it("mounts the progress form only while the task is in_progress", async () => {
+    taskExecutionApi.detail.mockResolvedValue({ ...detail, lifecycle_status: "in_progress" });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    expect(await screen.findByText("Log progress")).toBeInTheDocument();
+  });
+
+  it("hides the progress form when the task is not in_progress", async () => {
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await screen.findByText("Set up the site office and hoarding.");
+    expect(screen.queryByText("Log progress")).not.toBeInTheDocument();
+  });
+
   it("shows history sections in the expanded detail", async () => {
     taskExecutionApi.detail.mockResolvedValue({
       ...detail,
