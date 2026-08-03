@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+import unittest
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.auth import current_user
+from app.database import get_db
+from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
+from app.models import EmployeeProfile, User, UserRole
+from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.routes.execution_tasks_v2 import router as execution_tasks_router
+from app.routes.projects_v2 import router as projects_router
+from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(_type, _compiler, **_kw):
+    return "JSON"
+
+
+ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
+SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
+
+
+class TaskLifecycleTransitionsApiTests(unittest.TestCase):
+    """U2: task lifecycle state machine (BR-009), against real execution
+    tasks produced by U1's baseline-lock activation flow.
+
+    Follows the same SQLite-ATTACHed-schema harness pattern as
+    test_project_baseline_lock_v2.py.
+    """
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+
+        @event.listens_for(self.engine, "connect")
+        def attach_schema(dbapi_connection, _connection_record):
+            dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+
+        for table in (
+            User.__table__,
+            EmployeeProfile.__table__,
+            V2Template.__table__,
+            V2TemplateVersion.__table__,
+            V2TemplateTask.__table__,
+            V2TemplateTaskDependency.__table__,
+            V2Project.__table__,
+            V2ProjectMembership.__table__,
+            V2ProjectTask.__table__,
+            V2ProjectTaskDependency.__table__,
+            V2AuditEvent.__table__,
+            ProjectBaseline.__table__,
+            BaselineTask.__table__,
+            Task.__table__,
+            TaskDependency.__table__,
+        ):
+            table.create(self.engine)
+
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        self._seed()
+
+        self.app = FastAPI()
+        self.app.include_router(projects_router)
+        self.app.include_router(execution_tasks_router)
+
+        def override_db():
+            with self.Session() as session:
+                yield session
+
+        self.app.dependency_overrides[get_db] = override_db
+        self._current_actor = User(
+            id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True,
+        )
+        self.app.dependency_overrides[current_user] = lambda: self._current_actor
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.client.close()
+        self.engine.dispose()
+
+    def act_as(self, user: User) -> None:
+        self._current_actor = user
+
+    def act_as_admin(self) -> None:
+        self.act_as(User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True))
+
+    def act_as_supervisor(self) -> None:
+        self.act_as(User(
+            id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+            role=UserRole.supervisor, active=True,
+        ))
+
+    # ---- seeding -------------------------------------------------------
+
+    def _seed(self):
+        """Seeds a 4-task template: T001 -> T002 -> T003 (work, chained
+        finish_to_start), and T004 (milestone) depending on T003. All are
+        mandatory so they are all baseline-included at activation."""
+        with self.Session.begin() as session:
+            admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
+            pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
+            supervisor = User(
+                id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+                role=UserRole.supervisor, active=True,
+            )
+            session.add_all([admin, pm, supervisor])
+            session.flush()
+            session.add_all([
+                EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                EmployeeProfile(
+                    user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
+                ),
+            ])
+            template = V2Template(code="WORKVED-45", name="Workved 45 Day")
+            session.add(template)
+            session.flush()
+            published = V2TemplateVersion(
+                template_id=template.id, version_no=1, status="published", duration_days=45,
+                content_hash="published-hash", is_current_published=True,
+                created_by=ADMIN_ID, published_by=ADMIN_ID, published_at=datetime.now(timezone.utc),
+            )
+            session.add(published)
+            session.flush()
+
+            specs = [
+                ("T001", "work"),
+                ("T002", "work"),
+                ("T003", "work"),
+                ("T004", "milestone"),
+            ]
+            template_tasks = []
+            for i, (code, kind) in enumerate(specs, start=1):
+                template_tasks.append(V2TemplateTask(
+                    template_version_id=published.id, code=code, sequence_no=i, title=f"Task {code}",
+                    schedule_classification="execution", planned_start_day=i, planned_end_day=i,
+                    applicability="mandatory", task_class="standard", task_kind=kind,
+                    evidence_required=False, duration_days=1, phase="Setup", category="Site",
+                ))
+            session.add_all(template_tasks)
+            session.flush()
+
+            # T001 -> T002 -> T003 -> T004, all blocking finish_to_start.
+            for i in range(len(template_tasks) - 1):
+                session.add(V2TemplateTaskDependency(
+                    template_version_id=published.id,
+                    predecessor_task_id=template_tasks[i].id,
+                    successor_task_id=template_tasks[i + 1].id,
+                    dependency_type="finish_to_start", blocking=True,
+                    rule_text=f"Rule {i + 1}", sequence_no=i + 1,
+                ))
+            self.published_version_id = published.id
+
+    def create_draft(self, **overrides):
+        payload = {
+            "project_name": "Futurex Fitout",
+            "client": "Example Client",
+            "location": "Mumbai",
+            "proposed_start_date": "2026-08-01",
+            "target_handover_date": "2026-09-14",
+            "pm_user_id": str(PM_ID),
+            "supervisor_user_id": str(SUPERVISOR_ID),
+            "template_version_id": str(self.published_version_id),
+        }
+        payload.update(overrides)
+        response = self.client.post("/api/v2/projects", json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()
+
+    def activate_project(self) -> dict:
+        project = self.create_draft()
+        response = self.client.post(f"/api/v2/projects/{project['id']}/generate-tasks")
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/generate-dependencies")
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(response.status_code, 200, response.text)
+        return project
+
+    def tasks_by_code(self, project_id: str) -> dict[str, Task]:
+        with self.Session() as session:
+            rows = session.scalars(select(Task).where(Task.project_id == uuid.UUID(project_id))).all()
+            return {t.original_code: t for t in rows}
+
+    def transition(self, project_id: str, task_id, target_status: str, reason: str | None = None):
+        body: dict = {"target_status": target_status}
+        if reason is not None:
+            body["reason"] = reason
+        return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/status", json=body)
+
+    # ---- happy path -----------------------------------------------------
+
+    def test_work_task_moves_through_planned_ready_in_progress_submitted(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+        self.assertEqual(t001.lifecycle_status, "planned")
+
+        self.act_as_supervisor()
+        r1 = self.transition(project["id"], t001.id, "ready", reason="Ready to start.")
+        self.assertEqual(r1.status_code, 200, r1.text)
+        self.assertEqual(r1.json()["lifecycle_status"], "ready")
+
+        r2 = self.transition(project["id"], t001.id, "in_progress", reason="Crew on site.")
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()["lifecycle_status"], "in_progress")
+
+        r3 = self.transition(project["id"], t001.id, "submitted", reason="Work done, submitting.")
+        self.assertEqual(r3.status_code, 200, r3.text)
+        self.assertEqual(r3.json()["lifecycle_status"], "submitted")
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(V2AuditEvent).where(
+                    V2AuditEvent.entity_type == "task", V2AuditEvent.entity_id == t001.id,
+                )
+            ).all()
+            self.assertEqual(len(events), 3)
+            self.assertTrue(all(e.action == "TASK_STATUS_CHANGED" for e in events))
+
+    # ---- milestone auto-completion --------------------------------------
+
+    def test_milestone_auto_completes_once_last_blocking_predecessor_is_satisfied(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001, t002, t003, t004 = tasks["T001"], tasks["T002"], tasks["T003"], tasks["T004"]
+        self.assertEqual(t004.task_kind, "milestone")
+
+        self.act_as_supervisor()
+        for task in (t001, t002, t003):
+            r = self.transition(project["id"], task.id, "ready")
+            self.assertEqual(r.status_code, 200, r.text)
+            r = self.transition(project["id"], task.id, "in_progress")
+            self.assertEqual(r.status_code, 200, r.text)
+            r = self.transition(project["id"], task.id, "submitted")
+            self.assertEqual(r.status_code, 200, r.text)
+            r = self.transition(project["id"], task.id, "verified")
+            self.assertEqual(r.status_code, 200, r.text)
+            r = self.transition(project["id"], task.id, "completed")
+            self.assertEqual(r.status_code, 200, r.text, f"failed completing {task.original_code}")
+
+        with self.Session() as session:
+            milestone = session.get(Task, t004.id)
+            self.assertEqual(milestone.lifecycle_status, "completed")
+            audit = session.scalar(
+                select(V2AuditEvent).where(
+                    V2AuditEvent.entity_type == "task",
+                    V2AuditEvent.entity_id == t004.id,
+                    V2AuditEvent.source == "system",
+                )
+            )
+            self.assertIsNotNone(audit)
+            self.assertEqual(audit.after_json["lifecycle_status"], "completed")
+
+    # ---- edge cases -------------------------------------------------------
+
+    def test_transition_not_in_allow_list_is_rejected(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+        self.act_as_supervisor()
+        response = self.transition(project["id"], t001.id, "submitted", reason="Skip ahead.")
+        self.assertEqual(response.status_code, 409, response.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t001.id).lifecycle_status, "planned")
+
+    def test_in_progress_rejected_when_no_active_supervisor(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+
+        self.act_as_supervisor()
+        r = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        # End the active Supervisor membership.
+        self.act_as_admin()
+        detail = self.client.get(f"/api/v2/projects/{project['id']}").json()
+        supervisor_membership = next(m for m in detail["memberships"] if m["project_role"] == "site_supervisor")
+        end_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships/{supervisor_membership['id']}/end",
+            json={"reason": "Testing missing accountable role."},
+        )
+        self.assertEqual(end_response.status_code, 200, end_response.text)
+
+        response = self.transition(project["id"], t001.id, "in_progress", reason="Start work.")
+        self.assertEqual(response.status_code, 409, response.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t001.id).lifecycle_status, "ready")
+
+    def test_in_progress_blocked_by_unsatisfied_predecessor_then_succeeds_once_satisfied(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001, t002 = tasks["T001"], tasks["T002"]
+
+        self.act_as_supervisor()
+        r = self.transition(project["id"], t002.id, "ready")
+        self.assertEqual(r.status_code, 200, r.text)
+        blocked = self.transition(project["id"], t002.id, "in_progress", reason="Start work.")
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t002.id).lifecycle_status, "ready")
+
+        # Satisfy the predecessor: T001 all the way to completed.
+        for target in ("ready", "in_progress", "submitted", "verified", "completed"):
+            r = self.transition(project["id"], t001.id, target)
+            self.assertEqual(r.status_code, 200, r.text)
+
+        unblocked = self.transition(project["id"], t002.id, "in_progress", reason="Start work.")
+        self.assertEqual(unblocked.status_code, 200, unblocked.text)
+        self.assertEqual(unblocked.json()["lifecycle_status"], "in_progress")
+
+    def test_cancel_without_reason_is_rejected(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+        self.act_as_admin()
+        response = self.transition(project["id"], t001.id, "cancelled")
+        self.assertEqual(response.status_code, 422, response.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t001.id).lifecycle_status, "planned")
+
+        with_reason = self.transition(project["id"], t001.id, "cancelled", reason="Scope removed by client.")
+        self.assertEqual(with_reason.status_code, 200, with_reason.text)
+        self.assertEqual(with_reason.json()["lifecycle_status"], "cancelled")
+
+
+if __name__ == "__main__":
+    unittest.main()

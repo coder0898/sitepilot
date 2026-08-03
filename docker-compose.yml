@@ -7,6 +7,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@host.docker.internal:15432/postgres}
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://192.168.8.11:3000
       UPLOAD_DIR: uploads/task-proofs
+      EVIDENCE_UPLOAD_DIR: evidence_storage
       SUPABASE_URL: ${SUPABASE_BACKEND_URL:-http://host.docker.internal:15431}
       SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
       SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
@@ -20,6 +21,10 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - siteops_uploads:/app/uploads
+      # U3: a SEPARATE volume for private task evidence, never under
+      # /app/uploads (the directory publicly mounted via StaticFiles) so
+      # evidence is never reachable at a public /uploads/... URL.
+      - siteops_evidence:/app/evidence_storage
 
   frontend:
     build:
@@ -37,3 +42,4 @@ services:
 
 volumes:
   siteops_uploads:
+  siteops_evidence:

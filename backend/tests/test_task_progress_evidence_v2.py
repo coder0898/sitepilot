@@ -1,0 +1,386 @@
+from __future__ import annotations
+
+import shutil
+import tempfile
+import unittest
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.auth import current_user
+from app.config import settings
+from app.database import get_db
+from app.execution_models import (
+    BaselineTask,
+    FileObject,
+    ProjectBaseline,
+    Task,
+    TaskDependency,
+    TaskEvidence,
+    TaskProgressUpdate,
+)
+from app.models import EmployeeProfile, User, UserRole
+from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.routes.execution_tasks_v2 import router as execution_tasks_router
+from app.routes.projects_v2 import router as projects_router
+from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(_type, _compiler, **_kw):
+    return "JSON"
+
+
+ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
+SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
+OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
+
+TINY_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+    b"\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+class TaskProgressEvidenceApiTests(unittest.TestCase):
+    """U3: progress updates and evidence submission (R3), against real
+    execution tasks produced by U1's baseline-lock activation flow.
+
+    Follows the same SQLite-ATTACHed-schema harness pattern as
+    test_task_lifecycle_transitions_v2.py.
+    """
+
+    def setUp(self):
+        self.evidence_dir = tempfile.mkdtemp(prefix="siteops-evidence-test-")
+        self._original_evidence_dir = settings.evidence_upload_dir
+        settings.evidence_upload_dir = self.evidence_dir
+
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+
+        @event.listens_for(self.engine, "connect")
+        def attach_schema(dbapi_connection, _connection_record):
+            dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+
+        for table in (
+            User.__table__,
+            EmployeeProfile.__table__,
+            V2Template.__table__,
+            V2TemplateVersion.__table__,
+            V2TemplateTask.__table__,
+            V2TemplateTaskDependency.__table__,
+            V2Project.__table__,
+            V2ProjectMembership.__table__,
+            V2ProjectTask.__table__,
+            V2ProjectTaskDependency.__table__,
+            V2AuditEvent.__table__,
+            ProjectBaseline.__table__,
+            BaselineTask.__table__,
+            Task.__table__,
+            TaskDependency.__table__,
+            TaskProgressUpdate.__table__,
+            FileObject.__table__,
+            TaskEvidence.__table__,
+        ):
+            table.create(self.engine)
+
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        self._seed()
+
+        self.app = FastAPI()
+        self.app.include_router(projects_router)
+        self.app.include_router(execution_tasks_router)
+
+        def override_db():
+            with self.Session() as session:
+                yield session
+
+        self.app.dependency_overrides[get_db] = override_db
+        self._current_actor = User(
+            id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True,
+        )
+        self.app.dependency_overrides[current_user] = lambda: self._current_actor
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.client.close()
+        self.engine.dispose()
+        settings.evidence_upload_dir = self._original_evidence_dir
+        shutil.rmtree(self.evidence_dir, ignore_errors=True)
+
+    def act_as(self, user: User) -> None:
+        self._current_actor = user
+
+    def act_as_admin(self) -> None:
+        self.act_as(User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True))
+
+    def act_as_supervisor(self) -> None:
+        self.act_as(User(
+            id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+            role=UserRole.supervisor, active=True,
+        ))
+
+    def act_as_outsider(self) -> None:
+        self.act_as(User(
+            id=OUTSIDER_ID, name="Outsider", email="outsider@example.com",
+            role=UserRole.supervisor, active=True,
+        ))
+
+    # ---- seeding -------------------------------------------------------
+
+    def _seed(self):
+        """Seeds a 1-task template: T001 (work). Also seeds an OUTSIDER user
+        with an EmployeeProfile but no membership on the created project, to
+        exercise the "no active project membership" edge cases."""
+        with self.Session.begin() as session:
+            admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
+            pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
+            supervisor = User(
+                id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+                role=UserRole.supervisor, active=True,
+            )
+            outsider = User(
+                id=OUTSIDER_ID, name="Outsider", email="outsider@example.com",
+                role=UserRole.supervisor, active=True,
+            )
+            session.add_all([admin, pm, supervisor, outsider])
+            session.flush()
+            session.add_all([
+                EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                EmployeeProfile(
+                    user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
+                ),
+                EmployeeProfile(
+                    user_id=OUTSIDER_ID, employee_code="OUT-001", designation="Supervisor", availability="available",
+                ),
+            ])
+            template = V2Template(code="WORKVED-45", name="Workved 45 Day")
+            session.add(template)
+            session.flush()
+            published = V2TemplateVersion(
+                template_id=template.id, version_no=1, status="published", duration_days=45,
+                content_hash="published-hash", is_current_published=True,
+                created_by=ADMIN_ID, published_by=ADMIN_ID, published_at=datetime.now(timezone.utc),
+            )
+            session.add(published)
+            session.flush()
+
+            template_task = V2TemplateTask(
+                template_version_id=published.id, code="T001", sequence_no=1, title="Task T001",
+                schedule_classification="execution", planned_start_day=1, planned_end_day=1,
+                applicability="mandatory", task_class="standard", task_kind="work",
+                evidence_required=False, duration_days=1, phase="Setup", category="Site",
+            )
+            session.add(template_task)
+            session.flush()
+            self.published_version_id = published.id
+
+    def create_draft(self, **overrides):
+        payload = {
+            "project_name": "Futurex Fitout",
+            "client": "Example Client",
+            "location": "Mumbai",
+            "proposed_start_date": "2026-08-01",
+            "target_handover_date": "2026-09-14",
+            "pm_user_id": str(PM_ID),
+            "supervisor_user_id": str(SUPERVISOR_ID),
+            "template_version_id": str(self.published_version_id),
+        }
+        payload.update(overrides)
+        response = self.client.post("/api/v2/projects", json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()
+
+    def activate_project(self) -> dict:
+        project = self.create_draft()
+        response = self.client.post(f"/api/v2/projects/{project['id']}/generate-tasks")
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/generate-dependencies")
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(response.status_code, 200, response.text)
+        return project
+
+    def task_t001(self, project_id: str) -> Task:
+        with self.Session() as session:
+            return session.scalar(
+                select(Task).where(Task.project_id == uuid.UUID(project_id), Task.original_code == "T001")
+            )
+
+    def submit_progress(self, project_id: str, task_id, note=None, status_claim=None, files=None):
+        data = {}
+        if note is not None:
+            data["note"] = note
+        if status_claim is not None:
+            data["status_claim"] = status_claim
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/tasks/{task_id}/progress",
+            data=data,
+            files=files,
+        )
+
+    # ---- happy path -----------------------------------------------------
+
+    def test_submit_progress_with_evidence_creates_progress_update_and_file_rows(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(
+            project["id"], task.id, note="Formwork complete for bay 3.",
+            files={"evidence": ("bay3.png", TINY_PNG_BYTES, "image/png")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["update_type"], "evidence")
+        self.assertEqual(body["note"], "Formwork complete for bay 3.")
+        self.assertEqual(len(body["evidence"]), 1)
+        self.assertEqual(body["evidence"][0]["mime_type"], "image/png")
+        self.assertEqual(body["evidence"][0]["original_filename"], "bay3.png")
+
+        with self.Session() as session:
+            updates = session.scalars(select(TaskProgressUpdate).where(TaskProgressUpdate.task_id == task.id)).all()
+            self.assertEqual(len(updates), 1)
+            files = session.scalars(select(FileObject)).all()
+            self.assertEqual(len(files), 1)
+            evidence_rows = session.scalars(select(TaskEvidence)).all()
+            self.assertEqual(len(evidence_rows), 1)
+            stored_path = Path(self.evidence_dir) / files[0].storage_key
+            self.assertTrue(stored_path.is_file())
+            self.assertEqual(stored_path.read_bytes(), TINY_PNG_BYTES)
+
+    def test_submit_text_only_progress_without_evidence_succeeds(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(project["id"], task.id, note="Crew on site, no issues.")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["update_type"], "note")
+        self.assertEqual(body["evidence"], [])
+
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(FileObject).limit(1)), None)
+
+    # ---- edge cases -------------------------------------------------------
+
+    def test_disallowed_mime_type_is_rejected(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(
+            project["id"], task.id, note="Bad file.",
+            files={"evidence": ("payload.exe", b"not-a-real-image", "application/octet-stream")},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(TaskProgressUpdate).limit(1)), None)
+
+    def test_oversized_file_is_rejected(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        oversized = b"\x00" * (10 * 1024 * 1024 + 1)
+        response = self.submit_progress(
+            project["id"], task.id, note="Too big.",
+            files={"evidence": ("huge.png", oversized, "image/png")},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(TaskProgressUpdate).limit(1)), None)
+
+    def test_no_note_and_no_evidence_is_rejected(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(project["id"], task.id)
+        self.assertEqual(response.status_code, 422, response.text)
+
+    # ---- error path: no active project membership -------------------------
+
+    def test_actor_with_no_active_membership_cannot_submit_progress(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_outsider()
+        response = self.submit_progress(project["id"], task.id, note="Should not be allowed.")
+        self.assertEqual(response.status_code, 403, response.text)
+
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(TaskProgressUpdate).limit(1)), None)
+
+    def test_actor_with_no_active_membership_cannot_download_evidence(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(
+            project["id"], task.id, note="Evidence for download test.",
+            files={"evidence": ("bay3.png", TINY_PNG_BYTES, "image/png")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_id = response.json()["evidence"][0]["file_id"]
+
+        self.act_as_outsider()
+        download = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/evidence/{file_id}")
+        self.assertEqual(download.status_code, 403, download.text)
+
+    # ---- integration: authenticated download ------------------------------
+
+    def test_authorized_download_succeeds_and_unauthorized_download_is_rejected(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(
+            project["id"], task.id, note="Evidence for download test.",
+            files={"evidence": ("bay3.png", TINY_PNG_BYTES, "image/png")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_id = response.json()["evidence"][0]["file_id"]
+
+        # Authorized: the submitting Supervisor can download.
+        download = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/evidence/{file_id}")
+        self.assertEqual(download.status_code, 200, download.text)
+        self.assertEqual(download.content, TINY_PNG_BYTES)
+        self.assertEqual(download.headers["x-content-type-options"], "nosniff")
+        self.assertIn("attachment", download.headers["content-disposition"])
+
+        # Authorized: PM (an active project member) can also download.
+        self.act_as(User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True))
+        pm_download = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/evidence/{file_id}")
+        self.assertEqual(pm_download.status_code, 200, pm_download.text)
+
+        # Unauthorized: an actor with no membership on this project is rejected.
+        self.act_as_outsider()
+        outsider_download = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/evidence/{file_id}")
+        self.assertEqual(outsider_download.status_code, 403, outsider_download.text)
+
+    def test_public_uploads_mount_never_serves_evidence(self):
+        """Sanity check that the evidence storage directory used by the
+        service is not the same directory backing the public `/uploads`
+        StaticFiles mount."""
+        self.assertNotEqual(Path(self.evidence_dir).resolve(), Path("uploads").resolve())
+        self.assertNotEqual(Path(self.evidence_dir).resolve(), Path(settings.upload_dir).resolve())
+
+
+if __name__ == "__main__":
+    unittest.main()

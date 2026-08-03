@@ -188,6 +188,58 @@ class V2ProjectMembership(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ProjectRoleChange(Base):
+    """U6: the two-step (request + approval) PM/Supervisor reassignment
+    record (BR-007/R7), replacing today's immediate `assign_membership()`
+    change for accountable roles. Placed here (not execution_models.py)
+    because it is conceptually a `V2ProjectMembership` lifecycle event -
+    it targets `project_memberships` directly and has no dependency on the
+    execution-layer `tasks` table, unlike U6's other new models
+    (`TaskSupportAssignment`/`SupportAssignmentChange`), which scope to a
+    `Task` and so live in `execution_models.py` instead.
+
+    A `pending` record never affects who is currently accountable -
+    accountability resolution (BR-004) only ever reads active
+    `V2ProjectMembership` rows. `approve_role_change`
+    (`backend/app/services/project_role_change.py`) atomically ends the
+    `previous_membership_id` row (if any) and creates the replacement,
+    reusing the same "end prior active membership in the same transaction"
+    shape `assign_membership()` already uses for immediate changes.
+    """
+
+    __tablename__ = "project_role_changes"
+    __table_args__ = (
+        CheckConstraint("role_type in ('project_manager', 'site_supervisor')", name="ck_v2_project_role_changes_role_type"),
+        CheckConstraint("change_type in ('replacement', 'temporary')", name="ck_v2_project_role_changes_change_type"),
+        CheckConstraint("status in ('pending', 'approved', 'rejected')", name="ck_v2_project_role_changes_status"),
+        CheckConstraint(
+            "(status = 'pending' and decided_by is null and decided_at is null) or "
+            "(status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)",
+            name="ck_v2_project_role_changes_decision_pair",
+        ),
+        Index("ix_v2_project_role_changes_project", "project_id"),
+        Index("ix_v2_project_role_changes_project_status", "project_id", "status"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    role_type: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_membership_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_memberships.id", ondelete="RESTRICT"))
+    replacement_employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"), nullable=False)
+    change_type: Mapped[str] = mapped_column(Text, nullable=False, default="replacement")
+    reason_code: Mapped[str] = mapped_column(Text, nullable=False)
+    reason_detail: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    requested_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class V2AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = {"schema": V2_SCHEMA}

@@ -169,14 +169,15 @@ class ProjectExecutionTasksApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("not been activated", response.json()["detail"])
 
-    def test_returns_empty_task_list_when_no_baseline_was_generated_before_activation(self):
+    def test_activation_without_generated_tasks_is_now_rejected(self):
+        """U1: activation now locks a real baseline snapshot and rejects
+        activation when there are zero included tasks to snapshot, so a
+        project that never had generate-tasks run cannot activate at all
+        (superseding the old placeholder behaviour of an empty task list)."""
         project = self.create_draft()
         # No generate-tasks call before activation.
-        self.activate(project["id"])
-        response = self.client.get(f"/api/v2/projects/{project['id']}/execution-tasks")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["total_tasks"], 0)
-        self.assertEqual(response.json()["tasks"], [])
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(response.status_code, 409, response.text)
 
     def test_unaffiliated_project_manager_cannot_view_another_projects_tasks(self):
         project = self.create_draft()
@@ -205,6 +206,7 @@ class ProjectExecutionTasksApiTests(unittest.TestCase):
 
     def test_unauthenticated_request_is_rejected(self):
         project = self.create_draft()
+        self.client.post(f"/api/v2/projects/{project['id']}/generate-tasks")
         self.activate(project["id"])
         self.app.dependency_overrides.pop(current_user, None)
         response = self.client.get(f"/api/v2/projects/{project['id']}/execution-tasks")
