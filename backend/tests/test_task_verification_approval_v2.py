@@ -26,7 +26,14 @@ from app.execution_models import (
     TaskVerification,
 )
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
@@ -61,6 +68,10 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -73,6 +84,7 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
             ProjectBaseline.__table__,
             BaselineTask.__table__,
@@ -438,11 +450,11 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
 
         # T002 is merely "verified" (Supervisor-verified, not yet
         # PM-approved) - per BR-008, Class A predecessors require PM
-        # approval (completed), so T004 must still be blocked.
+        # approval (completed), so T004 must still be blocked. Per the
+        # plan (R8/BR-011), the predecessor-satisfied check gates both
+        # `ready` and `in_progress`, not just `in_progress`.
         self.act_as_supervisor()
-        ready = self.transition(project["id"], t004.id, "ready")
-        self.assertEqual(ready.status_code, 200, ready.text)
-        still_blocked = self.transition(project["id"], t004.id, "in_progress")
+        still_blocked = self.transition(project["id"], t004.id, "ready")
         self.assertEqual(still_blocked.status_code, 409, still_blocked.text)
 
         # PM approves T002 -> completed.
@@ -453,6 +465,8 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
 
         # Now T004 unblocks.
         self.act_as_supervisor()
+        ready = self.transition(project["id"], t004.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
         unblocked = self.transition(project["id"], t004.id, "in_progress")
         self.assertEqual(unblocked.status_code, 200, unblocked.text)
         self.assertEqual(unblocked.json()["lifecycle_status"], "in_progress")

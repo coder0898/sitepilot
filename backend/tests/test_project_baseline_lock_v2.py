@@ -16,7 +16,14 @@ from app.auth import current_user
 from app.database import get_db
 from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.projects_v2 import router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
@@ -48,6 +55,10 @@ class ProjectBaselineLockApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -60,6 +71,7 @@ class ProjectBaselineLockApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
             ProjectBaseline.__table__,
             BaselineTask.__table__,
@@ -90,21 +102,29 @@ class ProjectBaselineLockApiTests(unittest.TestCase):
 
     def _seed(self, task_count: int = 3, dependency_count: int = 2, conditional_last: bool = False):
         with self.Session.begin() as session:
-            admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
-            pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
-            supervisor = User(
-                id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
-                role=UserRole.supervisor, active=True,
-            )
-            session.add_all([admin, pm, supervisor])
-            session.flush()
-            session.add_all([
-                EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
-                EmployeeProfile(
-                    user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
-                ),
-            ])
-            template = V2Template(code="WORKVED-45", name="Workved 45 Day")
+            # Idempotent: a test may call _seed() a second time with
+            # different task/dependency shape params (on top of setUp's
+            # unconditional default-args call) to get a differently
+            # shaped template without re-inserting the same fixed-id users.
+            if session.get(User, ADMIN_ID) is None:
+                admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
+                pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
+                supervisor = User(
+                    id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
+                    role=UserRole.supervisor, active=True,
+                )
+                session.add_all([admin, pm, supervisor])
+                session.flush()
+                session.add_all([
+                    EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                    EmployeeProfile(
+                        user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
+                    ),
+                ])
+            # Unique code per call: a test may call _seed() a second time
+            # (on top of setUp's default-args call) for a differently
+            # shaped template, and V2Template.code is unique.
+            template = V2Template(code=f"WORKVED-45-{uuid.uuid4().hex[:8]}", name="Workved 45 Day")
             session.add(template)
             session.flush()
             published = V2TemplateVersion(
@@ -309,28 +329,32 @@ class ProjectBaselineLockApiTests(unittest.TestCase):
 
         with self.engine.begin() as connection:
             connection.exec_driver_sql(
-                "CREATE TRIGGER trg_baseline_tasks_immutable_update "
-                "BEFORE UPDATE ON siteops_v2.baseline_tasks "
+                "CREATE TRIGGER siteops_v2.trg_baseline_tasks_immutable_update "
+                "BEFORE UPDATE ON baseline_tasks "
                 "BEGIN SELECT RAISE(ABORT, 'baseline_tasks rows are immutable once written'); END"
             )
             connection.exec_driver_sql(
-                "CREATE TRIGGER trg_baseline_tasks_immutable_delete "
-                "BEFORE DELETE ON siteops_v2.baseline_tasks "
+                "CREATE TRIGGER siteops_v2.trg_baseline_tasks_immutable_delete "
+                "BEFORE DELETE ON baseline_tasks "
                 "BEGIN SELECT RAISE(ABORT, 'baseline_tasks rows are immutable once written'); END"
             )
 
+        # Raw driver SQL bypasses the ORM's UUID type decorator, which
+        # stores ids as undashed 32-char hex on SQLite - so the WHERE
+        # clause must match that on-disk form (.hex), not str()'s dashed
+        # form, or it silently matches zero rows and the trigger never fires.
         with self.engine.connect() as connection:
             with self.assertRaises(Exception):
                 connection.exec_driver_sql(
                     "UPDATE siteops_v2.baseline_tasks SET title = 'tampered' WHERE id = ?",
-                    (str(baseline_task_id),),
+                    (baseline_task_id.hex,),
                 )
 
         with self.engine.connect() as connection:
             with self.assertRaises(Exception):
                 connection.exec_driver_sql(
                     "DELETE FROM siteops_v2.baseline_tasks WHERE id = ?",
-                    (str(baseline_task_id),),
+                    (baseline_task_id.hex,),
                 )
 
         with self.Session() as session:

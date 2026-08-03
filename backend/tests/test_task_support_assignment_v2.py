@@ -26,7 +26,15 @@ from app.execution_models import (
     TaskSupportAssignment,
 )
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import ProjectRoleChange, V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    ProjectRoleChange,
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
@@ -62,6 +70,10 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -74,6 +86,7 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
             ProjectRoleChange.__table__,
             ProjectBaseline.__table__,
@@ -222,11 +235,19 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return project
 
-    def add_internal_member(self, project_id: str, employee_id: uuid.UUID) -> None:
+    def employee_id_for(self, user_id: uuid.UUID) -> uuid.UUID:
+        with self.Session() as session:
+            return session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == user_id))
+
+    def add_internal_member(self, project_id: str, user_id: uuid.UUID) -> None:
         self.act_as_pm()
         response = self.client.post(
             f"/api/v2/projects/{project_id}/memberships",
-            json={"employee_id": str(employee_id), "project_role": "internal_employee", "reason": "Add support staff."},
+            json={
+                "employee_id": str(self.employee_id_for(user_id)),
+                "project_role": "internal_employee",
+                "reason": "Add support staff.",
+            },
         )
         self.assertEqual(response.status_code, 200, response.text)
 
@@ -254,12 +275,13 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         project = self.activate_project()
         self.add_internal_member(project["id"], INTERNAL_ID)
         t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
 
         self.act_as_supervisor()
-        response = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        response = self.assign_support(project["id"], t001.id, internal_employee_id)
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["employee_id"], str(INTERNAL_ID))
+        self.assertEqual(body["employee_id"], str(internal_employee_id))
         self.assertEqual(body["status"], "active")
         self.assertIsNone(body["ends_at"])
 
@@ -271,11 +293,12 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         project = self.activate_project()
         self.add_internal_member(project["id"], INTERNAL_ID)
         t002 = self.task_by_code(project["id"], "T002")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
 
         self.act_as_pm()
-        response = self.assign_support(project["id"], t002.id, INTERNAL_ID)
+        response = self.assign_support(project["id"], t002.id, internal_employee_id)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["employee_id"], str(INTERNAL_ID))
+        self.assertEqual(response.json()["employee_id"], str(internal_employee_id))
 
     def test_supervisor_cannot_assign_support_to_approval_gate(self):
         project = self.activate_project()
@@ -283,7 +306,7 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         t002 = self.task_by_code(project["id"], "T002")
 
         self.act_as_supervisor()
-        response = self.assign_support(project["id"], t002.id, INTERNAL_ID)
+        response = self.assign_support(project["id"], t002.id, self.employee_id_for(INTERNAL_ID))
         self.assertEqual(response.status_code, 403, response.text)
 
     def test_pm_cannot_assign_support_to_work_task(self):
@@ -292,7 +315,7 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         t001 = self.task_by_code(project["id"], "T001")
 
         self.act_as_pm()
-        response = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        response = self.assign_support(project["id"], t001.id, self.employee_id_for(INTERNAL_ID))
         self.assertEqual(response.status_code, 403, response.text)
 
     # ---- edge cases -------------------------------------------------------
@@ -301,12 +324,13 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         project = self.activate_project()
         self.add_internal_member(project["id"], INTERNAL_ID)
         t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
 
         self.act_as_supervisor()
-        first = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        first = self.assign_support(project["id"], t001.id, internal_employee_id)
         self.assertEqual(first.status_code, 200, first.text)
 
-        second = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        second = self.assign_support(project["id"], t001.id, internal_employee_id)
         self.assertEqual(second.status_code, 409, second.text)
 
     def test_non_internal_employee_cannot_be_assigned_as_support(self):
@@ -315,19 +339,15 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
 
         self.act_as_supervisor()
         # PM (not an internal_employee) attempted as support.
-        response = self.assign_support(project["id"], t001.id, self._pm_employee_id())
+        response = self.assign_support(project["id"], t001.id, self.employee_id_for(PM_ID))
         self.assertEqual(response.status_code, 422, response.text)
-
-    def _pm_employee_id(self) -> uuid.UUID:
-        with self.Session() as session:
-            return session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == PM_ID))
 
     def test_non_project_member_internal_employee_cannot_be_assigned_as_support(self):
         project = self.activate_project()
         t001 = self.task_by_code(project["id"], "T001")
         # SECOND_INTERNAL_ID never added as a project member.
         self.act_as_supervisor()
-        response = self.assign_support(project["id"], t001.id, SECOND_INTERNAL_ID)
+        response = self.assign_support(project["id"], t001.id, self.employee_id_for(SECOND_INTERNAL_ID))
         self.assertEqual(response.status_code, 422, response.text)
 
     # ---- end support --------------------------------------------------------
@@ -336,9 +356,10 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         project = self.activate_project()
         self.add_internal_member(project["id"], INTERNAL_ID)
         t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
 
         self.act_as_supervisor()
-        created = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        created = self.assign_support(project["id"], t001.id, internal_employee_id)
         assignment_id = created.json()["id"]
 
         response = self.end_support(project["id"], t001.id, assignment_id)
@@ -350,7 +371,7 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         with self.Session() as session:
             changes = session.scalars(select(SupportAssignmentChange)).all()
             self.assertEqual(len(changes), 1)
-            self.assertEqual(changes[0].previous_employee_id, INTERNAL_ID)
+            self.assertEqual(changes[0].previous_employee_id, internal_employee_id)
 
     # ---- error path: no project membership ---------------------------------
 
@@ -360,7 +381,7 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         t001 = self.task_by_code(project["id"], "T001")
 
         self.act_as_outsider()
-        response = self.assign_support(project["id"], t001.id, INTERNAL_ID)
+        response = self.assign_support(project["id"], t001.id, self.employee_id_for(INTERNAL_ID))
         self.assertEqual(response.status_code, 403, response.text)
 
 

@@ -16,7 +16,14 @@ from app.auth import current_user
 from app.database import get_db
 from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
@@ -50,6 +57,10 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -62,6 +73,7 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
             ProjectBaseline.__table__,
             BaselineTask.__table__,
@@ -250,7 +262,7 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             r = self.transition(project["id"], task.id, "verified")
             self.assertEqual(r.status_code, 200, r.text)
             r = self.transition(project["id"], task.id, "completed")
-            self.assertEqual(r.status_code, 200, r.text, f"failed completing {task.original_code}")
+            self.assertEqual(r.status_code, 200, f"failed completing {task.original_code}: {r.text}")
 
         with self.Session() as session:
             milestone = session.get(Task, t004.id)
@@ -286,15 +298,22 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
         r = self.transition(project["id"], t001.id, "ready")
         self.assertEqual(r.status_code, 200, r.text)
 
-        # End the active Supervisor membership.
+        # End the active Supervisor membership directly at the DB level:
+        # U6 blocks ending an accountable PM/Supervisor role via the API on
+        # an active project (must go through the role-change request/
+        # approval flow instead), but this test only needs the "no active
+        # supervisor" *state* to exercise the lifecycle transition's
+        # accountability check, not the membership-end API itself.
         self.act_as_admin()
-        detail = self.client.get(f"/api/v2/projects/{project['id']}").json()
-        supervisor_membership = next(m for m in detail["memberships"] if m["project_role"] == "site_supervisor")
-        end_response = self.client.post(
-            f"/api/v2/projects/{project['id']}/memberships/{supervisor_membership['id']}/end",
-            json={"reason": "Testing missing accountable role."},
-        )
-        self.assertEqual(end_response.status_code, 200, end_response.text)
+        with self.Session.begin() as session:
+            supervisor_membership = session.scalar(
+                select(V2ProjectMembership).where(
+                    V2ProjectMembership.project_id == uuid.UUID(project["id"]),
+                    V2ProjectMembership.project_role == "site_supervisor",
+                    V2ProjectMembership.ends_at.is_(None),
+                )
+            )
+            supervisor_membership.ends_at = datetime.now(timezone.utc)
 
         response = self.transition(project["id"], t001.id, "in_progress", reason="Start work.")
         self.assertEqual(response.status_code, 409, response.text)
@@ -306,19 +325,21 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
         tasks = self.tasks_by_code(project["id"])
         t001, t002 = tasks["T001"], tasks["T002"]
 
+        # Per the plan (R8/BR-011), the predecessor-satisfied check gates
+        # both `ready` and `in_progress`, not just `in_progress`.
         self.act_as_supervisor()
-        r = self.transition(project["id"], t002.id, "ready")
-        self.assertEqual(r.status_code, 200, r.text)
-        blocked = self.transition(project["id"], t002.id, "in_progress", reason="Start work.")
+        blocked = self.transition(project["id"], t002.id, "ready")
         self.assertEqual(blocked.status_code, 409, blocked.text)
         with self.Session() as session:
-            self.assertEqual(session.get(Task, t002.id).lifecycle_status, "ready")
+            self.assertEqual(session.get(Task, t002.id).lifecycle_status, "planned")
 
         # Satisfy the predecessor: T001 all the way to completed.
         for target in ("ready", "in_progress", "submitted", "verified", "completed"):
             r = self.transition(project["id"], t001.id, target)
             self.assertEqual(r.status_code, 200, r.text)
 
+        ready = self.transition(project["id"], t002.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
         unblocked = self.transition(project["id"], t002.id, "in_progress", reason="Start work.")
         self.assertEqual(unblocked.status_code, 200, unblocked.text)
         self.assertEqual(unblocked.json()["lifecycle_status"], "in_progress")

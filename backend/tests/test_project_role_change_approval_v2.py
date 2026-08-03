@@ -17,7 +17,15 @@ from app.auth import current_user
 from app.database import get_db
 from app.execution_models import BaselineTask, FileObject, ProjectBaseline, Task, TaskDependency, TaskEvidence, TaskProgressUpdate
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import ProjectRoleChange, V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    ProjectRoleChange,
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
@@ -53,6 +61,10 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -65,6 +77,7 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
             ProjectRoleChange.__table__,
             ProjectBaseline.__table__,
@@ -86,8 +99,8 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
         # migration adds, independent of any application-level check.
         with self.engine.begin() as conn:
             conn.execute(text(
-                "create unique index uq_v2_project_memberships_one_active_role "
-                "on siteops_v2.project_memberships(project_id, project_role) "
+                "create unique index siteops_v2.uq_v2_project_memberships_one_active_role "
+                "on project_memberships(project_id, project_role) "
                 "where ends_at is null and project_role in ('project_manager', 'site_supervisor')"
             ))
 
