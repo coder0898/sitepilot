@@ -224,6 +224,8 @@ class ExecutionTasksReadApiTests(unittest.TestCase):
         self.assertEqual(body[1]["lifecycle_status"], "planned")
         self.assertEqual(body[0]["open_blocker_count"], 0)
         self.assertEqual(body[0]["active_support_count"], 0)
+        self.assertEqual(body[0]["approval"]["approval_status"], "not_started")
+        self.assertEqual(body[1]["approval"]["approval_status"], "not_started")
 
     def test_list_reflects_open_blocker_and_active_support_counts(self):
         project = self.activate_project()
@@ -265,11 +267,15 @@ class ExecutionTasksReadApiTests(unittest.TestCase):
         self.act_as_supervisor()
         self.transition(project["id"], t001.id, "ready")
         self.transition(project["id"], t001.id, "in_progress")
+        # Submitted as Admin, not the Supervisor who will verify below - no
+        # role rule authorizes verifying your own submitted progress.
+        self.act_as_admin()
         progress = self.client.post(
             f"/api/v2/projects/{project['id']}/tasks/{t001.id}/progress",
             data={"note": "Work completed, ready for review."},
         )
         self.assertEqual(progress.status_code, 200, progress.text)
+        self.act_as_supervisor()
         self.transition(project["id"], t001.id, "submitted")
         verify = self.client.post(
             f"/api/v2/projects/{project['id']}/tasks/{t001.id}/verify",
@@ -287,11 +293,73 @@ class ExecutionTasksReadApiTests(unittest.TestCase):
         self.assertEqual(body["verifications"][0]["decision"], "verified")
         self.assertEqual(body["blockers"], [])
         self.assertEqual(body["support_assignments"], [])
+        # T001 is standard work: verification only, no PM approval, and it
+        # has just completed - approval metadata should reflect that.
+        self.assertEqual(body["approval"]["task_class"], "standard")
+        self.assertEqual(body["approval"]["approval_summary"], "supervisor_verification")
+        self.assertFalse(body["approval"]["approval_required"])
+        self.assertEqual(body["approval"]["approval_status"], "approved")
+        self.assertFalse(body["actor_is_assigned_support"])
 
         detail_t002 = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t002.id}")
         predecessor_codes = [p["original_code"] for p in detail_t002.json()["predecessors"]]
         self.assertEqual(predecessor_codes, ["T001"])
         self.assertTrue(detail_t002.json()["predecessors"][0]["blocking"])
+
+    def test_detail_includes_audit_trail_and_resolved_actor_names(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "ready")
+        self.transition(project["id"], t001.id, "in_progress")
+        # Submitted as Admin, not the Supervisor who will verify below - no
+        # role rule authorizes verifying your own submitted progress.
+        self.act_as_admin()
+        self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{t001.id}/progress",
+            data={"note": "Work completed."},
+        )
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "submitted")
+        verify = self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{t001.id}/verify",
+            json={"decision": "verified"},
+        )
+        self.assertEqual(verify.status_code, 200, verify.text)
+
+        detail = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t001.id}")
+        body = detail.json()
+        self.assertEqual(body["lifecycle_status"], "completed")
+
+        # Every status transition (ready, in_progress, submitted, verified,
+        # completed) has its own audit event, actor-attributed by name.
+        self.assertEqual(len(body["audit_events"]), 5)
+        completed_event = next(e for e in body["audit_events"] if e["after_status"] == "completed")
+        self.assertEqual(completed_event["actor_name"], "Supervisor")
+
+        self.assertEqual(body["verifications"][0]["verified_by_name"], "Supervisor")
+
+    def test_cancellation_reason_and_actor_are_recoverable_from_audit_events(self):
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+
+        self.act_as_admin()
+        cancel = self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{t001.id}/status",
+            json={"target_status": "cancelled", "reason": "Scope removed by client."},
+        )
+        self.assertEqual(cancel.status_code, 200, cancel.text)
+
+        detail = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t001.id}")
+        body = detail.json()
+        self.assertEqual(body["lifecycle_status"], "cancelled")
+
+        cancellation_event = next(e for e in body["audit_events"] if e["after_status"] == "cancelled")
+        self.assertEqual(cancellation_event["reason"], "Scope removed by client.")
+        self.assertEqual(cancellation_event["actor_name"], "Admin")
 
     def test_detail_404_for_unknown_task_and_403_for_outsider(self):
         project = self.activate_project()

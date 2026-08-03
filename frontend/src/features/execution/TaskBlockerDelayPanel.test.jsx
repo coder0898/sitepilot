@@ -14,17 +14,38 @@ beforeEach(() => {
 });
 
 describe("TaskBlockerDelayPanel", () => {
-  it("logs a blocker and clears the form", async () => {
+  it("hides both forms by default", () => {
+    render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    expect(screen.getByText("No open blockers")).toBeInTheDocument();
+    expect(screen.getByText("No delays logged")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Type")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Reason")).not.toBeInTheDocument();
+  });
+
+  it("opens only the blocker form, logs it, and collapses again", async () => {
     taskExecutionApi.logBlocker.mockResolvedValue({});
     const onChanged = vi.fn();
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={onChanged}/>);
-    expect(screen.getByText("No blockers logged.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /report blocker/i }));
+    expect(screen.getByLabelText("Type")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Reason")).not.toBeInTheDocument();
+
     fireEvent.change(screen.getByLabelText("Type"), { target: { value: "material" } });
     fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Waiting on cement delivery." } });
     fireEvent.click(screen.getByRole("button", { name: /log blocker/i }));
     await waitFor(() => expect(taskExecutionApi.logBlocker).toHaveBeenCalledWith("p1", "t1", { type: "material", description: "Waiting on cement delivery." }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    expect(screen.getByLabelText("Type")).toHaveValue("");
+    await waitFor(() => expect(screen.queryByLabelText("Type")).not.toBeInTheDocument());
+  });
+
+  it("cancelling the blocker form collapses it without submitting", () => {
+    render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: /report blocker/i }));
+    expect(screen.getByLabelText("Type")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Type")).not.toBeInTheDocument();
+    expect(taskExecutionApi.logBlocker).not.toHaveBeenCalled();
   });
 
   it("resolves an open blocker", async () => {
@@ -45,22 +66,29 @@ describe("TaskBlockerDelayPanel", () => {
     expect(screen.queryByRole("button", { name: "Resolve" })).not.toBeInTheDocument();
   });
 
-  it("shows the vendor id field only when responsibility is vendor, and requires it", async () => {
+  it("shows the vendor id field only when responsibility is vendor", () => {
+    render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
+    expect(screen.getByLabelText(/vendor id/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Responsibility"), { target: { value: "client" } });
+    expect(screen.queryByLabelText("Vendor ID")).not.toBeInTheDocument();
+  });
+
+  it("requires the vendor id and submits a vendor delay, then collapses the form", async () => {
     taskExecutionApi.logDelay.mockResolvedValue({});
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
-    expect(screen.getByLabelText(/vendor id/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Cement delayed at source." } });
     expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "3fa85f64-5717-4562-b3fc-2c963f66afa6" } });
     fireEvent.click(screen.getByRole("button", { name: /log delay/i }));
     await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", reason: "Cement delayed at source.", impact_days: 1 }));
-
-    fireEvent.change(screen.getByLabelText("Responsibility"), { target: { value: "client" } });
-    expect(screen.queryByLabelText("Vendor ID")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByLabelText("Reason")).not.toBeInTheDocument());
   });
 
   it("rejects a non-UUID vendor id before submitting", async () => {
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Cement delayed at source." } });
     fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "vendor-123" } });
     expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
@@ -71,10 +99,20 @@ describe("TaskBlockerDelayPanel", () => {
   it("submits a non-vendor delay without a vendor id", async () => {
     taskExecutionApi.logDelay.mockResolvedValue({});
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
     fireEvent.change(screen.getByLabelText("Responsibility"), { target: { value: "client" } });
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Client decision pending." } });
     fireEvent.change(screen.getByLabelText("Impact (days)"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: /log delay/i }));
     await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "client", responsible_vendor_id: null, reason: "Client decision pending.", impact_days: 3 }));
+  });
+
+  it("blocker and delay forms are independent - opening one closes the other", () => {
+    render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: /report blocker/i }));
+    expect(screen.getByLabelText("Type")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
+    expect(screen.queryByLabelText("Type")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Reason")).toBeInTheDocument();
   });
 });

@@ -27,6 +27,7 @@ const detail = {
   description: "Set up the site office and hoarding.",
   predecessors: [],
   progress_updates: [], verifications: [], approvals: [], blockers: [], delays: [], support_assignments: [],
+  audit_events: [],
 };
 
 beforeEach(() => {
@@ -77,6 +78,39 @@ describe("TaskExecutionBoard", () => {
     expect(screen.queryByRole("button", { name: "Mark ready" })).not.toBeInTheDocument();
   });
 
+  it("lets the assigned Internal Employee start and submit their task", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail, lifecycle_status: "ready", actor_is_assigned_support: true,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "e1", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u1", created_at: "2026-08-01T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "internal_employee" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await screen.findByText("Set up the site office and hoarding.");
+    expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
+  });
+
+  it("hides start/submit from an Internal Employee who is not the one assigned", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail, lifecycle_status: "ready", actor_is_assigned_support: false,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "someone-else", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u1", created_at: "2026-08-01T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "internal_employee" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await screen.findByText("Set up the site office and hoarding.");
+    expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+  });
+
+  it("hides start/submit from the Supervisor once an Internal Employee is assigned", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail, lifecycle_status: "ready", actor_is_assigned_support: false,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "e1", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u1", created_at: "2026-08-01T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await screen.findByText("Set up the site office and hoarding.");
+    expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+  });
+
   it("requires a reason before cancelling a task", async () => {
     render(<TaskExecutionBoard projectId="p1" user={{ role: "admin" }}/>);
     fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
@@ -116,6 +150,54 @@ describe("TaskExecutionBoard", () => {
     fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
     await waitFor(() => expect(taskExecutionApi.detail).toHaveBeenCalled());
     expect(screen.queryByText("Supervisor verification")).not.toBeInTheDocument();
+  });
+
+  it("shows a read-only completed summary and hides execution controls once a task is completed", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail,
+      lifecycle_status: "completed",
+      task_class: "class_a",
+      progress_updates: [{ id: "pu1", task_id: "t1", project_id: "p1", update_type: "evidence", status_claim: null, note: "Done.", submitted_by: "u1", source: "portal", created_at: "2026-08-01T00:00:00Z", evidence: [{ id: "e1", file_id: "f1", evidence_type: "photo", caption: null, original_filename: "site.jpg", mime_type: "image/jpeg", size_bytes: 100 }] }],
+      approvals: [{ id: "a1", verification_id: "v1", decision: "approved", remarks: "Looks good.", decided_by: "u2", decided_by_name: "Priya PM", decided_at: "2026-08-02T00:00:00Z" }],
+      audit_events: [{ id: "ev1", action: "TASK_STATUS_CHANGED", source: "portal", before_status: "approval_pending", after_status: "completed", reason: "Approved by PM.", actor_user_id: "u2", actor_name: "Priya PM", occurred_at: "2026-08-02T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(screen.getAllByText(/priya pm/i).length).toBeGreaterThan(0);
+    expect(screen.getByText("site.jpg")).toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: /report blocker/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /report delay/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("Support assignments")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel task" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Log progress")).not.toBeInTheDocument();
+  });
+
+  it("shows a read-only cancelled summary with reason and actor, and hides execution controls", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail,
+      lifecycle_status: "cancelled",
+      audit_events: [{ id: "ev1", action: "TASK_STATUS_CHANGED", source: "portal", before_status: "planned", after_status: "cancelled", reason: "Scope removed by client.", actor_user_id: "u3", actor_name: "Admin User", occurred_at: "2026-08-03T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "admin" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    expect((await screen.findAllByText("Cancelled")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Scope removed by client.")).toBeInTheDocument();
+    expect(screen.getAllByText("Admin User").length).toBeGreaterThan(0);
+
+    expect(screen.queryByRole("button", { name: /report blocker/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("Support assignments")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel task" })).not.toBeInTheDocument();
+  });
+
+  it("still shows execution controls for a rejected task, since rejected is not terminal", async () => {
+    taskExecutionApi.detail.mockResolvedValue({ ...detail, lifecycle_status: "rejected" });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await screen.findByRole("button", { name: /report blocker/i });
+    expect(screen.getByText("Support assignments")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
   });
 
   it("shows history sections in the expanded detail", async () => {

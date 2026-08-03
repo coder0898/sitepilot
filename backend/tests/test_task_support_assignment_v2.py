@@ -144,6 +144,18 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             role=UserRole.supervisor, active=True,
         ))
 
+    def act_as_internal(self) -> None:
+        self.act_as(User(
+            id=INTERNAL_ID, name="Internal One", email="internal1@example.com",
+            role=UserRole.internal_employee, active=True,
+        ))
+
+    def act_as_second_internal(self) -> None:
+        self.act_as(User(
+            id=SECOND_INTERNAL_ID, name="Internal Two", email="internal2@example.com",
+            role=UserRole.internal_employee, active=True,
+        ))
+
     # ---- seeding -------------------------------------------------------
 
     def _seed(self):
@@ -269,6 +281,12 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             json={"reason_code": reason_code},
         )
 
+    def transition(self, project_id, task_id, target_status: str, reason: str | None = None):
+        body: dict = {"target_status": target_status}
+        if reason is not None:
+            body["reason"] = reason
+        return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/status", json=body)
+
     # ---- happy paths ----------------------------------------------------
 
     def test_supervisor_assigns_support_employee_to_work_task(self):
@@ -383,6 +401,88 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         self.act_as_outsider()
         response = self.assign_support(project["id"], t001.id, self.employee_id_for(INTERNAL_ID))
         self.assertEqual(response.status_code, 403, response.text)
+
+    # ---- assigned-employee-driven start/submit -----------------------------
+
+    def test_assigned_internal_employee_can_start_and_submit_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
+
+        self.act_as_supervisor()
+        ready = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+        self.assign_support(project["id"], t001.id, internal_employee_id)
+
+        self.act_as_internal()
+        started = self.transition(project["id"], t001.id, "in_progress")
+        self.assertEqual(started.status_code, 200, started.text)
+        submitted = self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        self.assertEqual(submitted.json()["lifecycle_status"], "submitted")
+
+    def test_supervisor_cannot_start_or_submit_when_internal_employee_assigned(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
+
+        self.act_as_supervisor()
+        ready = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+        self.assign_support(project["id"], t001.id, internal_employee_id)
+
+        # Supervisor must not silently take over execution once an Internal
+        # Employee is assigned - only that employee (or Admin) can start it.
+        blocked = self.transition(project["id"], t001.id, "in_progress")
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t001.id).lifecycle_status, "ready")
+
+    def test_unassigned_internal_employee_cannot_start_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        self.add_internal_member(project["id"], SECOND_INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
+
+        self.act_as_supervisor()
+        ready = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+        self.assign_support(project["id"], t001.id, internal_employee_id)
+
+        # A different Internal Employee (not the one assigned) cannot start it.
+        self.act_as_second_internal()
+        blocked = self.transition(project["id"], t001.id, "in_progress")
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+
+    def test_supervisor_can_start_and_submit_when_no_internal_employee_assigned(self):
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        ready = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+        started = self.transition(project["id"], t001.id, "in_progress")
+        self.assertEqual(started.status_code, 200, started.text)
+        submitted = self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+
+    def test_unassigned_internal_employee_cannot_start_task_with_no_assignment(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        ready = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+
+        # No support assignment exists yet - only Supervisor/PM/Admin may
+        # start the task themselves.
+        self.act_as_internal()
+        blocked = self.transition(project["id"], t001.id, "in_progress")
+        self.assertEqual(blocked.status_code, 403, blocked.text)
 
 
 if __name__ == "__main__":

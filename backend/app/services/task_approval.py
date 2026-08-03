@@ -40,7 +40,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import Task, TaskApprovalDecision, TaskVerification
+from app.execution_models import Task, TaskApprovalDecision, TaskVerification, is_work_task_kind
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.task_lifecycle import TaskLifecycleService
@@ -158,7 +158,7 @@ class TaskApprovalService:
         if task.task_kind == "approval_gate":
             if task.lifecycle_status != "submitted":
                 raise HTTPException(409, "An approval gate must be submitted before it can be approved.")
-        elif task.task_kind == "work" and task.task_class == "class_a":
+        elif is_work_task_kind(task.task_kind) and task.task_class == "class_a":
             if task.lifecycle_status != "verified":
                 raise HTTPException(
                     409, "Class A work must be Supervisor-verified before it can be PM-approved.",
@@ -187,16 +187,22 @@ class TaskApprovalService:
             if task.lifecycle_status != "approval_pending":
                 task = self.lifecycle.transition(
                     project.id, task.id, "approval_pending", actor,
-                    reason=clean_remarks,
+                    reason=clean_remarks, _via_decision_service=True,
                 )
-            task = self.lifecycle.transition(project.id, task.id, "rejected", actor, reason=clean_remarks)
-            return self.lifecycle.transition(project.id, task.id, "in_progress", actor, reason=clean_remarks)
+            task = self.lifecycle.transition(
+                project.id, task.id, "rejected", actor, reason=clean_remarks, _via_decision_service=True,
+            )
+            return self.lifecycle.transition(
+                project.id, task.id, "in_progress", actor, reason=clean_remarks, _via_decision_service=True,
+            )
 
         task = self.lifecycle.transition(
             project.id, task.id, "approval_pending", actor,
             reason=clean_remarks or "Awaiting PM approval.",
+            _via_decision_service=True,
         )
         return self.lifecycle.transition(
             project.id, task.id, "completed", actor,
             reason=clean_remarks or "Approved by PM.",
+            _via_decision_service=True,
         )

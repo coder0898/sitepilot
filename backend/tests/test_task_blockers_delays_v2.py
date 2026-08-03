@@ -24,6 +24,7 @@ from app.execution_models import (
     TaskDependency,
     TaskEvidence,
     TaskProgressUpdate,
+    TaskSupportAssignment,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
@@ -96,6 +97,7 @@ class TaskBlockersDelaysApiTests(unittest.TestCase):
             TaskEvidence.__table__,
             TaskBlocker.__table__,
             TaskDelayEvent.__table__,
+            TaskSupportAssignment.__table__,
         ):
             table.create(self.engine)
 

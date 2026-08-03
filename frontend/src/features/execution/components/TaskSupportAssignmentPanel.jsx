@@ -78,9 +78,8 @@ export function TaskSupportAssignmentPanel({ projectId, task, onChanged }) {
     }
   }
 
-  return <section className="rounded-xl border border-slate-200 bg-white p-4">
-    <h4 className="text-xs font-black uppercase tracking-wide text-slate-500">Support assignments</h4>
-    <div className="mt-2 grid gap-2">
+  return <div className="grid gap-2">
+    <div className="grid gap-2">
       {task.support_assignments.map(assignment => <div key={assignment.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2"><Pill tone={assignment.status === "active" ? "green" : "gray"}>{assignment.status}</Pill><span className="text-slate-700">{assignment.responsibility}</span></div>
@@ -89,7 +88,7 @@ export function TaskSupportAssignmentPanel({ projectId, task, onChanged }) {
       </div>)}
       {!task.support_assignments.length && <p className="text-sm text-slate-500">No support employees assigned.</p>}
     </div>
-    <form className="mt-3 grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_1fr_auto]" onSubmit={assign}>
+    <form className="grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_1fr_auto]" onSubmit={assign}>
       <Field label="Support employee">
         <Select value={employeeId} onChange={event => setEmployeeId(event.target.value)} required>
           <option value="">{candidates.length ? "Select employee" : "No internal employees on this project"}</option>
@@ -99,6 +98,6 @@ export function TaskSupportAssignmentPanel({ projectId, task, onChanged }) {
       <Field label="Responsibility"><Input value={responsibility} onChange={event => setResponsibility(event.target.value)} placeholder="What will they help with?" required/></Field>
       <div className="flex items-end"><Button type="submit" size="sm" loading={submitting} disabled={!employeeId || !responsibility.trim()}>Assign</Button></div>
     </form>
-    {error && <p className="mt-2 text-xs font-bold text-rose-700">{error}</p>}
-  </section>;
+    {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
+  </div>;
 }

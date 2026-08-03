@@ -21,6 +21,12 @@ Admin fallback (BR-007's "if a Supervisor is unavailable, the project PM
 replaces or temporarily assigns the Supervisor" plus Admin's general
 fallback authority). `TaskApprovalService` is responsible for refusing to
 let that same fallback actor also record the task's approval decision.
+
+Self-verification: no role rule authorizes the actor who submitted a
+task's most recent progress update to also verify it - not even a
+Supervisor who executed the task themselves because no Internal Employee
+was assigned. Admin/Super Admin are exempt, matching their blanket
+override elsewhere in this service.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import Task, TaskProgressUpdate, TaskVerification
+from app.execution_models import Task, TaskProgressUpdate, TaskVerification, is_work_task_kind
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.task_lifecycle import TaskLifecycleService
@@ -108,7 +114,7 @@ class TaskVerificationService:
         project = self._require_access(project_id, actor)
         task = self._get_task(project.id, task_id)
 
-        if task.task_kind != "work":
+        if not is_work_task_kind(task.task_kind):
             raise HTTPException(
                 409, "Only work tasks go through Supervisor verification; approval gates go straight to PM approval.",
             )
@@ -127,6 +133,17 @@ class TaskVerificationService:
         if submission is None:
             raise HTTPException(409, "This task has no pending progress submission to verify.")
 
+        # No role rule explicitly authorizes self-verification - the actor
+        # who submitted this progress update may not also verify it, even
+        # if they otherwise qualify as verifier (e.g. a Supervisor who
+        # executed the task themselves because no Internal Employee was
+        # assigned). Admin/Super Admin retain their blanket override, same
+        # as every other role check in this service.
+        if submission.submitted_by == actor.id and actor.role not in (UserRole.super_admin, UserRole.admin):
+            raise HTTPException(
+                409, "You submitted this task's progress - a different Supervisor, PM, or Admin must verify it.",
+            )
+
         self.db.add(TaskVerification(
             task_id=task.id,
             submission_update_id=submission.id,
@@ -137,16 +154,30 @@ class TaskVerificationService:
         self.db.flush()
 
         if decision == "rejected":
-            task = self.lifecycle.transition(project.id, task.id, "rejected", actor, reason=clean_remarks)
-            return self.lifecycle.transition(project.id, task.id, "in_progress", actor, reason=clean_remarks)
+            task = self.lifecycle.transition(
+                project.id, task.id, "rejected", actor, reason=clean_remarks, _via_decision_service=True,
+            )
+            return self.lifecycle.transition(
+                project.id, task.id, "in_progress", actor, reason=clean_remarks, _via_decision_service=True,
+            )
 
         task = self.lifecycle.transition(
             project.id, task.id, "verified", actor,
             reason=clean_remarks or "Verified by Supervisor.",
+            _via_decision_service=True,
         )
-        if task.task_class == "standard":
+        # `task_class` is nullable, same as `task_kind` - only an explicit
+        # "class_a" requires the extra PM approval step (BR-008). A task
+        # with no class assigned must still complete here: task_approval.py
+        # only accepts a PM decision for task_class == "class_a" exactly,
+        # so leaving this branch keyed on "== standard" would strand any
+        # unclassified task at `verified` forever, with no PM mechanism
+        # able to move it forward (that was a real bug, not intentional
+        # Class A behavior).
+        if task.task_class != "class_a":
             task = self.lifecycle.transition(
                 project.id, task.id, "completed", actor,
                 reason="Standard work completes automatically after Supervisor verification (BR-008).",
+                _via_decision_service=True,
             )
         return task

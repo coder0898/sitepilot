@@ -14,7 +14,17 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
+from app.execution_models import (
+    BaselineTask,
+    FileObject,
+    ProjectBaseline,
+    Task,
+    TaskDependency,
+    TaskEvidence,
+    TaskProgressUpdate,
+    TaskSupportAssignment,
+    TaskVerification,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -79,6 +89,11 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            TaskSupportAssignment.__table__,
+            TaskProgressUpdate.__table__,
+            FileObject.__table__,
+            TaskEvidence.__table__,
+            TaskVerification.__table__,
         ):
             table.create(self.engine)
 
@@ -213,6 +228,30 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             body["reason"] = reason
         return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/status", json=body)
 
+    def submit_progress(self, project_id: str, task_id, note="Work done."):
+        # Submitted as Admin (not the current actor, usually the
+        # Supervisor) so a later `verify()` call as Supervisor doesn't trip
+        # TaskVerificationService's self-verification guard - no role rule
+        # authorizes verifying your own submitted progress.
+        previous_actor = self._current_actor
+        self.act_as_admin()
+        try:
+            return self.client.post(
+                f"/api/v2/projects/{project_id}/tasks/{task_id}/progress", data={"note": note},
+            )
+        finally:
+            self.act_as(previous_actor)
+
+    def verify(self, project_id: str, task_id, decision: str = "verified", remarks: str | None = None):
+        # `verified`/`completed` are decision-service-only targets (U2's
+        # transition() rejects them via the raw /status endpoint) - tests
+        # that need a standard work task to reach `completed` go through
+        # /verify, exactly like the real Supervisor verification flow.
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/tasks/{task_id}/verify",
+            json={"decision": decision, "remarks": remarks},
+        )
+
     # ---- happy path -----------------------------------------------------
 
     def test_work_task_moves_through_planned_ready_in_progress_submitted(self):
@@ -257,12 +296,15 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             self.assertEqual(r.status_code, 200, r.text)
             r = self.transition(project["id"], task.id, "in_progress")
             self.assertEqual(r.status_code, 200, r.text)
+            sp = self.submit_progress(project["id"], task.id)
+            self.assertEqual(sp.status_code, 200, sp.text)
             r = self.transition(project["id"], task.id, "submitted")
             self.assertEqual(r.status_code, 200, r.text)
-            r = self.transition(project["id"], task.id, "verified")
-            self.assertEqual(r.status_code, 200, r.text)
-            r = self.transition(project["id"], task.id, "completed")
-            self.assertEqual(r.status_code, 200, f"failed completing {task.original_code}: {r.text}")
+            # Standard work auto-completes (submitted -> verified ->
+            # completed) inside TaskVerificationService.verify itself.
+            r = self.verify(project["id"], task.id)
+            self.assertEqual(r.status_code, 200, f"failed verifying {task.original_code}: {r.text}")
+            self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")
 
         with self.Session() as session:
             milestone = session.get(Task, t004.id)
@@ -334,9 +376,16 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             self.assertEqual(session.get(Task, t002.id).lifecycle_status, "planned")
 
         # Satisfy the predecessor: T001 all the way to completed.
-        for target in ("ready", "in_progress", "submitted", "verified", "completed"):
+        for target in ("ready", "in_progress"):
             r = self.transition(project["id"], t001.id, target)
             self.assertEqual(r.status_code, 200, r.text)
+        sp = self.submit_progress(project["id"], t001.id)
+        self.assertEqual(sp.status_code, 200, sp.text)
+        r = self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.verify(project["id"], t001.id)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")
 
         ready = self.transition(project["id"], t002.id, "ready")
         self.assertEqual(ready.status_code, 200, ready.text)

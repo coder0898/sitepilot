@@ -28,12 +28,14 @@ from app.execution_models import (
     TaskSupportAssignment,
     TaskVerification,
 )
-from app.models import User
+from app.models import EmployeeProfile, User
+from app.project_models import V2AuditEvent
 from app.routes.projects_v2 import get_project
 from app.schemas.execution_tasks import (
     TaskApprovalIn,
     TaskApprovalOut,
     TaskApprovalSummaryOut,
+    TaskAuditEventOut,
     TaskBlockerCreateIn,
     TaskBlockerOut,
     TaskDelayCreateIn,
@@ -53,6 +55,7 @@ from app.schemas.execution_tasks import (
     TaskVerificationSummaryOut,
 )
 from app.services.task_approval import TaskApprovalService
+from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
 from app.services.task_delay import TaskDelayService
 from app.services.task_lifecycle import TaskLifecycleService
@@ -114,6 +117,7 @@ def list_project_tasks(
             evidence_required=task.evidence_required,
             open_blocker_count=open_blocker_counts.get(task.id, 0),
             active_support_count=active_support_counts.get(task.id, 0),
+            approval=build_approval_metadata(task.task_kind, task.task_class, task.lifecycle_status),
             created_at=task.created_at,
             updated_at=task.updated_at,
         )
@@ -186,6 +190,24 @@ def get_project_task(
         .where(TaskSupportAssignment.task_id == task.id)
         .order_by(TaskSupportAssignment.starts_at.desc(), TaskSupportAssignment.id.desc())
     ).all())
+    audit_rows = list(db.scalars(
+        select(V2AuditEvent)
+        .where(V2AuditEvent.entity_type == "task", V2AuditEvent.entity_id == task.id)
+        .order_by(V2AuditEvent.occurred_at.desc(), V2AuditEvent.id.desc())
+    ).all())
+
+    actor_employee_id = db.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == actor.id))
+    actor_is_assigned_support = actor_employee_id is not None and any(
+        s.employee_id == actor_employee_id and s.status == "active" and s.ends_at is None
+        for s in support_assignments
+    )
+
+    actor_names = _resolve_actor_names(
+        db,
+        [v.verified_by for v in verifications]
+        + [a.decided_by for a in approvals]
+        + [event.actor_user_id for event in audit_rows if event.actor_user_id],
+    )
 
     return TaskDetailOut(
         id=task.id,
@@ -206,13 +228,43 @@ def get_project_task(
         evidence_required=task.evidence_required,
         created_at=task.created_at,
         updated_at=task.updated_at,
+        approval=build_approval_metadata(task.task_kind, task.task_class, task.lifecycle_status),
+        actor_is_assigned_support=actor_is_assigned_support,
         predecessors=predecessors,
         progress_updates=[_progress_update_out(db, update) for update in progress_updates],
-        verifications=[TaskVerificationSummaryOut.model_validate(v) for v in verifications],
-        approvals=[TaskApprovalSummaryOut.model_validate(a) for a in approvals],
+        verifications=[
+            TaskVerificationSummaryOut(
+                id=v.id, decision=v.decision, remarks=v.remarks,
+                verified_by=v.verified_by, verified_by_name=actor_names.get(v.verified_by),
+                verified_at=v.verified_at,
+            )
+            for v in verifications
+        ],
+        approvals=[
+            TaskApprovalSummaryOut(
+                id=a.id, verification_id=a.verification_id, decision=a.decision, remarks=a.remarks,
+                decided_by=a.decided_by, decided_by_name=actor_names.get(a.decided_by),
+                decided_at=a.decided_at,
+            )
+            for a in approvals
+        ],
         blockers=[TaskBlockerOut.model_validate(b) for b in blockers],
         delays=[TaskDelayOut.model_validate(d) for d in delays],
         support_assignments=[TaskSupportAssignmentOut.model_validate(s) for s in support_assignments],
+        audit_events=[
+            TaskAuditEventOut(
+                id=event.id,
+                action=event.action,
+                source=event.source,
+                before_status=(event.before_json or {}).get("lifecycle_status"),
+                after_status=(event.after_json or {}).get("lifecycle_status"),
+                reason=event.reason,
+                actor_user_id=event.actor_user_id,
+                actor_name=actor_names.get(event.actor_user_id) if event.actor_user_id else None,
+                occurred_at=event.occurred_at,
+            )
+            for event in audit_rows
+        ],
     )
 
 
@@ -227,6 +279,17 @@ def transition_task_status(
     return TaskLifecycleService(db).transition(
         project_id, task_id, payload.target_status, actor, reason=payload.reason,
     )
+
+
+def _resolve_actor_names(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Batch-resolves user ids to display names for the task detail view
+    (audit trail actor, verifier, approver) - one query per request rather
+    than N, and never a hard failure if a user id is stale/missing."""
+    unique_ids = {uid for uid in user_ids if uid}
+    if not unique_ids:
+        return {}
+    rows = db.execute(select(User.id, User.name).where(User.id.in_(unique_ids))).all()
+    return {row[0]: row[1] for row in rows}
 
 
 def _progress_update_out(db: Session, progress_update) -> TaskProgressUpdateOut:
