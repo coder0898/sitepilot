@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
 
@@ -8,6 +9,7 @@ vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
   verify: vi.fn(), approve: vi.fn(), logBlocker: vi.fn(), resolveBlocker: vi.fn(), logDelay: vi.fn(),
   assignSupport: vi.fn(), endSupportAssignment: vi.fn(),
 } }));
+vi.mock("../../api/projectsApi", () => ({ projectsApi: { detail: vi.fn() } }));
 
 const baseTask = {
   id: "t1", project_id: "p1", baseline_id: "b1", original_code: "T001", template_sequence: 1,
@@ -31,6 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   taskExecutionApi.list.mockResolvedValue(tasks);
   taskExecutionApi.detail.mockResolvedValue(detail);
+  projectsApi.detail.mockResolvedValue({ id: "p1", memberships: [] });
 });
 
 describe("TaskExecutionBoard", () => {
@@ -129,6 +132,14 @@ describe("TaskExecutionBoard", () => {
     expect(screen.getByText("Handover")).toBeInTheDocument();
     expect(screen.getByText("Crew on site.")).toBeInTheDocument();
     expect(screen.getByText("Waiting on cement.")).toBeInTheDocument();
+  });
+
+  it("mounts the support assignment panel in the expanded detail", async () => {
+    projectsApi.detail.mockResolvedValue({ id: "p1", memberships: [{ id: "m1", employee_id: "e1", name: "Rahul Verma", project_role: "internal_employee" }] });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    expect(await screen.findByText("Support assignments")).toBeInTheDocument();
+    expect(await screen.findByText("Rahul Verma")).toBeInTheDocument();
   });
 
   it("covers loading, empty and error/retry states", async () => {

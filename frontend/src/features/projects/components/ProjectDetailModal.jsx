@@ -6,6 +6,7 @@ import { ProjectTemplateReview } from "./ProjectTemplateReview";
 import { ProjectExternalGates } from "./ProjectExternalGates";
 import { ProjectDependencies } from "./ProjectDependencies";
 import { ProjectTeamReplaceModal } from "./ProjectTeamReplaceModal";
+import { PendingRoleChangesPanel } from "./PendingRoleChangesPanel";
 
 const statusTone = { draft: "gray", active: "green", on_hold: "orange", completed: "blue", archived: "gray" };
 const roleLabel = { project_manager: "Project Manager", site_supervisor: "Site Supervisor", internal_employee: "Internal Employee" };
@@ -33,6 +34,10 @@ function Team({ project, references, user, onChanged }) {
   const [replaceRole, setReplaceRole] = useState(null);
   const pm = project.memberships?.find(m => m.project_role === "project_manager");
   const supervisor = project.memberships?.find(m => m.project_role === "site_supervisor");
+  // U6: the two-step request/approval flow (BR-007) specifically governs
+  // replacement on ACTIVE projects - gating "Change" to draft-only left
+  // this unit's flow with no UI entry point once a project goes active.
+  const canRequestChange = ["draft", "active"].includes(project.status) && user.role === "admin";
 
   return <div className="grid gap-4">
     <section className="grid gap-3 sm:grid-cols-3">
@@ -43,7 +48,7 @@ function Team({ project, references, user, onChanged }) {
       ].map(([label,value]) => <article key={label} className="rounded-2xl border bg-white p-4">
         <p className="text-xs text-slate-500">{label}</p>
         <h4 className="mt-2 font-black">{value}</h4>
-        {(label==="Project Manager" || label==="Supervisor") && project.status==="draft" && user.role==="admin" &&
+        {(label==="Project Manager" || label==="Supervisor") && canRequestChange &&
           <Button className="mt-3" onClick={()=>setReplaceRole(label==="Project Manager"?"project_manager":"site_supervisor")}>Change</Button>}
       </article>)}
     </section>
@@ -54,6 +59,8 @@ function Team({ project, references, user, onChanged }) {
         <div key={m.id} className="rounded-xl border p-3">{m.name} - {roleLabel[m.project_role]}</div>
       )}</div>
     </section>
+
+    <PendingRoleChangesPanel projectId={project.id} user={user} onChanged={onChanged}/>
 
     {replaceRole && <ProjectTeamReplaceModal project={project} role={replaceRole} references={references} onClose={()=>setReplaceRole(null)} onChanged={onChanged}/>}
   </div>;

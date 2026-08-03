@@ -1,10 +1,11 @@
-import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert, Users } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
 import { TaskBlockerDelayPanel } from "./TaskBlockerDelayPanel";
 import { TaskDecisionModal } from "./TaskDecisionModal";
 import { TaskProgressForm } from "./TaskProgressForm";
+import { TaskSupportAssignmentPanel } from "./TaskSupportAssignmentPanel";
 
 // U2: forward status-progression buttons, mirrored from
 // TaskLifecycleService.ALLOWED_TRANSITIONS on the backend. This is a UX
@@ -176,12 +177,7 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
         by task state or role - any active project member may log one. */}
     <TaskBlockerDelayPanel projectId={projectId} task={detail} onChanged={refreshAll}/>
 
-    {/* U6 mount point: TaskSupportAssignmentPanel renders here. */}
-
-    {detail.support_assignments.length > 0 && <section className="rounded-xl border border-slate-200 bg-white p-4">
-      <h4 className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-500"><Users size={14}/> Support assignments</h4>
-      <div className="mt-2 grid gap-2">{detail.support_assignments.map(assignment => <div key={assignment.id} className="flex flex-wrap items-center gap-2 text-sm"><Pill tone={assignment.status === "active" ? "green" : "gray"}>{assignment.status}</Pill><span className="text-slate-700">{assignment.responsibility}</span></div>)}</div>
-    </section>}
+    <TaskSupportAssignmentPanel projectId={projectId} task={detail} onChanged={refreshAll}/>
   </div>;
 }
 
