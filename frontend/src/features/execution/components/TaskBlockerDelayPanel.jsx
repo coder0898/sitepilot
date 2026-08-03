@@ -7,6 +7,12 @@ const DELAY_RESPONSIBILITY_OPTIONS = [
   ["design", "Design"], ["site_readiness", "Site readiness"], ["internal", "Internal"], ["other", "Other"],
 ];
 
+// The backend column is a plain uuid.UUID (no vendor picker exists yet - see
+// the plan's Key Technical Decisions), so free text like a vendor code would
+// always 422. Validate the format client-side to fail fast with a clear
+// message instead of a confusing backend error.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function BlockerRow({ projectId, task, blocker, onChanged }) {
   const [resolving, setResolving] = useState(false);
   const [error, setError] = useState("");
@@ -69,8 +75,14 @@ export function TaskBlockerDelayPanel({ projectId, task, onChanged }) {
     }
   }
 
+  const vendorIdInvalid = responsibilityType === "vendor" && vendorId.trim() && !UUID_PATTERN.test(vendorId.trim());
+
   async function submitDelay(event) {
     event.preventDefault();
+    if (responsibilityType === "vendor" && !UUID_PATTERN.test(vendorId.trim())) {
+      setDelayError("Vendor ID must be a valid UUID (the vendor's V2 record id, not a vendor code).");
+      return;
+    }
     setDelaySubmitting(true);
     setDelayError("");
     try {
@@ -115,9 +127,9 @@ export function TaskBlockerDelayPanel({ projectId, task, onChanged }) {
       <form className="mt-3 grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-2" onSubmit={submitDelay}>
         <Field label="Responsibility"><Select value={responsibilityType} onChange={event => setResponsibilityType(event.target.value)}>{DELAY_RESPONSIBILITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>
         <Field label="Impact (days)"><Input type="number" min="1" value={impactDays} onChange={event => setImpactDays(event.target.value)} required/></Field>
-        {responsibilityType === "vendor" && <Field label="Vendor ID" className="sm:col-span-2" hint="Vendor picker arrives with Phase 2's vendor integration; enter the vendor's ID for now."><Input value={vendorId} onChange={event => setVendorId(event.target.value)} required/></Field>}
+        {responsibilityType === "vendor" && <Field label="Vendor ID" className="sm:col-span-2" error={vendorIdInvalid ? "Must be a valid UUID." : null} hint={vendorIdInvalid ? null : "Vendor picker arrives with Phase 2's vendor integration; enter the vendor's V2 record UUID for now."}><Input value={vendorId} onChange={event => setVendorId(event.target.value)} placeholder="e.g. 3fa85f64-5717-4562-b3fc-2c963f66afa6" required/></Field>}
         <Field label="Reason" className="sm:col-span-2"><Textarea value={delayReason} onChange={event => setDelayReason(event.target.value)} placeholder="What is causing the delay?" required/></Field>
-        <Button type="submit" size="sm" className="sm:col-span-2" loading={delaySubmitting} disabled={!delayReason.trim() || (responsibilityType === "vendor" && !vendorId.trim())}>Log delay</Button>
+        <Button type="submit" size="sm" className="sm:col-span-2" loading={delaySubmitting} disabled={!delayReason.trim() || (responsibilityType === "vendor" && (!vendorId.trim() || vendorIdInvalid))}>Log delay</Button>
       </form>
       {delayError && <p className="mt-2 text-xs font-bold text-rose-700">{delayError}</p>}
     </section>

@@ -142,6 +142,23 @@ describe("TaskExecutionBoard", () => {
     expect(await screen.findByText("Rahul Verma")).toBeInTheDocument();
   });
 
+  it("discards a stale response from a project switched away from before it resolved", async () => {
+    let resolveA;
+    const projectATasks = new Promise(resolve => { resolveA = resolve; });
+    taskExecutionApi.list.mockImplementationOnce(() => projectATasks);
+    const { rerender } = render(<TaskExecutionBoard projectId="pA" user={{ role: "supervisor" }}/>);
+
+    const projectBTasks = [{ ...baseTask, id: "tB", original_code: "TB01", title: "Project B task" }];
+    taskExecutionApi.list.mockResolvedValueOnce(projectBTasks);
+    rerender(<TaskExecutionBoard projectId="pB" user={{ role: "supervisor" }}/>);
+    expect(await screen.findByText("Project B task")).toBeInTheDocument();
+
+    resolveA(tasks); // Project A's slow response resolves after B already rendered
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(screen.getByText("Project B task")).toBeInTheDocument();
+    expect(screen.queryByText("Mobilise site")).not.toBeInTheDocument();
+  });
+
   it("covers loading, empty and error/retry states", async () => {
     let resolveList;
     taskExecutionApi.list.mockReturnValueOnce(new Promise(resolve => { resolveList = resolve; }));

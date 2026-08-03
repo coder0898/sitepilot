@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
 import { TaskBlockerDelayPanel } from "./TaskBlockerDelayPanel";
@@ -186,17 +186,25 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
+  // Guards against an out-of-order response after a fast project switch
+  // (e.g. Project A's slow list resolves after Project B's fast one) -
+  // mirrors the `active` flag pattern used elsewhere in this file/diff.
+  const currentProjectIdRef = useRef(projectId);
+  useEffect(() => { currentProjectIdRef.current = projectId; }, [projectId]);
 
   async function load() {
+    const requestedProjectId = projectId;
     setLoading(true);
     setError("");
     try {
-      const items = await taskExecutionApi.list(projectId);
+      const items = await taskExecutionApi.list(requestedProjectId);
+      if (currentProjectIdRef.current !== requestedProjectId) return;
       setTasks(items);
     } catch (caught) {
+      if (currentProjectIdRef.current !== requestedProjectId) return;
       setError(caught?.message || "The task execution board could not be loaded.");
     } finally {
-      setLoading(false);
+      if (currentProjectIdRef.current === requestedProjectId) setLoading(false);
     }
   }
 

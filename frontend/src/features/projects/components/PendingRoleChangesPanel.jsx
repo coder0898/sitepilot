@@ -42,7 +42,16 @@ export function PendingRoleChangesPanel({ projectId, user, onChanged }) {
   const [error, setError] = useState("");
   const [approvingId, setApprovingId] = useState("");
 
-  const canAct = ["admin", "super_admin", "project_manager"].includes(user?.role);
+  // BR-007's hierarchy is role_type-specific, not a flat permission: only
+  // Admin/Super Admin may act on a project_manager replacement; a PM may
+  // additionally act on a site_supervisor replacement. Showing Approve/
+  // Reject to a PM for a PM-replacement request would always 403.
+  function canActOn(change) {
+    if (["admin", "super_admin"].includes(user?.role)) return true;
+    if (change.role_type === "site_supervisor") return user?.role === "project_manager";
+    return false;
+  }
+  const canActOnAny = pending.some(canActOn);
 
   async function load() {
     setLoading(true);
@@ -83,7 +92,7 @@ export function PendingRoleChangesPanel({ projectId, user, onChanged }) {
   }
 
   if (loading) return <div className="grid min-h-24 place-items-center"><LoadingSpinner label="Loading role changes..."/></div>;
-  if (!canAct && !pending.length && !reassignmentNeeded.length) return null;
+  if (!canActOnAny && !pending.length && !reassignmentNeeded.length) return null;
 
   return <section className="grid gap-3">
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-700">{error}</div>}
@@ -101,10 +110,10 @@ export function PendingRoleChangesPanel({ projectId, user, onChanged }) {
           <Pill tone="orange">Pending approval</Pill>
         </div>
         <p className="mt-2 text-sm text-slate-600">{change.reason_code}</p>
-        {canAct && <div className="mt-3 flex flex-wrap items-center gap-2">
+        {canActOn(change) && <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button size="sm" loading={approvingId === change.id} onClick={() => approve(change)}>Approve</Button>
         </div>}
-        {canAct && <RejectControl projectId={projectId} change={change} onDone={afterReject}/>}
+        {canActOn(change) && <RejectControl projectId={projectId} change={change} onDone={afterReject}/>}
       </article>)}</div>
     </div>}
   </section>;

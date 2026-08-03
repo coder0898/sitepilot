@@ -63,4 +63,25 @@ describe("PendingRoleChangesPanel", () => {
     expect(await screen.findByText("Pending role changes")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
   });
+
+  it("lets a project_manager act on a site_supervisor replacement", async () => {
+    projectsApi.roleChanges.mockResolvedValue([pendingChange]);
+    render(<PendingRoleChangesPanel projectId="p1" user={{ role: "project_manager" }} onChanged={vi.fn()}/>);
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
+
+  it("hides approve/reject from a project_manager for a project_manager replacement (BR-007: Admin-only)", async () => {
+    const pmChange = { ...pendingChange, id: "rc2", role_type: "project_manager" };
+    projectsApi.roleChanges.mockResolvedValue([pmChange]);
+    render(<PendingRoleChangesPanel projectId="p1" user={{ role: "project_manager" }} onChanged={vi.fn()}/>);
+    expect(await screen.findByText("Pending role changes")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
+  it("lets admin act on a project_manager replacement", async () => {
+    const pmChange = { ...pendingChange, id: "rc2", role_type: "project_manager" };
+    projectsApi.roleChanges.mockResolvedValue([pmChange]);
+    render(<PendingRoleChangesPanel projectId="p1" user={{ role: "admin" }} onChanged={vi.fn()}/>);
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
 });

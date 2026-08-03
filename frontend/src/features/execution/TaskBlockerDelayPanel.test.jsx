@@ -51,12 +51,21 @@ describe("TaskBlockerDelayPanel", () => {
     expect(screen.getByLabelText(/vendor id/i)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Cement delayed at source." } });
     expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "vendor-123" } });
+    fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "3fa85f64-5717-4562-b3fc-2c963f66afa6" } });
     fireEvent.click(screen.getByRole("button", { name: /log delay/i }));
-    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "vendor-123", reason: "Cement delayed at source.", impact_days: 1 }));
+    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", reason: "Cement delayed at source.", impact_days: 1 }));
 
     fireEvent.change(screen.getByLabelText("Responsibility"), { target: { value: "client" } });
     expect(screen.queryByLabelText("Vendor ID")).not.toBeInTheDocument();
+  });
+
+  it("rejects a non-UUID vendor id before submitting", async () => {
+    render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Cement delayed at source." } });
+    fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "vendor-123" } });
+    expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
+    expect(screen.getByText("Must be a valid UUID.")).toBeInTheDocument();
+    expect(taskExecutionApi.logDelay).not.toHaveBeenCalled();
   });
 
   it("submits a non-vendor delay without a vendor id", async () => {
