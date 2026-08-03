@@ -56,3 +56,21 @@ async function request(path, options, allowRefresh) {
 export function api(path, options = {}) {
   return request(path, options, true);
 }
+
+// Evidence downloads require the same Bearer auth as every other route (no
+// query-string token fallback - see backend/app/auth.py's current_user), so
+// a plain <a href> can't reach them. Fetch as an authenticated blob instead
+// and let the caller trigger a browser download from it.
+export async function fetchBinary(path) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers = session?.access_token ? { Authorization: "Bearer " + session.access_token } : {};
+  const response = await fetch(API_BASE + path, { headers });
+  if (!response.ok) {
+    let message = "Something went wrong";
+    try { message = (await response.json())?.detail || message; } catch { /* non-JSON error body */ }
+    throw new ApiError(message, response.status);
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  return { blob: await response.blob(), filename: match?.[1] || "evidence" };
+}

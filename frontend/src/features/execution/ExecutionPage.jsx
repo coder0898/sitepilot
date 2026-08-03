@@ -1,26 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { CalendarCheck, ClipboardList, FolderKanban, GitBranch, Layers, ListChecks, Search, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
-import { EmptyState, LoadingSpinner, Pill, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui";
+import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
+import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
 
-// Phase 9: the Execution tab is a read-only Active Project Task View.
-// It shows the task baseline an activated V2 project already has -
-// nothing here writes to the backend. Task execution (status changes,
-// evidence, verification, approval), the calendar, supervisor actions and
-// support-employee assignment are explicitly out of scope for this phase
-// and are not implemented anywhere in this file.
+// U2 (Task Execution Engine, Phase 1): the "Tasks" tab is now the live
+// TaskExecutionBoard - status transitions, evidence, verification/approval,
+// blockers/delays and support assignment (U2-U6) all happen from here.
+// Dependencies and External Approvals stay read-only planning-time views,
+// unchanged from Phase 9.
 
-const DECISION_TONE = { included: "green", pending_review: "orange", excluded: "gray" };
-const decisionLabel = value => String(value || "").replaceAll("_", " ");
-
-function plannedDayLabel(task) {
-  if (!task.planned_start_day) return "Pre-activation";
-  if (task.planned_end_day && task.planned_end_day !== task.planned_start_day) return `Day ${task.planned_start_day}-${task.planned_end_day}`;
-  return `Day ${task.planned_start_day}`;
-}
-
-export function ExecutionPage() {
+export function ExecutionPage({ user }) {
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectId, setProjectId] = useState("");
@@ -74,20 +65,13 @@ export function ExecutionPage() {
     return () => { active = false; };
   }, [projectId]);
 
-  const filteredTasks = useMemo(() => {
-    const tasks = view?.tasks || [];
-    const term = search.trim().toLowerCase();
-    if (!term) return tasks;
-    return tasks.filter(task => [task.code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term)));
-  }, [view, search]);
-
   return (
     <section className="grid gap-5">
       <header className="flex flex-col gap-4 rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_16px_50px_rgba(15,23,42,.06)] sm:p-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.2em] text-blue-700"><CalendarCheck size={15}/> Active project task view</div>
           <h2 className="mt-2 text-2xl font-black tracking-[-.035em] text-slate-950 sm:text-3xl">{view?.project_name || "Select an active project"}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Read-only view of the generated task baseline for an activated project. Status updates, assignments, evidence and approvals are not part of this view.</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Track and drive task execution for this activated project: status updates, evidence, verification/approval, blockers/delays and support assignment.</p>
         </div>
         <label className="grid min-w-[240px] gap-2 text-sm font-bold text-slate-700">
           <span>Active project</span>
@@ -135,36 +119,7 @@ export function ExecutionPage() {
             </label>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            {filteredTasks.length ? (
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableHeader>Task</TableHeader>
-                    <TableHeader>Phase / Category</TableHeader>
-                    <TableHeader>Kind</TableHeader>
-                    <TableHeader>Planned day</TableHeader>
-                    <TableHeader>Baseline status</TableHeader>
-                    <TableHeader>Plan decision</TableHeader>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filteredTasks.map(task => (
-                    <TableRow key={task.id}>
-                      <TableCell><strong className="block text-slate-950">{task.title}</strong><span className="text-xs text-slate-400">{task.code}</span></TableCell>
-                      <TableCell>{[task.phase, task.category].filter(Boolean).join(" / ") || "-"}</TableCell>
-                      <TableCell className="capitalize">{task.task_kind}{task.task_class === "class_a" ? " · Class A" : ""}</TableCell>
-                      <TableCell>{plannedDayLabel(task)}</TableCell>
-                      <TableCell><Pill tone="gray">{task.lifecycle_status}</Pill></TableCell>
-                      <TableCell><Pill tone={DECISION_TONE[task.decision_state] || "gray"}>{decisionLabel(task.decision_state)}</Pill></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <EmptyState icon={<ClipboardList size={21}/>} title={view.tasks.length ? "No tasks match this search" : "No task baseline generated"} description={view.tasks.length ? "Try a different search term." : "This project was activated before its task baseline was generated."}/>
-            )}
-          </div>
+          <TaskExecutionBoard projectId={projectId} user={user} search={search}/>
           </>}
 
           {activeTab === "dependencies" && <div className="rounded-2xl border border-slate-200 bg-white p-5">
