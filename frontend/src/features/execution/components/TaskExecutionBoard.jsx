@@ -2,6 +2,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, CircleUserRound, ClipboardList, 
 import { useEffect, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
+import { TaskDecisionModal } from "./TaskDecisionModal";
 import { TaskProgressForm } from "./TaskProgressForm";
 
 // U2: forward status-progression buttons, mirrored from
@@ -149,7 +150,7 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
       {showCancel && <div className="mt-3 border-t border-blue-100 pt-3"><CancelControl projectId={projectId} task={detail} onChanged={refreshAll}/></div>}
     </section>}
 
-    {/* U4 mount point: TaskDecisionModal (verify/approve/reject) renders here. */}
+    {canDriveTransitions(user) && <TaskDecisionModal projectId={projectId} task={detail} onDecided={refreshAll}/>}
 
     {detail.lifecycle_status === "in_progress" && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
 

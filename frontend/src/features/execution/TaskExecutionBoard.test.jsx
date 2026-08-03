@@ -100,6 +100,21 @@ describe("TaskExecutionBoard", () => {
     expect(screen.queryByText("Log progress")).not.toBeInTheDocument();
   });
 
+  it("mounts the decision controls for a role that can drive transitions", async () => {
+    taskExecutionApi.detail.mockResolvedValue({ ...detail, task_kind: "work", task_class: "standard", lifecycle_status: "submitted" });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    expect(await screen.findByText("Supervisor verification")).toBeInTheDocument();
+  });
+
+  it("hides the decision controls for a role that cannot drive transitions", async () => {
+    taskExecutionApi.detail.mockResolvedValue({ ...detail, task_kind: "work", task_class: "standard", lifecycle_status: "submitted" });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "internal_employee" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await waitFor(() => expect(taskExecutionApi.detail).toHaveBeenCalled());
+    expect(screen.queryByText("Supervisor verification")).not.toBeInTheDocument();
+  });
+
   it("shows history sections in the expanded detail", async () => {
     taskExecutionApi.detail.mockResolvedValue({
       ...detail,
