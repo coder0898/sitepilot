@@ -9,23 +9,39 @@ verification/approval, blocker/delay, and support-assignment routes.
 import io
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import FileObject, TaskApprovalDecision, TaskEvidence, TaskVerification
+from app.execution_models import (
+    FileObject,
+    Task,
+    TaskApprovalDecision,
+    TaskBlocker,
+    TaskDelayEvent,
+    TaskDependency,
+    TaskEvidence,
+    TaskProgressUpdate,
+    TaskSupportAssignment,
+    TaskVerification,
+)
 from app.models import User
+from app.routes.projects_v2 import get_project
 from app.schemas.execution_tasks import (
     TaskApprovalIn,
     TaskApprovalOut,
+    TaskApprovalSummaryOut,
     TaskBlockerCreateIn,
     TaskBlockerOut,
     TaskDelayCreateIn,
     TaskDelayOut,
+    TaskDependencyRefOut,
+    TaskDetailOut,
     TaskEvidenceOut,
+    TaskListItemOut,
     TaskOut,
     TaskProgressUpdateOut,
     TaskStatusTransitionIn,
@@ -34,6 +50,7 @@ from app.schemas.execution_tasks import (
     TaskSupportAssignmentOut,
     TaskVerificationIn,
     TaskVerificationOut,
+    TaskVerificationSummaryOut,
 )
 from app.services.task_approval import TaskApprovalService
 from app.services.task_blocker import TaskBlockerService
@@ -44,6 +61,159 @@ from app.services.task_support_assignment import TaskSupportAssignmentService
 from app.services.task_verification import TaskVerificationService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-execution-tasks"])
+
+
+@router.get("/{project_id}/tasks", response_model=list[TaskListItemOut])
+def list_project_tasks(
+    project_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Read-side listing for TaskExecutionBoard - the execution-layer
+    counterpart to the planning-time `GET /{project_id}/execution-tasks`
+    placeholder. Returns `tasks` rows (not `V2ProjectTask`), with each
+    row's live lifecycle_status plus small summary counts a board list
+    needs without fetching every task's full detail."""
+    project = get_project(db, project_id, actor)
+    tasks = list(db.scalars(
+        select(Task).where(Task.project_id == project.id).order_by(Task.template_sequence.asc())
+    ).all())
+
+    open_blocker_counts: dict[uuid.UUID, int] = {}
+    for task_id, count in db.execute(
+        select(TaskBlocker.task_id, func.count(TaskBlocker.id))
+        .where(TaskBlocker.project_id == project.id, TaskBlocker.resolved_at.is_(None))
+        .group_by(TaskBlocker.task_id)
+    ).all():
+        open_blocker_counts[task_id] = count
+
+    active_support_counts: dict[uuid.UUID, int] = {}
+    for task_id, count in db.execute(
+        select(TaskSupportAssignment.task_id, func.count(TaskSupportAssignment.id))
+        .where(TaskSupportAssignment.project_id == project.id, TaskSupportAssignment.status == "active")
+        .group_by(TaskSupportAssignment.task_id)
+    ).all():
+        active_support_counts[task_id] = count
+
+    return [
+        TaskListItemOut(
+            id=task.id,
+            project_id=task.project_id,
+            baseline_id=task.baseline_id,
+            original_code=task.original_code,
+            template_sequence=task.template_sequence,
+            title=task.title,
+            task_kind=task.task_kind,
+            task_class=task.task_class,
+            lifecycle_status=task.lifecycle_status,
+            schedule_classification=task.schedule_classification,
+            planned_start_day=task.planned_start_day,
+            planned_end_day=task.planned_end_day,
+            phase=task.phase,
+            category=task.category,
+            evidence_required=task.evidence_required,
+            open_blocker_count=open_blocker_counts.get(task.id, 0),
+            active_support_count=active_support_counts.get(task.id, 0),
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+        )
+        for task in tasks
+    ]
+
+
+@router.get("/{project_id}/tasks/{task_id}", response_model=TaskDetailOut)
+def get_project_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Read-side detail for one execution-layer task - everything the
+    board's task-detail panel (progress form, decision modal, blocker/delay
+    panel, support-assignment panel) needs to render and to decide which
+    actions are currently valid, in one call."""
+    project = get_project(db, project_id, actor)
+    task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project.id))
+    if not task:
+        raise HTTPException(404, "Task not found.")
+
+    predecessor_rows = db.execute(
+        select(TaskDependency, Task)
+        .join(Task, Task.id == TaskDependency.predecessor_task_id)
+        .where(TaskDependency.successor_task_id == task.id)
+    ).all()
+    predecessors = [
+        TaskDependencyRefOut(
+            id=predecessor.id,
+            original_code=predecessor.original_code,
+            title=predecessor.title,
+            lifecycle_status=predecessor.lifecycle_status,
+            task_kind=predecessor.task_kind,
+            task_class=predecessor.task_class,
+            dependency_type=dependency.dependency_type,
+            blocking=dependency.blocking,
+        )
+        for dependency, predecessor in predecessor_rows
+    ]
+
+    progress_updates = list(db.scalars(
+        select(TaskProgressUpdate)
+        .where(TaskProgressUpdate.task_id == task.id)
+        .order_by(TaskProgressUpdate.created_at.desc(), TaskProgressUpdate.id.desc())
+    ).all())
+    verifications = list(db.scalars(
+        select(TaskVerification)
+        .where(TaskVerification.task_id == task.id)
+        .order_by(TaskVerification.verified_at.desc(), TaskVerification.id.desc())
+    ).all())
+    approvals = list(db.scalars(
+        select(TaskApprovalDecision)
+        .where(TaskApprovalDecision.task_id == task.id)
+        .order_by(TaskApprovalDecision.decided_at.desc(), TaskApprovalDecision.id.desc())
+    ).all())
+    blockers = list(db.scalars(
+        select(TaskBlocker)
+        .where(TaskBlocker.task_id == task.id)
+        .order_by(TaskBlocker.started_at.desc(), TaskBlocker.id.desc())
+    ).all())
+    delays = list(db.scalars(
+        select(TaskDelayEvent)
+        .where(TaskDelayEvent.task_id == task.id)
+        .order_by(TaskDelayEvent.created_at.desc(), TaskDelayEvent.id.desc())
+    ).all())
+    support_assignments = list(db.scalars(
+        select(TaskSupportAssignment)
+        .where(TaskSupportAssignment.task_id == task.id)
+        .order_by(TaskSupportAssignment.starts_at.desc(), TaskSupportAssignment.id.desc())
+    ).all())
+
+    return TaskDetailOut(
+        id=task.id,
+        project_id=task.project_id,
+        baseline_id=task.baseline_id,
+        original_code=task.original_code,
+        template_sequence=task.template_sequence,
+        title=task.title,
+        description=task.description,
+        task_kind=task.task_kind,
+        task_class=task.task_class,
+        lifecycle_status=task.lifecycle_status,
+        schedule_classification=task.schedule_classification,
+        planned_start_day=task.planned_start_day,
+        planned_end_day=task.planned_end_day,
+        phase=task.phase,
+        category=task.category,
+        evidence_required=task.evidence_required,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+        predecessors=predecessors,
+        progress_updates=[_progress_update_out(db, update) for update in progress_updates],
+        verifications=[TaskVerificationSummaryOut.model_validate(v) for v in verifications],
+        approvals=[TaskApprovalSummaryOut.model_validate(a) for a in approvals],
+        blockers=[TaskBlockerOut.model_validate(b) for b in blockers],
+        delays=[TaskDelayOut.model_validate(d) for d in delays],
+        support_assignments=[TaskSupportAssignmentOut.model_validate(s) for s in support_assignments],
+    )
 
 
 @router.post("/{project_id}/tasks/{task_id}/status", response_model=TaskOut)

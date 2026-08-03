@@ -235,3 +235,92 @@ class TaskProgressUpdateOut(BaseModel):
     evidence: list[TaskEvidenceOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaskListItemOut(BaseModel):
+    """List row for the execution board (TaskExecutionBoard). Blockers and
+    support assignments are summarized as counts here - the full detail
+    (individual blocker/delay/verification/approval/support records) is
+    only fetched per-task, via TaskDetailOut, when a row is expanded."""
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    baseline_id: uuid.UUID
+    original_code: str
+    template_sequence: int
+    title: str
+    task_kind: str | None
+    task_class: str | None
+    lifecycle_status: str
+    schedule_classification: str
+    planned_start_day: int | None
+    planned_end_day: int | None
+    phase: str | None
+    category: str | None
+    evidence_required: bool
+    open_blocker_count: int
+    active_support_count: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskDependencyRefOut(BaseModel):
+    id: uuid.UUID
+    original_code: str
+    title: str
+    lifecycle_status: str
+    task_kind: str | None
+    task_class: str | None
+    dependency_type: str
+    blocking: bool
+
+
+class TaskVerificationSummaryOut(BaseModel):
+    id: uuid.UUID
+    decision: str
+    remarks: str | None
+    verified_by: uuid.UUID
+    verified_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskApprovalSummaryOut(BaseModel):
+    id: uuid.UUID
+    verification_id: uuid.UUID | None
+    decision: str
+    remarks: str | None
+    decided_by: uuid.UUID
+    decided_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskDetailOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    baseline_id: uuid.UUID
+    original_code: str
+    template_sequence: int
+    title: str
+    description: str | None
+    task_kind: str | None
+    task_class: str | None
+    lifecycle_status: str
+    schedule_classification: str
+    planned_start_day: int | None
+    planned_end_day: int | None
+    phase: str | None
+    category: str | None
+    evidence_required: bool
+    created_at: datetime
+    updated_at: datetime
+    predecessors: list[TaskDependencyRefOut] = Field(default_factory=list)
+    progress_updates: list[TaskProgressUpdateOut] = Field(default_factory=list)
+    verifications: list[TaskVerificationSummaryOut] = Field(default_factory=list)
+    approvals: list[TaskApprovalSummaryOut] = Field(default_factory=list)
+    blockers: list[TaskBlockerOut] = Field(default_factory=list)
+    delays: list[TaskDelayOut] = Field(default_factory=list)
+    support_assignments: list[TaskSupportAssignmentOut] = Field(default_factory=list)
