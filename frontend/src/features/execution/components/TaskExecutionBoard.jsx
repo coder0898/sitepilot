@@ -1,7 +1,8 @@
-import { AlertTriangle, ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert, Users } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
+import { TaskBlockerDelayPanel } from "./TaskBlockerDelayPanel";
 import { TaskDecisionModal } from "./TaskDecisionModal";
 import { TaskProgressForm } from "./TaskProgressForm";
 
@@ -170,17 +171,10 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
       </div>
     </section>}
 
-    {/* U5 mount point: TaskBlockerDelayPanel renders here. */}
-
-    {detail.blockers.length > 0 && <section className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-      <h4 className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-amber-700"><ShieldAlert size={14}/> Blockers</h4>
-      <div className="mt-2 grid gap-2">{detail.blockers.map(blocker => <div key={blocker.id} className="rounded-lg border border-amber-200 bg-white p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="capitalize text-amber-900">{blocker.type}</strong><Pill tone={blocker.resolved_at ? "green" : "orange"}>{blocker.resolved_at ? "Resolved" : "Open"}</Pill></div><p className="mt-1 text-slate-600">{blocker.description}</p></div>)}</div>
-    </section>}
-
-    {detail.delays.length > 0 && <section className="rounded-xl border border-slate-200 bg-white p-4">
-      <h4 className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-500"><AlertTriangle size={14}/> Delays</h4>
-      <div className="mt-2 grid gap-2">{detail.delays.map(delay => <div key={delay.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="capitalize text-slate-800">{delay.responsibility_type.replaceAll("_", " ")}</strong><span className="text-xs font-bold text-slate-500">{delay.impact_days} day{delay.impact_days === 1 ? "" : "s"}</span></div><p className="mt-1 text-slate-600">{delay.reason}</p></div>)}</div>
-    </section>}
+    {/* U5: blockers/delays are independent of lifecycle_status, so this
+        panel (log form + history + resolve) is always visible, not gated
+        by task state or role - any active project member may log one. */}
+    <TaskBlockerDelayPanel projectId={projectId} task={detail} onChanged={refreshAll}/>
 
     {/* U6 mount point: TaskSupportAssignmentPanel renders here. */}
 
