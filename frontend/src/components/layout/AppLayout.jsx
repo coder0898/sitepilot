@@ -30,7 +30,7 @@ function MobileNavigation({ tabs, activeTab, onTabChange }) {
     {tabs.map(([key, label]) => {
       const active = activeTab === key;
       return <button type="button" key={key} onClick={() => onTabChange(key)} aria-current={active ? "page" : undefined} className={`grid min-h-[58px] min-w-0 place-items-center content-center gap-1 rounded-2xl px-1 text-[10px] font-black transition ${active ? "bg-slate-950 text-white shadow-lg" : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"}`}>
-        <TabIcon tab={key} size={20}/><span className="max-w-full truncate">{label.replace("Communication Hub", "Contacts").replace("Role Permissions", "Roles")}</span>
+        <TabIcon tab={key} size={20}/><span className="max-w-full truncate">{label.replace("Vendor Hub", "Vendors").replace("Role Permissions", "Roles")}</span>
       </button>;
     })}
   </nav>;

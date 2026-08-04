@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import SessionLocal
-from app.routes import access_requests, auth, communication, dashboard, execution_tasks_v2, execution_v2, permissions, project_vendors_v2, projects_v2, templates_v2, users, vendors, dependencies_v2, vendor_category_mapping_v2, whatsapp_webhook_v2
+from app.routes import access_requests, auth, communication, dashboard, execution_tasks_v2, execution_v2, permissions, project_vendors_v2, projects_v2, templates_v2, users, vendors, dependencies_v2, whatsapp_webhook_v2
 from app.seed import ensure_seed_data
 
 
@@ -34,7 +34,6 @@ def create_app() -> FastAPI:
     app.include_router(access_requests.router)
     app.include_router(users.router)
     app.include_router(vendors.router)
-    app.include_router(vendor_category_mapping_v2.router)
     app.include_router(communication.router)
     app.include_router(permissions.router)
     app.include_router(execution_v2.router)

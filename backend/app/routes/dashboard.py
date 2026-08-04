@@ -45,7 +45,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
         users = [public_user(item, db) for item in db.scalars(statement).all()]
 
     if user.role in {UserRole.super_admin, UserRole.admin, UserRole.project_manager, UserRole.supervisor}:
-        modules = ["projects", "execution", "communication", "users", "vendor_category_mapping"]
+        modules = ["projects", "execution", "communication", "users"]
     else:
         modules = ["projects", "users"]
 

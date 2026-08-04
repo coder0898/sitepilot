@@ -2,7 +2,7 @@ import { Check } from "lucide-react";
 import { Pill } from "../../../components/ui";
 
 const roleLabels = { admin: "Admin", project_manager: "Project Manager", supervisor: "Supervisor" };
-const moduleLabels = { execution: "Execution", communication: "Communication Hub", users: "Users", overview: "Overview", projects: "Projects", approvals: "Approvals", today: "Today", security: "Security" };
+const moduleLabels = { execution: "Execution", communication: "Vendor Hub", users: "Users", overview: "Overview", projects: "Projects", approvals: "Approvals", today: "Today", security: "Security" };
 
 function PermissionToggle({ permission, onChange, compact = false }) {
   const on = Boolean(permission?.can_view);

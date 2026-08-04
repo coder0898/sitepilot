@@ -98,7 +98,7 @@ def list_vendors(
     """Read surface for the vendor picker (ProjectVendorPanel) - every
     active V2 vendor plus its capability category names. Any authenticated
     project-side user may view vendor master data (mirrors the legacy
-    Communication Hub's unrestricted vendor read), since mapping/delegation
+    Vendor Hub's unrestricted vendor read), since mapping/delegation
     itself is still PM/Admin-gated at the write routes below."""
     vendors = db.scalars(select(V2Vendor).where(V2Vendor.status == "active").order_by(V2Vendor.name)).all()
     if not vendors:

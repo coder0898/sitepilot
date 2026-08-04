@@ -4,7 +4,6 @@ import { ExecutionPage } from "../execution/ExecutionPage";
 import { ProjectsPage } from "../projects/ProjectsPage";
 import { TemplatesPage } from "../templates/TemplatesPage";
 import { UsersPage } from "../users/UsersPage";
-import { VendorCategoryMappingPage } from "../vendorCategoryMapping/VendorCategoryMappingPage";
 
 const TAB_COMPONENTS = {
   projects: ProjectsPage,
@@ -12,7 +11,6 @@ const TAB_COMPONENTS = {
   execution: ExecutionPage,
   communication: CommunicationHubPage,
   users: UsersPage,
-  vendor_category_mapping: VendorCategoryMappingPage,
 };
 
 export function DashboardTab({ tab, loading, data, user, action }) {

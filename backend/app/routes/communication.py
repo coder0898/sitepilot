@@ -36,6 +36,38 @@ def require_project(project_id, user, db):
     return project
 
 
+def ensure_task_category_vendor_categories(db: Session) -> None:
+    """Auto-creates a root-level, `service`-type VendorCategory for every
+    distinct ExecutionTemplateTask.category value that doesn't already have
+    a case-insensitive name match - so a vendor's capability picker always
+    offers every real task category (Ceiling, Electrical, ...) without
+    anyone having to pre-create it. This replaces the old, separate
+    "Vendor Category Mapping" page's manual one-to-one linking step; the
+    existing category picker/manager here remains the manual path for
+    anything beyond the task-category set (e.g. material categories)."""
+    task_categories = {
+        (value or "").strip()
+        for value in db.scalars(select(ExecutionTemplateTask.category)).all()
+    }
+    task_categories.discard("")
+    if not task_categories:
+        return
+    existing_names = {
+        name.lower() for name in db.scalars(select(VendorCategory.name)).all()
+    }
+    missing = [name for name in task_categories if name.lower() not in existing_names]
+    if not missing:
+        return
+    for name in missing:
+        db.add(VendorCategory(name=name, category_type="service"))
+    try:
+        db.commit()
+    except IntegrityError:
+        # Concurrent request already created one of these names - safe to
+        # discard this attempt since the category now exists either way.
+        db.rollback()
+
+
 def require_main_vendor(vendor_id, db):
     vendor = db.get(Vendor, vendor_id)
     if not vendor:
@@ -62,6 +94,7 @@ def resolve_profile_parent(vendor, requested_parent_id, db):
 
 @router.get("")
 def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    ensure_task_category_vendor_categories(db)
     projects = visible_execution_projects(user, db)
     project_ids = {project.id for project in projects}
     links_query = select(ExecutionProjectContractor)

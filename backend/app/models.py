@@ -451,25 +451,3 @@ class ExecutionTaskReschedule(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-
-
-class TaskVendorCategoryMapping(Base):
-    __tablename__ = "task_vendor_category_mappings"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    task_category: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    vendor_category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vendor_categories.id", ondelete="SET NULL"))
-    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class TaskVendorCategoryMappingAudit(Base):
-    __tablename__ = "task_vendor_category_mapping_audit"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    task_category: Mapped[str] = mapped_column(Text, nullable=False)
-    action: Mapped[str] = mapped_column(Text, nullable=False)
-    old_vendor_category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    new_vendor_category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
