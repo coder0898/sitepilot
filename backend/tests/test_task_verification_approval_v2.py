@@ -17,6 +17,7 @@ from app.database import get_db
 from app.execution_models import (
     BaselineTask,
     FileObject,
+    OutboxEvent,
     ProjectBaseline,
     Task,
     TaskApprovalDecision,
@@ -83,6 +84,7 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             TaskEvidence.__table__,
             TaskVerification.__table__,
             TaskApprovalDecision.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 

@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import SupportAssignmentChange, Task, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 
 
 class TaskSupportAssignmentService:
@@ -145,6 +146,20 @@ class TaskSupportAssignmentService:
         )
         self.db.add(assignment)
         try:
+            self.db.flush()
+            OutboxService(self.db).emit(
+                event_type="task.support_assigned",
+                aggregate_type="task",
+                aggregate_id=task.id,
+                payload={
+                    "task_id": str(task.id),
+                    "project_id": str(project.id),
+                    "assignment_id": str(assignment.id),
+                    "employee_id": str(employee_id),
+                    "responsibility": clean_responsibility,
+                },
+                idempotency_key=f"task:{task.id}:task.support_assigned:{assignment.id}",
+            )
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -212,6 +227,20 @@ class TaskSupportAssignmentService:
             self.db.add(replacement)
 
         try:
+            OutboxService(self.db).emit(
+                event_type="task.support_ended",
+                aggregate_type="task",
+                aggregate_id=task.id,
+                payload={
+                    "task_id": str(task.id),
+                    "project_id": str(project.id),
+                    "assignment_id": str(assignment.id),
+                    "previous_employee_id": str(previous_employee_id),
+                    "replacement_employee_id": str(replacement_employee_id) if replacement_employee_id else None,
+                    "reason_code": clean_reason_code,
+                },
+                idempotency_key=f"task:{task.id}:task.support_ended:{assignment.id}",
+            )
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()

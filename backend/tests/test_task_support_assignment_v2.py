@@ -17,6 +17,7 @@ from app.database import get_db
 from app.execution_models import (
     BaselineTask,
     FileObject,
+    OutboxEvent,
     ProjectBaseline,
     SupportAssignmentChange,
     Task,
@@ -85,6 +86,7 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             TaskEvidence.__table__,
             TaskSupportAssignment.__table__,
             SupportAssignmentChange.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 

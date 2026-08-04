@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
+from app.execution_models import BaselineTask, OutboxEvent, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
@@ -67,6 +67,7 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 

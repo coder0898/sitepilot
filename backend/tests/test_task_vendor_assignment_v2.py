@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
+from app.execution_models import BaselineTask, OutboxEvent, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -84,6 +84,7 @@ class TaskVendorAssignmentApiTests(unittest.TestCase):
             V2VendorCapability.__table__,
             ProjectVendor.__table__,
             TaskVendorAssignment.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 

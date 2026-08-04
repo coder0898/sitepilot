@@ -21,6 +21,7 @@ from app.database import get_db
 from app.execution_models import (
     BaselineTask,
     FileObject,
+    OutboxEvent,
     ProjectBaseline,
     Task,
     TaskDependency,
@@ -93,6 +94,7 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             TaskProgressUpdate.__table__,
             FileObject.__table__,
             TaskEvidence.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 

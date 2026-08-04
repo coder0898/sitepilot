@@ -19,7 +19,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
-from app.execution_models import BaselineTask, FileObject, ProjectBaseline, Task, TaskDependency
+from app.execution_models import BaselineTask, FileObject, OutboxEvent, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -108,6 +108,7 @@ class VendorActivityApiTests(unittest.TestCase):
             FileObject.__table__,
             VendorActivityEvent.__table__,
             VendorActivityEvidence.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 

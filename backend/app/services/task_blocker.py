@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import Task, TaskBlocker
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 
 
 class TaskBlockerService:
@@ -106,6 +107,22 @@ class TaskBlockerService:
             owner_employee_id=owner_employee_id,
         )
         self.db.add(blocker)
+        self.db.flush()
+
+        OutboxService(self.db).emit(
+            event_type="task.blocker_created",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "blocker_id": str(blocker.id),
+                "type": clean_type,
+                "description": clean_description,
+            },
+            idempotency_key=f"task:{task.id}:task.blocker_created:{blocker.id}",
+        )
+
         self.db.commit()
         self.db.refresh(blocker)
         return blocker
@@ -134,6 +151,21 @@ class TaskBlockerService:
         blocker.resolved_at = datetime.now(timezone.utc)
         blocker.resolved_by = actor.id
         self.db.add(blocker)
+        self.db.flush()
+
+        OutboxService(self.db).emit(
+            event_type="task.blocker_resolved",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "blocker_id": str(blocker.id),
+                "resolved_by": str(actor.id),
+            },
+            idempotency_key=f"task:{task.id}:task.blocker_resolved:{blocker.id}",
+        )
+
         self.db.commit()
         self.db.refresh(blocker)
         return blocker

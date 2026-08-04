@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import Task, TaskApprovalDecision, TaskVerification
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 from app.services.task_lifecycle import TaskLifecycleService
 
 APPROVAL_DECISIONS = ("approved", "rejected")
@@ -182,6 +183,25 @@ class TaskApprovalService:
             decided_by=actor.id,
         ))
         self.db.flush()
+
+        # Same transaction-boundary trap as TaskVerificationService.verify:
+        # must be emitted BEFORE the first self.lifecycle.transition(...)
+        # call below, since that call commits on its own and this method
+        # may invoke it up to three times in sequence.
+        OutboxService(self.db).emit(
+            event_type="task.approval_recorded",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "decision": decision,
+                "remarks": clean_remarks,
+                "decided_by": str(actor.id),
+                "verification_id": str(verification.id) if verification else None,
+            },
+            idempotency_key=f"task:{task.id}:task.approval_recorded:{decision}",
+        )
 
         if decision == "rejected":
             if task.lifecycle_status != "approval_pending":

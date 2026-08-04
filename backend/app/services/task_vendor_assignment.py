@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import Task
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2CapabilityCategory, V2Vendor, V2VendorCapability
 
 
@@ -127,6 +128,21 @@ class TaskVendorAssignmentService:
             assigned_by=actor.id,
         )
         self.db.add(assignment)
+        self.db.flush()
+
+        OutboxService(self.db).emit(
+            event_type="task.vendor_assigned",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "assignment_id": str(assignment.id),
+                "vendor_id": str(vendor.id),
+            },
+            idempotency_key=f"task:{task.id}:task.vendor_assigned:{assignment.id}",
+        )
+
         self.db.commit()
         self.db.refresh(assignment)
         return assignment

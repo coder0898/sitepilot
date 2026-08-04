@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import TASK_LIFECYCLE_STATUSES, Task, TaskDependency, TaskVerification
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 
 
 # BR-009's canonical transition table, as an explicit allow-list:
@@ -206,6 +207,24 @@ class TaskLifecycleService:
                 reason="Milestone auto-completed: all blocking predecessors satisfied.",
             ))
             self.db.flush()
+            # This path deliberately mutates lifecycle_status directly
+            # (never through `transition()`, which would re-run role/access
+            # gating not applicable to a system-derived cascade) - so it
+            # needs its own outbox emission; `transition()`'s own emit call
+            # below does NOT cover this cascade.
+            OutboxService(self.db).emit(
+                event_type="task.status_changed",
+                aggregate_type="task",
+                aggregate_id=successor.id,
+                payload={
+                    "task_id": str(successor.id),
+                    "project_id": str(successor.project_id),
+                    "before_status": before_status,
+                    "target_status": "completed",
+                    "reason": "Milestone auto-completed: all blocking predecessors satisfied.",
+                },
+                idempotency_key=f"task:{successor.id}:task.status_changed:completed",
+            )
             self._auto_complete_successor_milestones(successor, actor)
 
     # ---- transition entry point ---------------------------------------
@@ -296,6 +315,25 @@ class TaskLifecycleService:
             reason=clean_reason,
         ))
         self.db.flush()
+
+        # Single instrumentation point for every user-initiated status
+        # change in the system (BR-015's generic "status change" event) -
+        # verify()/approve()'s multi-step cascades each land here once per
+        # transition() call, riding the SAME open transaction that this
+        # method's own commit below closes.
+        OutboxService(self.db).emit(
+            event_type="task.status_changed",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "before_status": before_status,
+                "target_status": target_status,
+                "reason": clean_reason,
+            },
+            idempotency_key=f"task:{task.id}:task.status_changed:{target_status}",
+        )
 
         if target_status == "completed":
             self._auto_complete_successor_milestones(task, actor)

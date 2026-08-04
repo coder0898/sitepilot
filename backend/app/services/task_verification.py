@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import Task, TaskProgressUpdate, TaskVerification
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 from app.services.task_lifecycle import TaskLifecycleService
 
 VERIFICATION_DECISIONS = ("verified", "rejected")
@@ -135,6 +136,29 @@ class TaskVerificationService:
             verified_by=actor.id,
         ))
         self.db.flush()
+
+        # Emitted here - BEFORE the first `self.lifecycle.transition(...)`
+        # call below - because `TaskLifecycleService.transition` commits at
+        # the end of each of its own calls, and this method calls it one or
+        # two times in sequence. Emitting after any transition() call would
+        # put this event in a transaction that already closed with the
+        # TaskVerification row, breaking the same-transaction guarantee.
+        # Placed here, it rides inside the same open transaction that the
+        # FIRST transition() call's commit closes, so the TaskVerification
+        # row and this outbox event commit atomically together.
+        OutboxService(self.db).emit(
+            event_type="task.verification_recorded",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "decision": decision,
+                "remarks": clean_remarks,
+                "verified_by": str(actor.id),
+            },
+            idempotency_key=f"task:{task.id}:task.verification_recorded:{decision}",
+        )
 
         if decision == "rejected":
             task = self.lifecycle.transition(project.id, task.id, "rejected", actor, reason=clean_remarks)

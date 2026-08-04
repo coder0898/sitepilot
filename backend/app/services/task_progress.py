@@ -27,6 +27,7 @@ from app.config import settings
 from app.execution_models import FileObject, Task, TaskEvidence, TaskProgressUpdate
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 
 # Reuse of the legacy module's (execution_v2.py `submit_task`) MIME
 # allowlist and size-cap pattern - NOT its storage/URL approach, which is
@@ -147,6 +148,23 @@ class TaskProgressService:
                 caption=None,
             ))
             self.db.flush()
+
+        # Added beyond the plan's literal U4 file list: R6/BR-015 explicitly
+        # names "evidence submitted" as a mandatory outbox event, and this
+        # is a Phase 1 mutation service exactly like the other six - see
+        # the U4 unit report for the full reasoning.
+        OutboxService(self.db).emit(
+            event_type="task.evidence_submitted",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "progress_update_id": str(progress_update.id),
+                "update_type": progress_update.update_type,
+            },
+            idempotency_key=f"task:{task.id}:task.evidence_submitted:{progress_update.id}",
+        )
 
         self.db.commit()
         self.db.refresh(progress_update)

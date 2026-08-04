@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import Task, TaskDelayEvent
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 
 DELAY_RESPONSIBILITY_TYPES = (
     "vendor", "client", "approval", "design", "site_readiness", "internal", "other",
@@ -108,6 +109,22 @@ class TaskDelayService:
             recorded_by=actor.id,
         )
         self.db.add(delay)
+        self.db.flush()
+
+        OutboxService(self.db).emit(
+            event_type="task.delay_recorded",
+            aggregate_type="task",
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "delay_id": str(delay.id),
+                "responsibility_type": responsibility_type,
+                "impact_days": impact_days,
+            },
+            idempotency_key=f"task:{task.id}:task.delay_recorded:{delay.id}",
+        )
+
         self.db.commit()
         self.db.refresh(delay)
         return delay

@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, ProjectRoleChange
+from app.services.outbox import OutboxService
 
 ROLE_TYPES = ("project_manager", "site_supervisor")
 ROLE_TO_USER_ROLE = {
@@ -201,6 +202,19 @@ class ProjectRoleChangeService:
             None, self._role_change_json(change), change.id,
         )
         try:
+            OutboxService(self.db).emit(
+                event_type="project.role_change_requested",
+                aggregate_type="project",
+                aggregate_id=project.id,
+                payload={
+                    "project_id": str(project.id),
+                    "change_id": str(change.id),
+                    "role_type": role_type,
+                    "replacement_employee_id": str(replacement_employee_id),
+                    "reason_code": clean_reason_code,
+                },
+                idempotency_key=f"project:{project.id}:project.role_change_requested:{change.id}",
+            )
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -252,6 +266,18 @@ class ProjectRoleChangeService:
         )
 
         try:
+            OutboxService(self.db).emit(
+                event_type="project.role_change_approved",
+                aggregate_type="project",
+                aggregate_id=project.id,
+                payload={
+                    "project_id": str(project.id),
+                    "change_id": str(change.id),
+                    "role_type": change.role_type,
+                    "membership_id": str(membership.id),
+                },
+                idempotency_key=f"project:{project.id}:project.role_change_approved:{change.id}",
+            )
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -287,6 +313,20 @@ class ProjectRoleChangeService:
         change.decided_at = datetime.now(timezone.utc)
 
         self._add_audit(project, actor, "PROJECT_ROLE_CHANGE_REJECTED", clean_reason, before, self._role_change_json(change), change.id)
+
+        OutboxService(self.db).emit(
+            event_type="project.role_change_rejected",
+            aggregate_type="project",
+            aggregate_id=project.id,
+            payload={
+                "project_id": str(project.id),
+                "change_id": str(change.id),
+                "role_type": change.role_type,
+                "reason": clean_reason,
+            },
+            idempotency_key=f"project:{project.id}:project.role_change_rejected:{change.id}",
+        )
+
         self.db.commit()
         self.db.refresh(change)
         return change
