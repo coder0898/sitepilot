@@ -3,6 +3,18 @@ node_modules
 .env.local
 .env
 npm-debug.log*
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime data — task-proof uploads and evidence files written by
+# the backend during local dev/testing, never source content
+backend/uploads/
+backend/evidence_storage/
+
 # Never commit runtime secrets
 .env.*
 !.env.example
