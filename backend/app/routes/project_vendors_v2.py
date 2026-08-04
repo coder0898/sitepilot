@@ -11,13 +11,17 @@ task through this mechanism (R4); see
 `app.services.vendor_activity.VendorActivityService`.
 """
 
+import io
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user
+from app.config import settings
 from app.database import get_db
 from app.execution_models import FileObject, Task
 from app.models import User
@@ -277,5 +281,59 @@ async def log_vendor_activity(
         evidence_bytes=evidence_bytes,
         evidence_filename=evidence.filename if evidence is not None else None,
         evidence_content_type=evidence.content_type if evidence is not None else None,
+    )
+    return _activity_event_out(db, event)
+
+
+@router.get("/{project_id}/tasks/{task_id}/vendor-assignment/{assignment_id}/activity/{file_id}")
+def download_vendor_activity_evidence(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    file_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Mirrors execution_tasks_v2.py's download_task_evidence - re-checks
+    project access and that the requested file is actually linked to an
+    activity event on *this* vendor assignment before streaming bytes."""
+    project = get_project(db, project_id, actor)
+    assignment = db.scalar(
+        select(TaskVendorAssignment).where(
+            TaskVendorAssignment.id == assignment_id,
+            TaskVendorAssignment.task_id == task_id,
+            TaskVendorAssignment.project_id == project.id,
+        )
+    )
+    if not assignment:
+        raise HTTPException(404, "Vendor assignment not found.")
+
+    evidence = db.scalar(
+        select(VendorActivityEvidence)
+        .join(VendorActivityEvent, VendorActivityEvidence.vendor_activity_event_id == VendorActivityEvent.id)
+        .where(
+            VendorActivityEvidence.file_id == file_id,
+            VendorActivityEvent.task_vendor_assignment_id == assignment.id,
+        )
+    )
+    if not evidence:
+        raise HTTPException(404, "Evidence file not found for this vendor activity event.")
+
+    file_object = db.get(FileObject, file_id)
+    if not file_object:
+        raise HTTPException(404, "Evidence file not found for this vendor activity event.")
+
+    file_path = Path(settings.evidence_upload_dir) / file_object.storage_key
+    if not file_path.is_file():
+        raise HTTPException(404, "Evidence file is no longer available.")
+
+    safe_filename = file_object.original_filename.replace('"', "").replace("\\", "").replace("\n", "").replace("\r", "")
+    return StreamingResponse(
+        io.BytesIO(file_path.read_bytes()),
+        media_type=file_object.mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
     return _activity_event_out(db, event)

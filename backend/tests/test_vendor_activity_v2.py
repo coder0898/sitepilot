@@ -291,6 +291,58 @@ class VendorActivityApiTests(unittest.TestCase):
             ).all()
             self.assertEqual(len(link_rows), 1)
 
+    def test_evidence_file_is_downloadable_from_its_own_route(self):
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+        assignment_id = self.map_and_assign_vendor(project["id"], task.id)
+
+        self.act_as_pm()
+        log_response = self.log_activity(
+            project["id"], task.id, assignment_id, "presence",
+            description="Vendor crew on site.",
+            files={"evidence": ("site.png", TINY_PNG_BYTES, "image/png")},
+        )
+        self.assertEqual(log_response.status_code, 200, log_response.text)
+        file_id = log_response.json()["evidence"][0]["file_id"]
+
+        response = self.client.get(
+            f"/api/v2/projects/{project['id']}/tasks/{task.id}"
+            f"/vendor-assignment/{assignment_id}/activity/{file_id}"
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.content, TINY_PNG_BYTES)
+        self.assertIn("site.png", response.headers["content-disposition"])
+
+    def test_evidence_download_rejects_file_from_a_different_assignment(self):
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+        assignment_id = self.map_and_assign_vendor(project["id"], task.id)
+        self.act_as_pm()
+        log_response = self.log_activity(
+            project["id"], task.id, assignment_id, "presence",
+            description="Vendor crew on site.",
+            files={"evidence": ("site.png", TINY_PNG_BYTES, "image/png")},
+        )
+        file_id = log_response.json()["evidence"][0]["file_id"]
+
+        other_project = self.create_draft(project_name="Other Project")
+        response = self.client.post(f"/api/v2/projects/{other_project['id']}/generate-tasks")
+        self.assertEqual(response.status_code, 200)
+        response = self.client.post(f"/api/v2/projects/{other_project['id']}/generate-dependencies")
+        self.assertEqual(response.status_code, 200)
+        response = self.client.post(f"/api/v2/projects/{other_project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(response.status_code, 200)
+        other_task = self.task_by_code(other_project["id"], "T001")
+        other_assignment_id = self.map_and_assign_vendor(other_project["id"], other_task.id)
+
+        response = self.client.get(
+            f"/api/v2/projects/{other_project['id']}/tasks/{other_task.id}"
+            f"/vendor-assignment/{other_assignment_id}/activity/{file_id}"
+        )
+
+        self.assertEqual(response.status_code, 404, response.text)
+
     # ---- edge cases -----------------------------------------------------
 
     def test_incident_without_evidence_still_succeeds(self):
