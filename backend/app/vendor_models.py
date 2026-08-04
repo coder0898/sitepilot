@@ -109,3 +109,85 @@ class V2VendorContact(Base):
     whatsapp: Mapped[str | None] = mapped_column(Text)
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProjectVendor(Base):
+    """Phase 2 U2: a vendor mapped to a project (R2).
+
+    Only a `V2Vendor` with `status == 'active'` may be mapped
+    (`ProjectVendorService.map_vendor`). A `sub_vendor` additionally
+    requires its `parent_vendor_id` to already have its own active mapping
+    to the *same* project - that rule spans two rows (this vendor's mapping
+    candidacy and its parent's existing mapping), so it is enforced in the
+    service layer rather than as a single-row CHECK constraint.
+
+    No `ended_at`/status column: this unit only adds mappings, it does not
+    build an unmapping flow, so a row's mere existence is what "actively
+    mapped" means for now (including for the sub-vendor parent check
+    above).
+    """
+
+    __tablename__ = "project_vendors"
+    __table_args__ = (
+        UniqueConstraint("project_id", "vendor_id", name="uq_v2_project_vendors_project_vendor"),
+        Index("ix_v2_project_vendors_project", "project_id"),
+        Index("ix_v2_project_vendors_vendor", "vendor_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendors.id", ondelete="RESTRICT"), nullable=False
+    )
+    mapped_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskVendorAssignment(Base):
+    """Phase 2 U2: a vendor delegated to an execution-layer task (R3).
+
+    A pure delegation record - it never transfers or alters Site Supervisor
+    accountability (Phase 1 U6's accountability resolution stays entirely
+    independent of this table's existence) and never itself satisfies or
+    affects a `TaskDependency` blocking check. `TaskVendorAssignmentService`
+    requires the vendor to already be `ProjectVendor`-mapped to the task's
+    project, to be `status == 'active'`, and (when the task has a
+    `category`) to hold a matching `V2VendorCapability` by category name.
+
+    `status` starts at `pending_ack` on every insert here; `acknowledged`
+    and `declined` are reserved for a later unit's vendor-acknowledgement
+    flow - this unit does not transition this column after creation.
+    """
+
+    __tablename__ = "task_vendor_assignments"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending_ack', 'acknowledged', 'declined')",
+            name="ck_v2_task_vendor_assignments_status",
+        ),
+        Index("ix_v2_task_vendor_assignments_task", "task_id"),
+        Index("ix_v2_task_vendor_assignments_project", "project_id"),
+        Index("ix_v2_task_vendor_assignments_vendor", "vendor_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Note: no direct FK class import from app.execution_models needed here -
+    # this references the `siteops_v2.tasks` table by schema-qualified name
+    # only, keeping this module's import surface limited to app.vendor_models
+    # + app.project_models (see the "no accountability import" R3 proof).
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendors.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_ack")
+    assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
