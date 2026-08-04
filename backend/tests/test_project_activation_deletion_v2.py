@@ -14,10 +14,18 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
+from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
+from app.project_models import (
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.projects_v2 import router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
 
 @compiles(JSONB, "sqlite")
@@ -47,6 +55,10 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -54,10 +66,17 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             V2Template.__table__,
             V2TemplateVersion.__table__,
             V2TemplateTask.__table__,
+            V2TemplateTaskDependency.__table__,
             V2Project.__table__,
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
+            V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
+            ProjectBaseline.__table__,
+            BaselineTask.__table__,
+            Task.__table__,
+            TaskDependency.__table__,
         ):
             table.create(self.engine)
 

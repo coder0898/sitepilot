@@ -83,6 +83,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - **Audit helper consolidation**: promote `projects_v2.py`'s local `add_audit()` into a shared `backend/app/services/audit.py` used by all new execution services, since the codebase currently has two inconsistent audit-write conventions (inline `V2AuditEvent` writes vs. the local helper) — this plan is a natural point to standardize before adding several more mutation services.
 - **Evidence storage uses the backend file adapter, privately served**: per `docs/v2/00_ARCHITECTURE_PACKAGE_INDEX.md` §6, Supabase Storage is not yet the selected production evidence store, and local/internal testing may use the backend file adapter but "must not be treated as production durability." This plan implements `file_objects` + an authenticated download route (not `StaticFiles` public mount) as the Release 1 internal-testing-appropriate choice, explicitly flagged as not production-final.
 - **PM/Supervisor reassignment becomes two-step (request + approval) rather than today's immediate change**: implements BR-007's "Admin/PM approves replacement" hierarchy via `project_role_changes` records with a `pending`/`approved`/`rejected` status, replacing `assign_membership()`'s current immediate-effect behavior.
+- **Frontend for U2–U6 ships in the same unit as its backend endpoints, in a new dedicated `frontend/src/api/taskExecutionApi.js` client**: this plan's original scope listed only backend files for U2–U5 and one frontend fix for U6, leaving U2–U5 with no way to be exercised from the portal. A new client (rather than folding into `frontend/src/api/projectsApi.js`) matches the existing convention of one client per backend router — these endpoints live under `execution_tasks_v2.py`, a separate router from `projects_v2.py`. New UI mirrors two already-established local patterns rather than inventing new ones: `TaskApplicabilityDecisionModal.jsx`'s decision-modal-with-history shape (U4's `TaskDecisionModal`), and `ProjectTemplateReview.jsx`'s list-of-rows-with-per-row-actions container shape (U2's `TaskExecutionBoard`).
 
 ---
 
@@ -149,6 +150,9 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Create: `backend/app/services/task_lifecycle.py` (`TaskLifecycleService.transition(task_id, target_status, actor, reason=None)`)
 - Create: `backend/app/routes/execution_tasks_v2.py` (`POST /api/v2/projects/{id}/tasks/{task_id}/status`)
 - Create: `backend/app/schemas/execution_tasks.py`
+- Create: `frontend/src/api/taskExecutionApi.js` (flat function-per-route client for every `execution_tasks_v2.py` endpoint this plan adds across U2–U5 — mirrors `projectsApi.js`'s pattern rather than folding into it, since these routes are scoped under a separate router; starts with `transitionStatus(projectId, taskId, payload)`)
+- Create: `frontend/src/features/execution/components/TaskExecutionBoard.jsx` (per-task list with lifecycle_status and role-gated transition controls — the shell U3–U5's per-task UI renders into)
+- Modify: `frontend/src/features/execution/ExecutionPage.jsx` (replace the read-only placeholder with `TaskExecutionBoard` once a project is active; the file's current "not implemented anywhere in this file" comment describes the gap this unit closes)
 - Test: `backend/tests/test_task_lifecycle_transitions_v2.py`
 
 **Approach:**
@@ -156,6 +160,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Before allowing `ready`/`in_progress`, check the project has an active Supervisor (BR-004) and that all blocking `task_dependencies` predecessors are satisfied (BR-011) — the predecessor "satisfied" condition varies by predecessor `task_kind`/`task_class` per BR-008 (verified/completed standard work, PM-approved Class A or gate, completed milestone).
 - Milestones transition automatically (`planned -> completed`) when their predecessors become satisfied — implemented as a check triggered inside the same service call that satisfies a predecessor, not a separate polling job.
 - Every transition writes a `V2AuditEvent` (via the consolidated `audit.py` helper from Key Technical Decisions) with before/after status.
+- `TaskExecutionBoard` renders only the transition buttons valid for a task's current `lifecycle_status` (derived client-side from the same allow-list, not a second source of truth — a 409 from an invalid attempt is a defense-in-depth backstop, not the primary UX gate) and only for actors whose role the backend would accept, following `ProjectTemplateReview.jsx`'s list-of-rows-with-per-row-actions shape.
 
 **Test scenarios:**
 - Happy path: a `work` task moves `planned -> ready -> in_progress -> submitted` when called by an authorized actor in sequence.
@@ -165,9 +170,11 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Edge case: `in_progress` is rejected while a blocking predecessor is unsatisfied; succeeds once the predecessor reaches its required state.
 - Error path: `cancelled` transition without a reason is rejected.
 - Integration: satisfying a predecessor task (via U4's verification/approval) triggers a dependent milestone's auto-completion in the same request.
+- Frontend: `TaskExecutionBoard` shows only transitions valid for a task's current status and the viewing actor's role; a 409 from an out-of-band attempt (e.g., a stale client) surfaces the backend's message inline instead of crashing the page.
 
 **Verification:**
 - Every transition in BR-009's table is reachable via the service under the correct role/dependency conditions, and every transition outside that table is rejected.
+- `TaskExecutionBoard` is the only live UI for task status change — `ExecutionPage.jsx` no longer describes execution as out of scope.
 
 ---
 
@@ -184,6 +191,8 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Modify: `backend/app/execution_models.py`
 - Create: `backend/app/services/task_progress.py`
 - Modify: `backend/app/routes/execution_tasks_v2.py` (`POST /{task_id}/progress`, `GET /{task_id}/evidence/{file_id}` — authenticated download)
+- Modify: `frontend/src/api/taskExecutionApi.js` (add `submitProgress(projectId, taskId, formData)`, `listEvidence`, `evidenceDownloadUrl`)
+- Create: `frontend/src/features/execution/components/TaskProgressForm.jsx` (note/status-claim field plus optional file input, rendered inside U2's `TaskExecutionBoard` per-task detail)
 - Test: `backend/tests/test_task_progress_evidence_v2.py`
 
 **Approach:**
@@ -191,6 +200,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - The download route serves files with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`, and validates that the declared `mime_type` matches the allowlist at upload time — evidence must never be served in a browser-renderable way that could enable stored-content attacks against a viewing PM/Admin/Supervisor.
 - Reuse the legacy module's MIME allowlist and size-cap validation as a pattern (not its storage/URL approach).
 - A progress update is append-only and does not itself change `lifecycle_status` — it's evidence for a later `submitted` transition (U2) to reference.
+- `TaskProgressForm`'s file input and submit call mirror the existing (currently disconnected) `<input type="file">` pattern in `frontend/src/features/execution/components/ExecutionModals.jsx` and the `FormData`-aware request handling already in `frontend/src/api/client.js` (it skips setting `Content-Type` when the body is a `FormData` instance so the browser sets the multipart boundary) — mirror this pattern, don't extend `ExecutionModals.jsx` itself, since it is legacy V1 code not wired into any live route.
 
 **Test scenarios:**
 - Happy path: an authorized Supervisor/support employee submits a progress update with an evidence file; `task_progress_updates` and `file_objects`/`task_evidence` rows are created.
@@ -198,6 +208,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Edge case: disallowed MIME type or oversized file is rejected with a clear error.
 - Error path: an actor with no active project membership cannot submit progress or download evidence for that project's tasks.
 - Integration: the authenticated download route returns the file for an authorized requester and 403/404s for an unauthorized one.
+- Frontend: submitting `TaskProgressForm` with a file shows the new evidence entry in the task detail without a full page reload; a backend-rejected MIME type or oversized file surfaces the same message as an inline form error, not a generic failure.
 
 **Verification:**
 - Evidence files are never reachable via a public/static URL; every access path requires the authenticated download route.
@@ -217,6 +228,8 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Modify: `backend/app/execution_models.py`
 - Create: `backend/app/services/task_verification.py`, `backend/app/services/task_approval.py`
 - Modify: `backend/app/routes/execution_tasks_v2.py` (`POST /{task_id}/verify`, `POST /{task_id}/approve`)
+- Modify: `frontend/src/api/taskExecutionApi.js` (add `verify(projectId, taskId, payload)`, `approve(projectId, taskId, payload)`)
+- Create: `frontend/src/features/execution/components/TaskDecisionModal.jsx` (verify/approve/reject with required-reason-on-reject, rendered from U2's `TaskExecutionBoard`)
 - Test: `backend/tests/test_task_verification_approval_v2.py`
 
 **Approach:**
@@ -225,6 +238,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - On `verified`/`approved`, call U2's `TaskLifecycleService.transition` to advance status (`verified -> completed` for standard, `verified -> approval_pending` for Class A pending PM, `approval_pending -> completed` on PM approval).
 - On `rejected`, transition to `in_progress` in both cases — work rejection (`submitted -> rejected -> in_progress`) and Class A/gate rejection (`approval_pending -> rejected -> in_progress`), per BR-009's transition table exactly; the difference between the two is *which role* the reopened task is accountable to next (Supervisor for work, PM for gate), not a different target status. A correction reason is required in both cases (BR-008).
 - The fallback verifier (PM/Admin acting in place of an unavailable Supervisor) may not also be the approver of record for the same task's same decision cycle — if a PM verifies as fallback, a different authorized actor (Admin) must record the subsequent Class A approval, preserving BR-008's two-checkpoint intent instead of collapsing it to one actor.
+- `TaskDecisionModal` mirrors `frontend/src/features/projects/components/TaskApplicabilityDecisionModal.jsx`'s shape exactly — local state, a required reason field that only appears for `rejected`, and an `onDecided?.()` callback that refreshes the board row rather than the whole page.
 
 **Test scenarios:**
 - Happy path: Supervisor verifies a `standard` work task; task completes.
@@ -234,6 +248,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Edge case: verifying a task with no pending progress submission is rejected.
 - Error path: rejection without a reason is rejected; rejection with a reason correctly reopens the task under the right accountable role (Supervisor for work, PM for gate).
 - Integration: an approval/verification decision on a predecessor correctly unblocks a dependent successor task's `in_progress` transition (ties to U2's dependency check).
+- Frontend: `TaskDecisionModal` only offers verify/approve actions the viewing role and task state permit; submitting `rejected` without a reason is blocked client-side before the request fires, matching the backend's 422.
 
 **Verification:**
 - No task can reach `completed` without the decision(s) BR-008 requires for its `task_kind`/`task_class` combination.
@@ -253,12 +268,15 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Modify: `backend/app/execution_models.py`
 - Create: `backend/app/services/task_blocker.py`, `backend/app/services/task_delay.py`
 - Modify: `backend/app/routes/execution_tasks_v2.py` (`POST /{task_id}/blockers`, `POST /{task_id}/blockers/{blocker_id}/resolve`, `POST /{task_id}/delays`)
+- Modify: `frontend/src/api/taskExecutionApi.js` (add `logBlocker`, `resolveBlocker`, `logDelay`)
+- Create: `frontend/src/features/execution/components/TaskBlockerDelayPanel.jsx` (log/resolve blocker, log delay, rendered inside U2's `TaskExecutionBoard` task detail as an always-visible panel — not gated behind any particular `lifecycle_status`)
 - Test: `backend/tests/test_task_blockers_delays_v2.py`
 
 **Approach:**
 - Blocker and delay creation do not themselves change `lifecycle_status` — they are independently queryable conditions, matching BR-010's "blocked/delayed/overdue/no_update are separate conditions, not mutually exclusive lifecycle states."
 - `overdue` and `no_update` remain derived (computed from `due_at`/`update_sla_hours` at query time per the Open Questions resolution), not stored — no migration needed for those two.
 - Any active project member with support/accountable access to the task can log a blocker; only the accountable Supervisor/PM (or authorized fallback) can resolve one.
+- `TaskBlockerDelayPanel`'s delay form shows the vendor picker only when `responsibility_type = 'vendor'` is selected, matching the backend's conditional-required rule client-side; it is a permanently visible panel (per the Approach above, blockers/delays are independent of status), not hidden behind a specific lifecycle state.
 
 **Test scenarios:**
 - Happy path: logging a blocker with type/description/owner creates a `task_blockers` row; resolving it sets `resolved_at`/`resolved_by`.
@@ -266,6 +284,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Edge case: a task can simultaneously be `blocked` and `delayed` and `in_progress` — verify no mutual-exclusion constraint accidentally prevents this.
 - Edge case: `responsible_vendor_id` is required when `responsibility_type = 'vendor'`, otherwise null.
 - Error path: an actor without project membership cannot log a blocker/delay for that project's task.
+- Frontend: `TaskBlockerDelayPanel` remains visible and usable regardless of the task's current `lifecycle_status`; selecting a non-vendor responsibility type hides the vendor picker rather than submitting it empty.
 
 **Verification:**
 - Blocker/delay state never gates or is gated by `lifecycle_status` transitions — the two systems are queryable independently.
@@ -285,7 +304,11 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Modify: `backend/app/execution_models.py`
 - Create: `backend/app/services/task_support_assignment.py`, `backend/app/services/project_role_change.py`
 - Modify: `backend/app/routes/projects_v2.py` (`assign_membership()` — replace immediate-effect change with a `project_role_changes` request/approval flow for accountable roles; support-assignment endpoints live in `execution_tasks_v2.py`)
+- Modify: `frontend/src/api/taskExecutionApi.js` (add `assignSupport`, `endSupportAssignment`)
+- Create: `frontend/src/features/execution/components/TaskSupportAssignmentPanel.jsx` (assign/end a support employee on a task, rendered inside U2's `TaskExecutionBoard` task detail)
 - Modify: `frontend/src/features/projects/components/ProjectTeamReplaceModal.jsx` (surface pending-approval state instead of assuming immediate effect)
+- Modify: `frontend/src/features/projects/components/ProjectDetailModal.jsx` (the "Change" control that opens `ProjectTeamReplaceModal` currently only renders when `project.status === "draft"` — but this unit's two-step flow specifically governs replacement on **active** projects; without this fix, the flow this unit builds has no UI entry point at all once a project goes active)
+- Create: `frontend/src/features/projects/components/PendingRoleChangesPanel.jsx` (list pending `project_role_changes` for a project with approve/reject actions, plus a "Reassignment Required" alert when the active PM/Supervisor is `unavailable` — wires the `roleChanges`/`approveRoleChange`/`rejectRoleChange`/`reassignmentRequired` functions `frontend/src/api/projectsApi.js` already exports but that no component currently calls; rendered as a new tab or section on `ProjectDetailModal.jsx`)
 - Test: `backend/tests/test_task_support_assignment_v2.py`, `backend/tests/test_project_role_change_approval_v2.py`
 
 **Approach:**
@@ -293,6 +316,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - `task_support_assignments`: Supervisor controls support for `work` tasks, PM controls follow-up support for `approval_gate` tasks (BR §5); assignee must be an active `internal_employee` project member; unique active assignment per task/employee.
 - `project_role_changes`: Admin requests/approves PM replacement; the active PM requests/approves Supervisor replacement (Admin as audited fallback) — per BR-007's hierarchy. A `pending` record does not affect who is currently accountable; approval atomically ends the previous membership and starts the replacement (same transactional pattern `assign_membership()` already uses today, just gated behind the new approval step).
 - `EmployeeProfile.availability == 'unavailable'` triggers a "Reassignment Required" surfaced state (queryable, not a new column) rather than blocking new assignment silently — mirrors BR-007's "automatic skill-based or silent replacement is prohibited."
+- Without a pending-requests view, a `project_role_changes` row created via `request_role_change` would be invisible in the portal indefinitely — `PendingRoleChangesPanel` is the only UI surface that can act on it, so it ships in this unit, not deferred.
 
 **Test scenarios:**
 - Integration: the DB-level partial unique index rejects an attempt to create a second concurrent active PM (or Supervisor) membership on the same project, independent of and in addition to `assign_membership()`'s own application-level check.
@@ -303,9 +327,11 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - Error path: requesting a role change without a reason is rejected.
 - Error path: an actor outside the BR-007 hierarchy (e.g., Supervisor requesting their own replacement) is rejected.
 - Integration: marking an employee `unavailable` who currently holds the active Supervisor membership surfaces a "Reassignment Required" condition queryable from the project, without silently reassigning anyone.
+- Frontend: the "Change" control is reachable from `ProjectDetailModal` for both `draft` and `active` projects; on an active project it routes through the two-step request flow, and `PendingRoleChangesPanel` shows the resulting pending request until an authorized actor approves or rejects it.
 
 **Verification:**
 - No PM/Supervisor membership changes without going through the two-step (request + approval) flow; support assignment changes never alter the accountable PM/Supervisor membership (BR §6 invariant).
+- A pending role-change request created on an active project is visible and actionable in the portal — not just creatable via the API.
 
 ---
 
@@ -314,7 +340,7 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 - **Interaction graph:** U2's lifecycle transitions call into U4's verification/approval outcomes and U1's dependency graph; U6's role-change approval affects who U2/U4 will authorize for future transitions on the same project. These units share one project's data but are otherwise not entangled with templates/gates/dependency-generation (planning layer) beyond reading already-`included` rows at baseline lock.
 - **Error propagation:** All new services follow the existing pattern — service raises a domain error, route translates to the appropriate HTTP status (403/404/409), `IntegrityError` caught and translated, no unhandled 500s expected for validation failures.
 - **State lifecycle risks:** Baseline lock (U1) and role-change approval (U6) both require the "end previous / start replacement" atomic pattern already used by `assign_membership()` — reuse that transactional shape rather than reinventing it, to avoid a partial-write risk (e.g., new PM active while old PM's membership row not yet closed).
-- **API surface parity:** The frontend gains new screens/actions for status changes, evidence upload, verification/approval, blocker/delay logging, and support assignment — none of these have any existing UI today, so this is net-new surface, not a parity change.
+- **API surface parity:** The frontend gains new screens/actions for status changes, evidence upload, verification/approval, blocker/delay logging, and support assignment — none of these have any existing UI today, so this is net-new surface, not a parity change. Each unit (U2–U6) now includes the frontend component and API-client function that expose its endpoints, so no unit ships backend-only with no way to exercise it from the portal.
 - **Integration coverage:** The cross-unit scenario most likely to hide a bug is U2 ↔ U4 ↔ U1's dependency check — a predecessor's verification/approval must correctly unblock a successor's `in_progress` transition in the same request chain; this needs an explicit integration test beyond each unit's own unit tests (called out in U2 and U4's test scenarios).
 - **Unchanged invariants:** `V2ProjectTask`'s `draft`-only constraint remains untouched; template authoring, applicability review, and dependency/gate generation continue to operate exactly as today — this plan only reads their `included` output at the moment of baseline lock (U1).
 
@@ -326,7 +352,8 @@ Build the missing execution half of the V2 project/task system: a real baseline 
 |------|------------|
 | Introducing a parallel `tasks` table alongside `V2ProjectTask` could confuse future contributors about which table is authoritative for what | Document the split explicitly in code comments on both models and in this plan's Key Technical Decisions; `V2ProjectTask` = planning, `tasks` = execution, never conflated |
 | RLS policy shape for six-plus new tables is unresolved at planning time | Deferred to Implementation (Open Questions) — inspect existing `V2Project`/`V2ProjectTask` RLS during U1 before writing new policies, so the pattern is consistent |
-| Two-step role-change approval (U6) changes existing `assign_membership()` behavior that the frontend and any current users may depend on being immediate | `ProjectTeamReplaceModal.jsx` is explicitly included in U6's file list to update the UX; flag this as a behavior change in the PR description when implemented |
+| Two-step role-change approval (U6) changes existing `assign_membership()` behavior that the frontend and any current users may depend on being immediate | `ProjectTeamReplaceModal.jsx` is explicitly included in U6's file list to update the UX, and `ProjectDetailModal.jsx`'s draft-only "Change" control gate is fixed so the new flow has an entry point on active projects too; flag this as a behavior change in the PR description when implemented |
+| Backend-only units ship endpoints with no way to exercise them from the portal, undermining manual verification before a wider rollout | Each of U2–U6 now pairs its backend endpoints with the frontend component and API-client function that call them, in the same unit rather than a separate follow-up |
 | Six new migrations touching a live-ish schema increase the chance of a sequencing mistake (e.g., FK to a table created in a later migration) | Units are ordered by dependency (U1 first); each migration's FK targets are checked against tables created in the same or earlier units before merging |
 | Evidence storage choice (backend file adapter) is explicitly non-production-durable per architecture doc §6 | Documented as a known, intentional limitation in Key Technical Decisions — not silently presented as production-ready |
 | This plan ships mutations (status change, verification, approval, blocker/delay, reassignment) without the `outbox_events` infrastructure BR-015 requires for every one of them | Explicit, acknowledged gap (see Scope Boundaries → Deferred to Follow-Up Work) — Control Layer (Phase 2) owns outbox/WhatsApp; Release 1's Phase 1 completion is not fully BR-015-compliant until Phase 2 lands |

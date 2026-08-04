@@ -24,10 +24,18 @@ from app.execution_models import (
     TaskDependency,
     TaskEvidence,
     TaskProgressUpdate,
+    TaskSupportAssignment,
     TaskVerification,
 )
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectMembership,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
@@ -62,6 +70,10 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -74,6 +86,7 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
             V2AuditEvent.__table__,
             ProjectBaseline.__table__,
             BaselineTask.__table__,
@@ -85,6 +98,7 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             TaskVerification.__table__,
             TaskApprovalDecision.__table__,
             OutboxEvent.__table__,
+            TaskSupportAssignment.__table__,
         ):
             table.create(self.engine)
 
@@ -266,13 +280,25 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             body["remarks"] = remarks
         return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/approve", json=body)
 
-    def drive_to_submitted(self, project_id: str, task_id):
+    def drive_to_submitted(self, project_id: str, task_id, submitted_by="pm"):
+        """`submitted_by` controls who logs the progress being verified -
+        default "pm" so a test calling `verify` as the Supervisor
+        afterward exercises the normal case (TaskVerificationService.verify
+        rejects a verifier who is also the submitter). Pass "supervisor"
+        for tests that specifically need the Supervisor to be free to
+        verify their own submission's *absence* of conflict, e.g. a test
+        where the PM is the one verifying as a fallback."""
         self.act_as_supervisor()
         for target in ("ready", "in_progress"):
             r = self.transition(project_id, task_id, target)
             self.assertEqual(r.status_code, 200, r.text)
+        if submitted_by == "pm":
+            self.act_as_pm()
+        elif submitted_by == "admin":
+            self.act_as_admin()
         sp = self.submit_progress(project_id, task_id)
         self.assertEqual(sp.status_code, 200, sp.text)
+        self.act_as_supervisor()
         r = self.transition(project_id, task_id, "submitted")
         self.assertEqual(r.status_code, 200, r.text)
 
@@ -342,6 +368,72 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         r = self.verify(project["id"], t001.id, "verified")
         self.assertEqual(r.status_code, 403, r.text)
 
+    def test_submitter_cannot_self_verify_but_a_different_verifier_can(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        # Supervisor executes and submits this task themselves (no
+        # Internal Employee assigned) - no role rule authorizes them to
+        # also verify their own submission.
+        self.drive_to_submitted(project["id"], t001.id, submitted_by="supervisor")
+
+        self.act_as_supervisor()
+        self_verify = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(self_verify.status_code, 409, self_verify.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t001.id).lifecycle_status, "submitted")
+
+        # A different authorized verifier (PM, standing in as fallback) can.
+        self.act_as_pm()
+        different_verifier = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(different_verifier.status_code, 200, different_verifier.text)
+        self.assertEqual(different_verifier.json()["task"]["lifecycle_status"], "completed")
+
+    def test_unclassified_task_kind_can_still_be_verified_and_completes(self):
+        # task_kind is nullable at the DB level - a task whose template row
+        # never had a kind assigned during authoring (e.g. a legacy import
+        # gap) must still be completable via the normal Supervisor
+        # verification path, not left permanently stuck at `submitted`.
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        with self.Session.begin() as session:
+            session.get(Task, t001.id).task_kind = None
+
+        self.drive_to_submitted(project["id"], t001.id)
+
+        self.act_as_supervisor()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")
+
+    def test_unclassified_task_class_completes_on_verification_not_stuck_awaiting_pm(self):
+        # task_class is nullable, same as task_kind. Only "class_a" needs
+        # PM approval - task_approval.py.approve() rejects anything else,
+        # so a null task_class must auto-complete on verify() the same as
+        # "standard", or it would be stuck at `verified` forever with no
+        # PM mechanism able to move it forward.
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        with self.Session.begin() as session:
+            session.get(Task, t001.id).task_class = None
+
+        self.drive_to_submitted(project["id"], t001.id)
+        self.act_as_supervisor()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")
+
+    def test_admin_may_self_verify_as_blanket_override(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        # Admin both submits the progress and verifies it - Admin retains
+        # its blanket override even for the self-verification guard.
+        self.drive_to_submitted(project["id"], t001.id, submitted_by="admin")
+
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")
+
     def test_non_pm_cannot_approve_class_a_or_gate(self):
         project = self.activate_project()
         t002 = self.tasks_by_code(project["id"])["T002"]
@@ -404,7 +496,7 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
     def test_fallback_pm_verifier_cannot_also_approve_but_a_different_actor_can(self):
         project = self.activate_project()
         t002 = self.tasks_by_code(project["id"])["T002"]
-        self.drive_to_submitted(project["id"], t002.id)
+        self.drive_to_submitted(project["id"], t002.id, submitted_by="supervisor")
 
         # PM verifies as a Supervisor fallback (not the active Supervisor) -
         # the project's active PM is a permitted verifier per
@@ -440,11 +532,11 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
 
         # T002 is merely "verified" (Supervisor-verified, not yet
         # PM-approved) - per BR-008, Class A predecessors require PM
-        # approval (completed), so T004 must still be blocked.
+        # approval (completed), so T004 must still be blocked. Per the
+        # plan (R8/BR-011), the predecessor-satisfied check gates both
+        # `ready` and `in_progress`, not just `in_progress`.
         self.act_as_supervisor()
-        ready = self.transition(project["id"], t004.id, "ready")
-        self.assertEqual(ready.status_code, 200, ready.text)
-        still_blocked = self.transition(project["id"], t004.id, "in_progress")
+        still_blocked = self.transition(project["id"], t004.id, "ready")
         self.assertEqual(still_blocked.status_code, 409, still_blocked.text)
 
         # PM approves T002 -> completed.
@@ -455,6 +547,8 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
 
         # Now T004 unblocks.
         self.act_as_supervisor()
+        ready = self.transition(project["id"], t004.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
         unblocked = self.transition(project["id"], t004.id, "in_progress")
         self.assertEqual(unblocked.status_code, 200, unblocked.text)
         self.assertEqual(unblocked.json()["lifecycle_status"], "in_progress")

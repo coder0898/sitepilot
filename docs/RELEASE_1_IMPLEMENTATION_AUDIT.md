@@ -3,7 +3,9 @@
 
 **Method:** Verified by reading route handlers, service/repository code, SQLAlchemy models, Supabase migrations, and test files — not by running the app. Frontend claims verified against actual component/API-call wiring, not file names alone. Per your instruction, the legacy `execution_v2` module (old schema) is treated as the system being replaced, not as Release 1 evidence, except where explicitly noted for context.
 
-**Headline fact that shapes this entire audit:** the V2 `project_tasks` table has a database-level constraint `lifecycle_status = 'draft'` — i.e., a V2 project task is *structurally incapable* of reaching any execution state (`ready`, `in_progress`, `submitted`, `verified`, `completed`) in the current schema. Everything built so far on the V2 side is the **pre-activation planning layer** (template authoring → project creation → task/gate generation → applicability review → dependency generation). The **execution layer** (progress updates, evidence, verification, approval decisions, blockers/delays, vendor task assignment, WhatsApp) has no backend tables, no routes, and no tests. This one fact governs the status of most phases below.
+> **Update (2026-08-03):** The headline fact below and the "Task Management" / "Ownership and Support Assignments" sections predate the Task Execution Engine plan (`docs/plans/2026-08-02-001-feat-task-execution-engine-plan.md`), which has since shipped on `feat/task-execution-engine` — both backend (U1–U6) and, as of this update, the frontend (U2–U6: `TaskExecutionBoard`, `TaskProgressForm`, `TaskDecisionModal`, `TaskBlockerDelayPanel`, `TaskSupportAssignmentPanel`, `PendingRoleChangesPanel`). The `draft`-only constraint described below now applies only to the planning-time `project_tasks` table; a separate execution-layer `tasks` table (instantiated at activation from an immutable baseline snapshot) carries the real lifecycle. See the updated Phase Analysis entries below and the "F. Post-Implementation QA Notes" section for a screenshot-based verification pass against the live app.
+
+**Headline fact that shapes this entire audit (historical — see update note above):** the V2 `project_tasks` table has a database-level constraint `lifecycle_status = 'draft'` — i.e., a V2 project task is *structurally incapable* of reaching any execution state (`ready`, `in_progress`, `submitted`, `verified`, `completed`) in the current schema. Everything built so far on the V2 side is the **pre-activation planning layer** (template authoring → project creation → task/gate generation → applicability review → dependency generation). The **execution layer** (progress updates, evidence, verification, approval decisions, blockers/delays, vendor task assignment, WhatsApp) has no backend tables, no routes, and no tests. This one fact governs the status of most phases below **except Task Management and Ownership/Support Assignments, both superseded by the update note above.**
 
 ---
 
@@ -118,67 +120,83 @@ Low, technically. The one real risk is non-technical: if the demo uses the recov
 ### 1. Phase Name: Task Management (Phase 1, item 4)
 
 ### 2. Implementation Status
-Partially Implemented
+Mostly Complete (updated 2026-08-03 — was "Partially Implemented" / "Missing entirely" for the execution half; see note below)
 
 ### 3. Existing Implementation Evidence
-Backend:
-- `app/routes/projects_v2.py`: `POST /{id}/generate-tasks` (instantiate `V2ProjectTask` rows from the published template version), `GET/POST /{id}/template-review/tasks` and `/template-review/summary`, `POST /{id}/tasks/{task_id}/applicability-decisions` (include/exclude a task with a reason), `POST /{id}/tasks` (manual project-specific task creation).
+Backend (planning layer, unchanged from original audit):
+- `app/routes/projects_v2.py`: `POST /{id}/generate-tasks`, `GET/POST /{id}/template-review/tasks` and `/template-review/summary`, `POST /{id}/tasks/{task_id}/applicability-decisions`, `POST /{id}/tasks` (manual task creation).
 - `app/services/project_task_applicability.py`, `project_manual_task.py`, `project_template_review.py`.
-- `app/project_models.py` — `V2ProjectTask` fields: `applicability` (mandatory/conditional), `decision_state` (pending_review/included/excluded), `lifecycle_status` (**hard-constrained to `'draft'` at the database level** — see header note).
+- `app/project_models.py` — `V2ProjectTask` remains planning-only, still `lifecycle_status = 'draft'`-only by design (see Key Technical Decisions in the plan below) — this table was never meant to carry execution state.
 
-Frontend:
-- `features/projects/components/TaskApplicabilityDecisionModal.jsx`, `ProjectTemplateReview.jsx`, `ProjectManualTaskModal.jsx`.
+Backend (execution layer, new — `docs/plans/2026-08-02-001-feat-task-execution-engine-plan.md`, U1–U6):
+- `app/execution_models.py` — `ProjectBaseline`/`BaselineTask` (immutable snapshot locked at activation, DB-trigger-enforced), `Task`/`TaskDependency` (the real execution-layer graph, `lifecycle_status` free to move through `planned → ready → in_progress → submitted → verified/approval_pending → completed`, plus `rejected`/`cancelled`), `TaskProgressUpdate`/`FileObject`/`TaskEvidence` (evidence, privately stored — never under the public `/uploads` static mount), `TaskVerification`, `TaskApprovalDecision`, `TaskBlocker`, `TaskDelayEvent`, `TaskSupportAssignment`/`SupportAssignmentChange`.
+- `app/services/project_baseline.py`, `task_lifecycle.py`, `task_progress.py`, `task_verification.py`, `task_approval.py`, `task_blocker.py`, `task_delay.py`, `task_support_assignment.py` — one service per concern, following the codebase's established `_require_access`/audit-event pattern.
+- `app/routes/execution_tasks_v2.py` — status transition, progress+evidence submit, authenticated evidence download, verify, approve, blocker create/resolve, delay log, support assign/end, plus `GET /{project_id}/tasks` (list) and `GET /{project_id}/tasks/{task_id}` (detail) — the read endpoints the frontend board needed but the original plan didn't specify; added during frontend implementation.
+
+Frontend (new, 2026-08-03):
+- `features/execution/components/TaskExecutionBoard.jsx` — replaces the old read-only task-baseline table in `ExecutionPage.jsx`; per-task status pills, blocker/support badges, an expandable detail panel, and client-mirrored (not authoritative) status-transition/cancel controls.
+- `TaskProgressForm.jsx`, `TaskDecisionModal.jsx`, `TaskBlockerDelayPanel.jsx`, `TaskSupportAssignmentPanel.jsx` — mounted inside the board's task detail.
+- `api/taskExecutionApi.js` — client for every `execution_tasks_v2.py` route.
 
 Testing:
-- `test_project_task_generation_v2.py`, `test_project_task_applicability_v2.py`, `test_project_manual_task_v2.py`, `test_project_template_review_v2.py`.
+- Backend: `test_project_baseline_lock_v2.py`, `test_task_lifecycle_transitions_v2.py`, `test_task_progress_evidence_v2.py`, `test_task_verification_approval_v2.py`, `test_task_blockers_delays_v2.py`, `test_task_support_assignment_v2.py`, `test_execution_tasks_read_v2.py` (306/306 backend tests passing).
+- Frontend: one `*.test.jsx` per new component (149/149 non-pre-existing frontend tests passing).
 
 ### 4. Gap Analysis
-Already working: generating a project's task list from the approved template, reviewing each task for applicability (include/exclude with a reason), adding a manual project-specific task, paginated template-review views.
-Partially working: nothing — this is a clean split, not a half-built feature.
-Missing (entirely, no backend tables/routes/tests exist for any of this): tracking execution progress, updating task status through the lifecycle, uploading evidence, Supervisor verification, PM Class-A approval, capturing blockers, capturing delays. The MVP Scope module 3 bullets "Track execution progress / Update task status / Upload evidence / Capture blockers and delays" are **not implemented in the V2 system** — none of `task_progress_updates`, `task_evidence`, `task_verifications`, `task_approval_decisions`, `task_blockers`, `task_delay_events` (all specified in `02_V2_DATA_MODEL_SPECIFICATION.md` §5) exist in `project_models.py` or the Supabase migrations.
+Already working: generating/reviewing a project's planning-time task list (unchanged); baseline lock at activation; full task-status lifecycle with role-gated transitions; progress notes with private evidence upload; Supervisor verification and PM Class-A/gate approval with required-reason rejection; blocker and delay capture (independent of lifecycle status, per BR-010); support-employee assignment; all of it reachable from the portal, not just the API.
+Partially working / known limitations (not regressions — disclosed at implementation time):
+- The delay form's "Vendor ID" field is a plain UUID input with no picker, since Phase 2 (Vendor Management, MVP module 6) hasn't shipped — a real user has no way to know a vendor's UUID today. Client-side UUID-format validation was added so it fails fast rather than with a confusing backend 422, but the field is not practically usable until Phase 2 lands.
+- `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md` itself (this file) and the "Execution" nav item's subtitle in the frontend config were not part of the plan's file list and were found stale during a post-implementation screenshot review (see Section F).
+Missing: none of the MVP Scope module 3 bullets ("Track execution progress / Update task status / Upload evidence / Capture blockers and delays") remain unimplemented.
 
 ### 5. Architecture Alignment
-Partially matches PRD workflow — and only for the pre-activation half. The post-activation half (which is arguably the core of "Task Management" as a demoable capability) has no implementation to compare against the PRD at all.
+Now matches PRD workflow for both halves. Task-level "ownership" is implemented as **derived** accountability (the project's active Supervisor for `work` tasks, PM for `approval_gate` tasks), not a stored per-task assignee field — a deliberate Key Technical Decision in the plan, not a gap, though it reads differently from the PRD's literal "assign tasks" wording.
 
-**Duplicate-system note:** the legacy `execution_v2` module *does* implement exactly this missing half (status transitions, proof upload, supervisor submission, PM approve/reject, delay reports, reschedules) — but on the old schema, disconnected from V2 projects/templates. Per your direction, that module is being replaced, not extended, so it cannot be credited toward V2's Task Management completeness — but it is worth knowing the capability exists in the codebase, just not on the schema you're demoing.
+**Duplicate-system note (unchanged):** the legacy `execution_v2` module still exists on the old schema and should continue to be treated as the system being replaced, not as Release 1 evidence.
 
 ### 6. Recommendation
-Extend existing module — but budget realistically. This is the single largest gap between "what's built" and "what a task-management demo implies." See Section D for a scoped-down path.
+Keep existing implementation. Track Phase 2 (Vendor Management) as the item that unblocks the one remaining known-limitation (vendor delay attribution).
 
 ### 7. Risk Level
-High. This is the functionality most likely to be assumed "done" by anyone looking at the PRD module list, and it is the least far along in V2.
+Low — the largest gap this audit originally flagged is closed and tested.
 
 ---
 
 ### 1. Phase Name: Ownership and Support Assignments (Phase 1, item 5)
 
 ### 2. Implementation Status
-Partially Implemented
+Mostly Complete (updated 2026-08-03 — was "Partially Implemented"; see note below)
 
 ### 3. Existing Implementation Evidence
-Backend:
-- `app/routes/projects_v2.py`: `assign_membership()` (internal function backing project creation and `POST /{id}/memberships`) creates a `V2ProjectMembership` and, for accountable roles (PM/Supervisor), ends the prior active membership's `ends_at` in the same transaction — a real reassignment, not just a new row. `POST /{id}/memberships/{membership_id}/end` ends a membership with a required reason.
-- Every membership change writes a `V2AuditEvent` (`PROJECT_ROLE_ASSIGNED` / `PROJECT_ROLE_REASSIGNED` / `PROJECT_ROLE_ENDED`).
+Backend (project-level, unchanged from original audit):
+- `app/routes/projects_v2.py`: `assign_membership()` creates a `V2ProjectMembership` and ends the prior active membership's `ends_at` in the same transaction. `POST /{id}/memberships/{membership_id}/end` ends a membership with a required reason. Every change writes a `V2AuditEvent`.
+
+Backend (task-level support + reassignment approval, new — plan U6):
+- `app/execution_models.py` — `TaskSupportAssignment`/`SupportAssignmentChange` (a delegated Internal Employee's support role on a specific execution-layer task; never alters task accountability, which stays derived from `V2ProjectMembership`).
+- `app/project_models.py` — `ProjectRoleChange` — the two-step request/approval flow BR-007 calls for: on an **active** project, PM/Supervisor replacement now creates a `pending` request (`POST /{id}/role-changes`) that a separate authorized actor must approve (`POST /{id}/role-changes/{change_id}/approve`) before the membership actually changes; a partial unique DB index enforces at most one active PM and one active Supervisor per project as a backstop beyond the service-layer check. Draft-phase projects keep the original immediate-effect path (BR-007 governs live execution, not initial setup).
+- `app/services/task_support_assignment.py`, `project_role_change.py`.
+- `GET /{id}/role-changes/reassignment-required` — surfaces active PM/Supervisor memberships whose holder is marked `unavailable`, per BR-007's "no silent auto-replacement."
 
 Frontend:
-- `ProjectTeamReplaceModal.jsx` → `projectsApi.updateTeam` / `setMembership` / `endMembership`.
+- `TaskSupportAssignmentPanel.jsx` (assign/end task-level support, in the execution board's task detail).
+- `PendingRoleChangesPanel.jsx` (new) — wires `roleChanges`/`approveRoleChange`/`rejectRoleChange`/`reassignmentRequired`, previously exported by `projectsApi.js` but called from no component, into an approve/reject UI plus a "Reassignment Required" alert, rendered on `ProjectDetailModal`'s Team tab.
+- `ProjectDetailModal.jsx` — the "Change" control that opens `ProjectTeamReplaceModal` was gated to `project.status === "draft"` only; fixed to also render on `active` projects, since the two-step flow specifically governs live execution and had no UI entry point there before.
 
 Testing:
-- No dedicated test file specifically named for membership/reassignment logic was found (`test_project_create_v2.py` likely exercises membership creation as part of project setup, but reassignment-specific edge cases do not have a clearly named dedicated test).
+- `test_project_role_change_approval_v2.py`, `test_task_support_assignment_v2.py` (backend); `TaskSupportAssignmentPanel.test.jsx`, `PendingRoleChangesPanel.test.jsx` (frontend), plus role-scoped approve/reject coverage added during code review (a PM can act on a Supervisor-replacement request but not a PM-replacement request, per BR-007's hierarchy).
 
 ### 4. Gap Analysis
-Already working: assigning/replacing a project's PM or Supervisor, with a mandatory reason and full audit trail; ending a membership.
-Partially working: this covers *project-level* ownership (who is the accountable PM/Supervisor) only. The PRD's "every active task has one Primary Responsible Employee" (PG-02) and MVP Scope's "supporting employees can assist" concept do not exist at the *task* level in V2, because — as above — tasks never leave `draft` lifecycle status, so there is nothing to assign day-to-day execution ownership over yet. `task_support_assignments` (spec §5) does not exist.
-Missing: task-level primary ownership and support-employee assignment; any reassignment approval step (BR-007 implies replacement should go through an approval step for some roles — current implementation performs the change immediately with just a reason, which is simpler than specified but may be acceptable for a demo).
+Already working: project-level PM/Supervisor assignment/replacement (unchanged); task-level support-employee assignment; two-step approval-gated reassignment for PM/Supervisor on active projects; "Reassignment Required" surfacing for an unavailable accountable role.
+Missing: none of the items this section previously flagged as missing.
 
 ### 5. Architecture Alignment
-Partially matches PRD workflow. Project-level ownership (PM/Supervisor) is solid; task-level ownership (the more operationally visible part of PG-02) is absent.
+Now matches PRD workflow, including PG-04's "trigger mandatory, visible reassignment when an owner is absent" and BR-007's approval-before-active requirement.
 
 ### 6. Recommendation
-Keep existing implementation for project-level; defer task-level to a later release unless Section D's minimal path is taken.
+Keep existing implementation.
 
 ### 7. Risk Level
-Medium — project-team assignment is demoable today; anything implying "assign this specific task to this specific employee" is not.
+Low.
 
 ---
 
@@ -528,13 +546,27 @@ Expected outcome: Tuesday's conversation is about a credible plan, not a surpris
 # E. High Risk Areas
 
 - **Architecture conflict — two disconnected project/task systems in one codebase.** The legacy `execution_v2` module (old schema) is functionally further along for day-to-day execution than V2, which is architecturally further along for planning. Anyone browsing the codebase without this context could easily misjudge overall progress in either direction. Recommendation: keep this distinction explicit in any technical conversation this week.
-- **Database risk — `lifecycle_status = 'draft'` constraint.** This is a deliberate, documented current-state constraint, not a bug — but it means any attempt to "quickly" demo task completion by writing directly to the database or bypassing it would violate a check constraint and fail, or require a rushed migration under time pressure. Treat this constraint as a hard stop, not an obstacle to route around this week.
-- **Broken/incomplete workflow — approval gates without a decision step.** The gate *scaffolding* is real and tested; the gate *decision* (PM approves/rejects) is not implemented. If the demo narrative reaches "and then the PM approves the landlord NOC," there is nothing behind that click.
-- **Missing integration — Vendor ↔ V2 Project.** Vendor management is solid in isolation; do not let the demo imply a vendor can be assigned to a V2 project task today.
+- ~~**Database risk — `lifecycle_status = 'draft'` constraint.**~~ **Resolved (2026-08-03).** `V2ProjectTask.lifecycle_status` is still `draft`-only by design (it's the planning table), but a separate execution-layer `tasks` table now carries the real lifecycle, instantiated from an immutable baseline snapshot at activation. See the updated "Task Management" section.
+- ~~**Broken/incomplete workflow — approval gates without a decision step.**~~ **Resolved (2026-08-03) for Class A work and approval gates.** `TaskVerificationService`/`TaskApprovalService` (backend) and `TaskDecisionModal` (frontend) now implement the Supervisor-verify / PM-approve decision, including required-reason rejection. Still open: this closes Task Management's decision step, not a dedicated "Approvals" (Phase 2, item 9) dashboard/summary view — that phase's own gap analysis is otherwise unchanged.
+- **Missing integration — Vendor ↔ V2 Project.** Vendor management is solid in isolation; do not let the demo imply a vendor can be assigned to a V2 project task today. Now directly visible in the execution board's delay form (see Section F) — logging a vendor-responsibility delay requires a UUID with no picker to supply one.
 - **Missing integration — WhatsApp.** Zero implementation, and it cannot be meaningfully started this week regardless of engineering effort, since it depends on external approvals (Meta/WABA access, message template approval) outside the team's control per the architecture docs.
-- **Feature that may consume too much time if attempted — Dashboard/Reports.** Both require the execution layer to exist first (there's nothing to aggregate yet); attempting either this week risks spending scarce hours on a foundation-less feature. The scoped-down "project list" alternative in Section D/Priority 2 is the safer substitute.
+- **Feature that may consume too much time if attempted — Dashboard/Reports.** Both require the execution layer to exist first — that blocker is now cleared (see "Task Management"), so this is no longer foundation-less; Phase 3 (Visibility) is next in the plan sequence, not blocked.
 - **Content risk, not code risk — 45-day template content.** The architecture docs explicitly flag the current template content as a "recovered generic legacy seed," not the approved baseline. If the demo uses this content, be ready to name that distinction proactively rather than have it surface as a question.
 
 ---
 
+# F. Post-Implementation QA Notes (2026-08-03)
+
+A screenshot-based review of the live Execution tab (Admin, Project Manager, and Supervisor views, same task expanded in each) against the plan and this audit surfaced three findings — none are regressions in the shipped code, but all are worth acting on:
+
+1. **Stale nav copy.** The "Execution" sidebar item's subtitle still reads *"Read-only task baseline for a..."* in all three screenshots — a Phase 9 description that predates U2–U6 and is no longer accurate now that the tab is a live, writable board (status transitions, evidence, verification/approval, blockers/delays, support assignment). This text lives outside the Task Execution Engine plan's file list (likely a tabs/nav config, not `ExecutionPage.jsx` itself) and was never updated. **Action:** update the nav subtitle; small, low-risk copy fix.
+2. **Screenshots likely predate the latest push.** All three show the delay form's Vendor ID hint as *"...enter the vendor's ID for now."* — the pre-code-review wording. The code-review fix pushed in commit `adcdea1` changed this to *"...enter the vendor's V2 record UUID for now."* and added client-side UUID-format validation (rejecting non-UUID input before submit with an inline error). If a fresh reload of the running app still shows the old hint or still lets a non-UUID value reach submission, the frontend build/dev-server needs restarting to pick up `adcdea1`. **Action:** rebuild/restart and re-verify before further QA.
+3. **Reconfirmed, already-disclosed limitation.** The Vendor ID field is a required plain-UUID input with no picker, since Phase 2 (Vendor Management) hasn't shipped — a real user logging a vendor-responsibility delay has no way to know a vendor's UUID today. This was already flagged as an accepted interim gap in the U5 commit message and in the "Task Management" section above; the screenshot review confirms it's the first thing a Supervisor would hit trying to use that specific field. Not a bug to fix now — tracked against Phase 2 (Control Layer — Vendor Integration).
+
+No other discrepancies were found: role-gating (Supervisor lacking the Cancel control that Admin/PM have), the status/blocker/delay/support-assignment panel set, and required-field validation all matched the plan and the shipped code exactly.
+
+---
+
 *This audit reflects static code, schema, and test-file analysis performed on this date. Nothing in the codebase was modified, run, or executed as part of this review. Items marked "unconfirmed" or "unclear" should be spot-checked by actually opening the running application before Tuesday, since this audit could not execute the app to observe runtime behavior directly.*
+
+*Section F (2026-08-03) is the exception — it reflects an actual screenshot-based review of the running application's Execution tab, not static analysis.*

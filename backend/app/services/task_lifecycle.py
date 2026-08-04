@@ -18,7 +18,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.execution_models import TASK_LIFECYCLE_STATUSES, Task, TaskDependency, TaskVerification
+from app.execution_models import (
+    TASK_LIFECYCLE_STATUSES,
+    Task,
+    TaskDependency,
+    TaskSupportAssignment,
+    TaskVerification,
+    is_work_task_kind,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
@@ -45,12 +52,25 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "cancelled": set(),
 }
 
-# Transitions a Supervisor (or PM, or Admin/Super Admin) may drive: moving
-# work forward and reopening after rejection. U4 (verification/approval)
-# doesn't exist yet, so the actual verify/approve decision endpoints aren't
-# built here - these role checks only gate the *status transition itself*,
-# not a verification/approval record (that's U4's job).
-_SUPERVISOR_OR_PM_TARGETS = {"ready", "in_progress", "submitted", "rejected", "verified", "approval_pending", "completed"}
+# Targets whose decision record (TaskVerification/TaskApprovalDecision) is
+# owned by U4's TaskVerificationService/TaskApprovalService - a direct call
+# to this raw transition() would move lifecycle_status without writing that
+# record, silently breaking the dependency-satisfaction checks below (which
+# key off the TaskVerification row, not the status alone) and letting
+# class_a/approval_gate work skip PM approval entirely. Reachable only with
+# `_via_decision_service=True` (see transition()).
+_DECISION_SERVICE_ONLY_TARGETS = {"verified", "approval_pending", "rejected"}
+
+# Transitions a Supervisor (or PM, or Admin/Super Admin) may drive
+# unconditionally: scheduling (`ready`) and reopening after rejection.
+_SUPERVISOR_OR_PM_TARGETS = {"ready", "rejected", "verified", "approval_pending", "completed"}
+
+# `in_progress` ("start") and `submitted` ("submit completion") are driven
+# by whoever is actually doing the work: the assigned Internal Employee if
+# one is actively support-assigned to the task, otherwise the Supervisor/PM
+# (BR: "Supervisor may start, execute and submit completion only when no
+# Internal Employee is assigned to the task").
+_EXECUTOR_DRIVEN_TARGETS = {"in_progress", "submitted"}
 
 
 class TaskLifecycleService:
@@ -82,10 +102,38 @@ class TaskLifecycleService:
             return project
         raise HTTPException(403, "You do not have access to this project.")
 
-    def _require_role_for_transition(self, project: V2Project, target_status: str, actor: User) -> None:
+    def _actor_employee_id(self, actor: User) -> uuid.UUID | None:
+        employee = self.db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == actor.id))
+        return employee.id if employee else None
+
+    def _active_internal_employee_assignee_ids(self, task_id: uuid.UUID) -> set[uuid.UUID]:
+        return set(self.db.scalars(
+            select(TaskSupportAssignment.employee_id).where(
+                TaskSupportAssignment.task_id == task_id,
+                TaskSupportAssignment.status == "active",
+                TaskSupportAssignment.ends_at.is_(None),
+            )
+        ))
+
+    def _require_role_for_transition(self, project: V2Project, task: Task, target_status: str, actor: User) -> None:
         if actor.role in (UserRole.super_admin, UserRole.admin):
             return
         roles = self._actor_project_roles(project.id, actor)
+
+        if target_status in _EXECUTOR_DRIVEN_TARGETS:
+            assignee_ids = self._active_internal_employee_assignee_ids(task.id)
+            if assignee_ids:
+                if self._actor_employee_id(actor) in assignee_ids:
+                    return
+                raise HTTPException(
+                    403,
+                    "An Internal Employee is assigned to this task; only they can start or submit it. "
+                    "End their support assignment to change who executes it.",
+                )
+            if "site_supervisor" in roles or "project_manager" in roles:
+                return
+            raise HTTPException(403, "Only the project's Supervisor, PM, or an Admin can make this task transition.")
+
         if target_status in _SUPERVISOR_OR_PM_TARGETS:
             if "site_supervisor" in roles or "project_manager" in roles:
                 return
@@ -154,7 +202,7 @@ class TaskLifecycleService:
         if predecessor.lifecycle_status == "completed":
             return True
         if (
-            predecessor.task_kind == "work"
+            is_work_task_kind(predecessor.task_kind)
             and predecessor.task_class == "standard"
             and predecessor.lifecycle_status == "verified"
         ):
@@ -236,7 +284,14 @@ class TaskLifecycleService:
         target_status: str,
         actor: User,
         reason: str | None = None,
+        _via_decision_service: bool = False,
     ) -> Task:
+        """`_via_decision_service` is set only by TaskVerificationService/
+        TaskApprovalService's own internal calls (never by the raw
+        `POST /status` route) - it (a) unlocks the decision-only targets
+        below and (b) skips the role re-check, since the calling service
+        already validated the actor as the verifier/approver of record for
+        this exact decision."""
         project = self._require_access(project_id, actor)
 
         task = self.db.scalar(
@@ -258,6 +313,18 @@ class TaskLifecycleService:
                 409,
                 f"A task cannot move from {current_status} to {target_status}.",
             )
+
+        if not _via_decision_service:
+            if target_status in _DECISION_SERVICE_ONLY_TARGETS:
+                raise HTTPException(
+                    409,
+                    "Use the task's verification or approval endpoint to record this decision.",
+                )
+            if target_status == "completed" and task.task_kind != "milestone":
+                raise HTTPException(
+                    409,
+                    "Use the task's verification or approval endpoint to complete this task.",
+                )
 
         # planned -> completed is exclusively the system-derived milestone
         # auto-completion path (BR-009) - not a user-initiated transition
@@ -281,8 +348,8 @@ class TaskLifecycleService:
                 raise HTTPException(422, "A reason is required to cancel a task.")
             if not self._can_cancel(project, actor):
                 raise HTTPException(403, "Only Admin, Super Admin, or the project's PM can cancel a task.")
-        else:
-            self._require_role_for_transition(project, target_status, actor)
+        elif not _via_decision_service:
+            self._require_role_for_transition(project, task, target_status, actor)
 
         if target_status in {"ready", "in_progress"}:
             # BR-004: work cannot start/proceed without an accountable

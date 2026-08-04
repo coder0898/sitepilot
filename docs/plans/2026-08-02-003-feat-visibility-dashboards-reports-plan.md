@@ -161,13 +161,17 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, there is currently nothing matchin
 - Create: `supabase/migrations/<timestamp>_v2_report_snapshots.sql` (`report_snapshots`)
 - Modify: `backend/app/execution_models.py` or a new `backend/app/report_models.py`
 - Create: `backend/app/services/report_generation.py` (`ReportGenerationService.generate(project_id, report_type, period_start, period_end)`)
-- Create: `backend/app/routes/reports_v2.py` (`POST /api/v2/projects/{id}/reports`, `GET /api/v2/projects/{id}/reports`)
+- Create: `backend/app/routes/reports_v2.py` (`POST /api/v2/projects/{id}/reports`, `GET /api/v2/projects/{id}/reports`, `GET /api/v2/projects/{id}/reports/{report_id}`)
+- Create: `frontend/src/api/reportsApi.js` (flat function-per-route client: `list(projectId, reportType)`, `generate(projectId, payload)`, `detail(projectId, reportId)`)
+- Create: `frontend/src/features/projects/components/ProjectReports.jsx` (list snapshots by type/period with a version picker, view a selected snapshot's frozen payload, and an on-demand "Generate Report" trigger per the Open Questions' resolved default)
+- Modify: `frontend/src/features/projects/components/ProjectDetailModal.jsx` (add a "Reports" tab to the existing `detailTabs` array, rendering `ProjectReports`)
 - Test: `backend/tests/test_report_generation_v2.py`
 
 **Approach:**
 - Daily report payload is U1's summary plus role/support changes required (from Phase 1 U6), captured at generation time into `payload_json`.
 - Weekly report additionally aggregates milestone completion progress, `task_schedule_revisions` (schedule movement), vendor concerns (Phase 2, if present), ownership changes (`project_role_changes`/`support_assignment_changes` from Phase 1 U6), and a "management decisions required" list (derived from pending approvals + reassignment-required + at-risk gates).
 - `version_no` is unique within `(project_id, report_type, period)` — regenerating a report for an already-generated period creates a new version rather than overwriting, preserving history per the append-only modelling principle.
+- Without a viewer, a generated `report_snapshots` row is invisible in the portal — this plan's Scope Boundaries already state reports are "viewable in the portal," which requires `ProjectReports`; it follows U2's `ProjectDashboard.jsx` card/summary layout conventions for consistency, and each listed version is a link to its own frozen `payload_json`, not a live-recomputed view.
 
 **Test scenarios:**
 - Happy path: generating a daily report for a project produces a `report_snapshots` row with `report_type='daily'` and a payload matching U1's live summary at that instant.
@@ -175,9 +179,10 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, there is currently nothing matchin
 - Edge case: generating two reports for the same project/type/period produces two versions, not an overwrite.
 - Edge case: a report generated before any tasks existed (early project) still produces a valid, mostly-empty snapshot.
 - Error path: an unauthorized user (no project access, not Admin) cannot trigger report generation or view snapshots.
+- Frontend: `ProjectReports` lists both versions of a regenerated period distinctly and renders each one's own frozen payload when selected, not the current live summary.
 
 **Verification:**
-- Viewing an older report version shows the data as it was at generation time even if the project's live state has since changed (frozen-snapshot guarantee from Key Technical Decisions).
+- Viewing an older report version shows the data as it was at generation time even if the project's live state has since changed (frozen-snapshot guarantee from Key Technical Decisions) — provable from the portal, not only from the database.
 
 ---
 
@@ -191,19 +196,24 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, there is currently nothing matchin
 
 **Files:**
 - Create: `backend/app/routes/admin_visibility_v2.py` (`GET /api/v2/admin/projects-overview`, `GET /api/v2/admin/activity`)
-- Create: `frontend/src/features/admin/AdminProjectsOverview.jsx`
+- Create: `frontend/src/api/adminVisibilityApi.js` (`projectsOverview()`, `activity(query)`)
+- Create: `frontend/src/features/admin/AdminProjectsOverview.jsx` (the `projects-overview` rollup)
+- Create: `frontend/src/features/admin/AdminActivityFeed.jsx` (the `activity` cross-project feed, extending `ProjectDetailModal.jsx`'s existing per-project "activity" tab pattern to an unscoped, paginated view)
+- Modify: `frontend/src/features/dashboard/DashboardTab.jsx` and `frontend/src/config/tabs.js` (register an Admin-only module surfacing both `AdminProjectsOverview` and `AdminActivityFeed`, e.g. as two sub-views of one new tab)
 - Test: `backend/tests/test_admin_visibility_rollup_v2.py`
 
 **Approach:**
 - `projects-overview` calls U1's summarize service per project (bounded by the existing `GET /api/v2/projects` list, reusing that endpoint's data as the audit previously identified) and returns a lightweight rollup — status/team/template plus top-line counts, not the full per-project detail. At Release 1's expected project count this per-project-call pattern is acceptable; if project count grows meaningfully, this should become a single aggregate query rather than N calls to `summarize()` (noted here, not solved speculatively).
 - `activity` extends the existing per-project `GET /{project_id}/activity` pattern to an unscoped, paginated, Admin-only cross-project query against `V2AuditEvent` — same table, wider filter, not a new audit system. This endpoint has no Phase 1 dependency and is the part of U4 that can genuinely be pulled forward and built early (see Documentation / Operational Notes).
 - Access control: admin/super_admin only, following the existing bypass pattern rather than introducing a new permission concept.
+- The frontend module is registered only for admin/super_admin — the existing `visibleTabs(module_permissions, user.role)` gate in `frontend/src/features/dashboard/Dashboard.jsx` already drives this per role, so this unit adds a tab entry rather than inventing new role-gating logic.
 
 **Test scenarios:**
 - Happy path: an Admin retrieves a rollup across N projects with correct per-project top-line counts.
 - Happy path: an Admin retrieves cross-project audit activity, correctly excluding a project they'd otherwise need direct membership to see (Admin's bypass, not membership, grants this).
 - Error path: a PM/Supervisor/Internal Employee (no admin/super_admin role) cannot access either endpoint, even for projects they're a member of.
 - Edge case: a rollup request with zero projects in the system (fresh install) returns an empty list, not an error.
+- Frontend: the new tab is absent for non-admin roles (not merely blocked on click); `AdminActivityFeed` paginates rather than loading the full cross-project event history at once.
 
 **Verification:**
 - No new audit storage is introduced — the cross-project view is provably a wider query over the existing `V2AuditEvent` table, not a parallel logging system.
@@ -215,7 +225,7 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, there is currently nothing matchin
 - **Interaction graph:** U1 is the single dependency every other unit in this plan calls through — U2, U3, and U4 all consume it rather than querying Phase 1's tables directly, keeping aggregation logic in one place.
 - **Error propagation:** All units are read-only except U3's report generation (a write, but append-only, non-destructive); no unit in this plan can corrupt or block Phase 1/Phase 2 data — worst case is a slow or empty read.
 - **State lifecycle risks:** The only lifecycle concern is report-snapshot versioning (U3) — covered by its own uniqueness constraint and test scenarios; no other unit introduces new stateful risk.
-- **API surface parity:** New read-only surface only; no existing endpoint's behavior changes.
+- **API surface parity:** New read-only surface only; no existing endpoint's behavior changes. Every route this plan adds (U2's dashboard, U3's reports, U4's rollup and activity feed) now ships with a frontend component and API-client function — U3 previously generated and stored reports with no way to view them in the portal despite the Scope Boundaries stating they're "viewable in the portal"; that gap is closed.
 - **Integration coverage:** U1's summary must agree exactly between its two callers (U2 dashboard, U3 report) at the same instant — the one integration scenario worth testing explicitly beyond each unit's own tests (already listed under U1).
 - **Unchanged invariants:** Phase 1 and Phase 2's mutation services, data model, and business rules are entirely unmodified by this plan — every unit here is additive and read-side only.
 

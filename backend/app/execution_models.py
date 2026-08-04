@@ -28,6 +28,22 @@ TASK_LIFECYCLE_STATUSES = (
 )
 
 
+def is_work_task_kind(task_kind: str | None) -> bool:
+    """Whether a task should go through the `work` (Supervisor verification,
+    optionally PM approval) path, per BR-008.
+
+    `task_kind` is nullable at the DB level (baseline_tasks/tasks'
+    CheckConstraint allows it) - a task whose template row never had a kind
+    assigned during authoring still needs a real completion path, and
+    "ordinary work requiring Supervisor verification" is the only safe
+    default: it never skips a required PM approval (that's driven by
+    `task_class`, checked independently) and never mistakenly grants
+    milestone auto-completion or gate semantics. Only an *explicit*
+    `milestone`/`approval_gate` value opts a task out of this path.
+    """
+    return task_kind not in ("milestone", "approval_gate")
+
+
 class ProjectBaseline(Base):
     __tablename__ = "project_baselines"
     __table_args__ = (

@@ -41,7 +41,8 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, vendor master-data management work
 ## Scope Boundaries
 
 - No live WhatsApp sending. This plan builds the outbox/delivery/provider-adapter infrastructure and can be exercised against a sandbox/test provider, but Product/Ops must supply Meta/WABA business approval, approved template wording, and a recipient/consent matrix before any real message goes out — that approval is not in engineering's control and is not part of this plan's deliverable.
-- No client or vendor self-service portal — vendor interaction remains WhatsApp-and-PM-managed only, per PRD §11.
+- No client or vendor self-service portal — vendor interaction remains WhatsApp-and-PM-managed only, per PRD §11. This excludes a vendor-facing login/UI specifically; it does not exclude the internal PM-facing UI this plan's U2/U3 add for mapping vendors, delegating tasks, and logging acknowledgement/activity on a vendor's behalf ("PM-managed" implies the PM needs a portal surface to manage from).
+- No Admin-facing outbox/delivery monitoring dashboard for U4–U6's infrastructure (failed sends, retry queues) — these units have no natural end-user screen of their own; delivery outcomes surface indirectly through U2/U3's UI once a recipient acts on a message. A dedicated monitoring view is a reasonable follow-up, not required to satisfy R6–R9.
 - No automated vendor scoring, ranking, or replacement recommendation (BR-014 explicitly excludes this from Release 1).
 - No changes to the legacy vendor module's own CRUD (`backend/app/routes/vendors.py`) beyond what's needed to run the one-time import — it keeps functioning as today's vendor master-data UI.
 - No dashboard/report consumption of this data — Phase 3 owns aggregation; this plan only produces the underlying records.
@@ -143,12 +144,17 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, vendor master-data management work
 - Modify: `backend/app/vendor_models.py`
 - Create: `backend/app/services/project_vendor.py`, `backend/app/services/task_vendor_assignment.py`
 - Create: `backend/app/routes/project_vendors_v2.py` (`POST /api/v2/projects/{id}/vendors`, `POST /api/v2/projects/{id}/tasks/{task_id}/vendor-assignment`)
+- Create: `frontend/src/api/vendorAssignmentApi.js` (flat function-per-route client for `project_vendors_v2.py`, following `projectsApi.js`'s pattern: `mapVendor(projectId, payload)`, `delegateTask(projectId, taskId, payload)`)
+- Create: `frontend/src/features/projects/components/ProjectVendorPanel.jsx` (map an active vendor — and, when applicable, its already-mapped parent — to the project; list current mappings)
+- Create: `frontend/src/features/execution/components/TaskVendorDelegationForm.jsx` (delegate a mapped vendor to a task; rendered inside Phase 1 U2's `TaskExecutionBoard` task detail)
+- Modify: `frontend/src/features/projects/components/ProjectDetailModal.jsx` (add a "Vendors" tab to the existing `detailTabs` array, alongside `team`/`activity`, rendering `ProjectVendorPanel`)
 - Test: `backend/tests/test_project_vendor_mapping_v2.py`, `backend/tests/test_task_vendor_assignment_v2.py`
 
 **Approach:**
 - `project_vendors` requires an active vendor; a sub-vendor mapping additionally requires its parent's active mapping to the same project (BR-012).
 - `task_vendor_assignments` checks vendor capability against the task's `capability_category_id` at assignment time (spec §8 "vendor capability must match task classification"); status starts `pending_ack`.
 - Creating a vendor task assignment never writes to any accountability-resolution path from Phase 1 — the Supervisor query (Phase 1 U6) is unaffected by this table's existence (BR-013).
+- `ProjectVendorPanel` follows `ProjectDetailModal.jsx`'s existing tab-array pattern (`detailTabs`, pill-nav header) for adding "Vendors" as a new tab, the same shape `template-review`/`dependencies` already use. Vendor selection reuses the picker/lookup approach from `frontend/src/features/communication/CommunicationHubPage.jsx` (the live vendor-data screen) as a pattern reference, not `frontend/src/features/vendors/VendorsPage.jsx`, which is orphaned dead code disconnected from any live tab.
 
 **Test scenarios:**
 - Happy path: PM maps an active vendor to a project, then assigns a mapped vendor to a matching-capability task.
@@ -156,6 +162,7 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, vendor master-data management work
 - Edge case: assigning a vendor whose capability doesn't match the task's category is rejected.
 - Error path: an inactive/blocked vendor cannot receive a new mapping or assignment.
 - Integration: after a vendor task assignment, the task's accountable Supervisor (per Phase 1's derived-accountability query) is unchanged.
+- Frontend: `ProjectVendorPanel` surfaces the same 422 the backend returns when a sub-vendor's parent has no active project mapping, rather than a generic error; `TaskVendorDelegationForm` only lists vendors already mapped to the project.
 
 **Verification:**
 - No code path lets a vendor assignment satisfy Phase 1's dependency-blocking "predecessor satisfied" condition on its own — only Supervisor verification/PM approval (Phase 1 U4) does, regardless of vendor delegation.
@@ -175,18 +182,23 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, vendor master-data management work
 - Modify: `backend/app/vendor_models.py`
 - Create: `backend/app/services/vendor_acknowledgement.py`, `backend/app/services/vendor_activity.py`
 - Modify: `backend/app/routes/project_vendors_v2.py` (`POST /{assignment_id}/acknowledge`, `POST /{assignment_id}/activity`)
+- Modify: `frontend/src/api/vendorAssignmentApi.js` (add `logAcknowledgement`, `logActivity`)
+- Create: `frontend/src/features/execution/components/VendorAcknowledgementForm.jsx` (PM records `accepted`/`declined`/`clarification_requested` on behalf of the vendor — the portal channel this unit's own test scenarios assume — rendered alongside U2's `TaskVendorDelegationForm`)
+- Create: `frontend/src/features/execution/components/VendorActivityForm.jsx` (log presence/delay/rework/incident with an optional evidence file)
 - Test: `backend/tests/test_vendor_acknowledgement_v2.py`, `backend/tests/test_vendor_activity_v2.py`
 
 **Approach:**
 - Acknowledgement responses are `accepted`, `declined`, `clarification_requested` (matching R4 exactly) — recorded regardless of channel (portal now, WhatsApp once U5/U6 land), so the schema doesn't need to change when the channel is added.
 - Activity events reuse Phase 1's `file_objects` table for evidence via a dedicated `vendor_activity_evidence` link table (not a polymorphic reference), matching the spec's explicit prohibition.
 - No endpoint in this unit allows a vendor identity to change task/verification/approval state — only acknowledgement and activity logging (BR-013).
+- `VendorActivityForm`'s optional evidence upload reuses Phase 1 U3's file-input pattern (mirroring the existing `<input type="file">` in `frontend/src/features/execution/components/ExecutionModals.jsx` plus `frontend/src/api/client.js`'s `FormData`-aware request handling) rather than a third, independent upload implementation.
 
 **Test scenarios:**
 - Happy path: a PM logs an acknowledgement response on behalf of a vendor (portal channel); assignment status updates accordingly (`accepted`/`declined`/`clarification_requested`, all three exercised).
 - Happy path: logging a delay-type activity event with `responsibility_decision` and evidence creates the event and evidence link.
 - Edge case: an incident logged without evidence is still accepted (evidence is optional, not required, per spec).
 - Error path: no endpoint in this unit exposes a vendor-identity action that mutates task lifecycle state — verify by exhaustive route inspection, not just a single negative test.
+- Frontend: `VendorAcknowledgementForm` offers exactly the three response types and reflects the updated status immediately after submit; `VendorActivityForm`'s evidence field is optional, matching the backend.
 
 **Verification:**
 - Vendor acknowledgement/activity data is fully queryable per task/project without any write path existing from a vendor identity into task lifecycle, verification, or approval state.
@@ -298,7 +310,7 @@ Per `docs/RELEASE_1_IMPLEMENTATION_AUDIT.md`, vendor master-data management work
 - **Interaction graph:** U4 instruments every Phase 1 mutation service plus this plan's U2/U3 — it is the widest-reaching unit in this plan, touching more existing files than it creates new ones.
 - **Error propagation:** Outbox insert failure rolls back the domain mutation (same transaction); delivery failure at U5 never rolls back anything upstream — delivery is fire-and-forget from the domain's perspective, tracked but not blocking.
 - **State lifecycle risks:** Retry/idempotency is the primary risk surface across U4–U6 (duplicate outbox rows, duplicate deliveries, duplicate inbound processing) — each unit's test scenarios specifically target duplicate-call safety, not just the happy path.
-- **API surface parity:** U6's WhatsApp entry points are explicitly required to reuse Phase 1's existing services rather than reimplementing business logic, so there is no parity gap to introduce — verified by U6's "same code path" verification criterion.
+- **API surface parity:** U6's WhatsApp entry points are explicitly required to reuse Phase 1's existing services rather than reimplementing business logic, so there is no parity gap to introduce — verified by U6's "same code path" verification criterion. U2/U3's portal-facing endpoints (vendor mapping, task delegation, acknowledgement, activity) now ship with the frontend component and API-client function that call them, so this plan's only human-facing surface (the internal PM UI, per the Scope Boundaries note above) is exercisable without waiting on WhatsApp; U4–U6 remain backend/infrastructure-only by design (no natural end-user screen — see Scope Boundaries).
 - **Integration coverage:** The riskiest cross-unit path is U4 → U5 → U6 → (back into Phase 1 services) — an inbound acknowledgement should be traceable end-to-end from webhook receipt to the same audit trail a portal action produces; this needs one explicit end-to-end integration test beyond the per-unit tests.
 - **Unchanged invariants:** Phase 1's task lifecycle, verification, and approval business rules are not modified by this plan — U4 only adds an outbox emission call alongside their existing logic; U6 only adds a new entry point into the same services.
 

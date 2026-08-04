@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
+from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -83,6 +84,10 @@ class SupervisorReadOnlyViewApiTests(unittest.TestCase):
             V2ProjectExternalGateTask.__table__,
             V2ProjectExternalGateApplicabilityDecision.__table__,
             V2AuditEvent.__table__,
+            ProjectBaseline.__table__,
+            BaselineTask.__table__,
+            Task.__table__,
+            TaskDependency.__table__,
         ):
             table.create(self.engine)
 
