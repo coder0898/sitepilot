@@ -191,3 +191,106 @@ class TaskVendorAssignment(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_ack")
     assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class VendorAcknowledgement(Base):
+    """Phase 2 U3: a recorded vendor response to a `TaskVendorAssignment`
+    (R4).
+
+    Append-only: every response - 'accepted', 'declined', or
+    'clarification_requested' - is kept as its own row, even across
+    multiple attempts on the same assignment (a clarification request may
+    be followed by a later acceptance; neither row is overwritten or
+    deleted). Only `VendorAcknowledgementService.record_acknowledgement`
+    transitions the parent `TaskVendorAssignment.status`, and only for the
+    two terminal responses ('accepted' -> 'acknowledged', 'declined' ->
+    'declined'); 'clarification_requested' never changes it.
+
+    `channel` defaults to 'portal' because this unit's route is PM-
+    submitted only (R4 - there is no vendor-identity auth here, the PM
+    records on the vendor's behalf), but the column is not restricted to
+    that value so a later unit's WhatsApp inbound-matching flow can append
+    rows with channel = 'whatsapp' without a schema change.
+    """
+
+    __tablename__ = "vendor_acknowledgements"
+    __table_args__ = (
+        CheckConstraint(
+            "response in ('accepted', 'declined', 'clarification_requested')",
+            name="ck_v2_vendor_acknowledgements_response",
+        ),
+        CheckConstraint(
+            "channel in ('portal', 'whatsapp', 'system')", name="ck_v2_vendor_acknowledgements_channel",
+        ),
+        Index("ix_v2_vendor_acknowledgements_assignment", "task_vendor_assignment_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_vendor_assignment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.task_vendor_assignments.id", ondelete="RESTRICT"), nullable=False
+    )
+    response: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False, default="portal")
+    note: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class VendorActivityEvent(Base):
+    """Phase 2 U3: vendor-attributable activity/incident capture (R5).
+
+    Logs one `event_type` ('presence', 'delay', 'rework', or 'incident')
+    against a specific `TaskVendorAssignment` - so it is always task+vendor
+    scoped, never a bare project- or vendor-level note. `description` is
+    required; `responsibility_decision` is optional free text, used mainly
+    for 'delay'-type events per the plan. Evidence (0 or 1 file) is linked
+    separately via `VendorActivityEvidence` and is optional for every
+    event_type, including 'incident'.
+    """
+
+    __tablename__ = "vendor_activity_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type in ('presence', 'delay', 'rework', 'incident')",
+            name="ck_v2_vendor_activity_events_event_type",
+        ),
+        Index("ix_v2_vendor_activity_events_assignment", "task_vendor_assignment_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_vendor_assignment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.task_vendor_assignments.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    responsibility_decision: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class VendorActivityEvidence(Base):
+    """Phase 2 U3: real FK link between a `VendorActivityEvent` and an
+    uploaded `FileObject` (`app.execution_models`) - deliberately NOT a
+    polymorphic entity_type/entity_id reference, mirroring `TaskEvidence`'s
+    link between `TaskProgressUpdate` and `FileObject`."""
+
+    __tablename__ = "vendor_activity_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "vendor_activity_event_id", "file_id", name="uq_v2_vendor_activity_evidence_event_file",
+        ),
+        Index("ix_v2_vendor_activity_evidence_event", "vendor_activity_event_id"),
+        Index("ix_v2_vendor_activity_evidence_file", "file_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_activity_event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_activity_events.id", ondelete="RESTRICT"), nullable=False
+    )
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
