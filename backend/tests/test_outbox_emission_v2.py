@@ -408,7 +408,12 @@ class OutboxEmissionApiTests(unittest.TestCase):
         t001 = self.task_by_code(project["id"], "T001")
         self.drive_to_submitted(project["id"], t001.id)
 
-        self.act_as_supervisor()
+        # drive_to_submitted submits progress as the Supervisor; verify as
+        # Admin instead so this doesn't trip the self-verification block
+        # ("a different Supervisor, PM, or Admin must verify it") added on
+        # the merged branch - this test only cares that verify() emits the
+        # outbox row, not who verifies.
+        self.act_as_admin()
         r = self.verify(project["id"], t001.id, "verified")
         self.assertEqual(r.status_code, 200, r.text)
 
@@ -421,7 +426,8 @@ class OutboxEmissionApiTests(unittest.TestCase):
         t001 = self.task_by_code(project["id"], "T001")
         self.drive_to_submitted(project["id"], t001.id)
 
-        self.act_as_supervisor()
+        # See note above: verify as Admin, not the Supervisor who submitted.
+        self.act_as_admin()
         r = self.verify(project["id"], t001.id, "rejected", remarks="Rework the finish.")
         self.assertEqual(r.status_code, 200, r.text)
 
@@ -664,7 +670,10 @@ class OutboxEmissionApiTests(unittest.TestCase):
         # exactly what verify()'s own two nested transition() calls add.
         status_rows_before = len(self.outbox_rows(aggregate_id=t001.id, event_type="task.status_changed"))
 
-        self.act_as_supervisor()
+        # drive_to_submitted submits progress as the Supervisor; verify as
+        # Admin instead so this doesn't trip the self-verification block
+        # added on the merged branch.
+        self.act_as_admin()
         r = self.verify(project["id"], t001.id, "verified")
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")

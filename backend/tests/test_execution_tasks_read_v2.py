@@ -17,6 +17,7 @@ from app.database import get_db
 from app.execution_models import (
     BaselineTask,
     FileObject,
+    OutboxEvent,
     ProjectBaseline,
     Task,
     TaskApprovalDecision,
@@ -97,6 +98,7 @@ class ExecutionTasksReadApiTests(unittest.TestCase):
             TaskBlocker.__table__,
             TaskDelayEvent.__table__,
             TaskSupportAssignment.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 
