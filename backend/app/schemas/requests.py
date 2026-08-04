@@ -82,7 +82,9 @@ class VendorContactIn(BaseModel):
 
 
 class VendorCategoryIn(BaseModel):
-    category_type: str = "service"
+    # category_type is not user-settable: a new main category defaults to
+    # "service", a subcategory always inherits its parent's type (see
+    # communication.py's create_category/update_category).
     parent_id: uuid.UUID | None = None
     description: str | None = None
     name: str

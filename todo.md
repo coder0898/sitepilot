@@ -63,3 +63,20 @@ pytest backend/tests/test_project_baseline_lock_v2.py backend/tests/test_task_li
 ```
 
 in an environment with the project's Python/Docker toolchain, and fix any failures before U5/U6 build further on top of this code.
+
+## Deferred — Material-vendor-category ↔ task materials link (not scoped, needs a brainstorm)
+
+`vendor_categories.category_type` (`material`/`service`) drives no behavior today — vendor-to-task
+eligibility matching (`execution_v2.py`, `ExecutionModals.jsx`) checks only `category_id` equality,
+never `category_type`. Confirmed against the approved PRD/MVP Scope docs and all three phase plans:
+none of them mention a material/service vendor distinction as a requirement.
+
+Separately, `ExecutionTemplateTask`/`ExecutionTask.materials_required` (free text) +
+`material_reminder`/`reminder_lead_days` already exist, with UI copy that says materials should be
+reminded "when WhatsApp automation is introduced" — a real, planned feature with no link today to
+`VendorCategory`'s Material type.
+
+The Material category type stays in the taxonomy (data unchanged) but its UI/API selector is being
+removed as unused/confusing surface (see this session's work). Revisit later, as its own brainstorm,
+whether `materials_required` should link to material-type vendor categories once the WhatsApp
+reminder work is actually scoped — not before, and not assumed here.

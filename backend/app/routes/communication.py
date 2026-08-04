@@ -268,12 +268,13 @@ def delete_relationship(relationship_id: uuid.UUID, _: User = Depends(require_ro
 
 @router.post("/categories")
 def create_category(payload: VendorCategoryIn, actor: User = Depends(require_roles(*MANAGER_ROLES)), db: Session = Depends(get_db)):
+    # category_type is no longer a user choice (unused by any matching/eligibility
+    # logic - see Vendor Hub cleanup): a subcategory always inherits its parent's
+    # type, and a new main category defaults to "service". Existing rows (e.g. the
+    # legacy "Glass" main category) keep whatever type they already have.
     name = payload.name.strip()
     if not name:
         raise HTTPException(422, "Category name is required.")
-    category_type = payload.category_type.strip().lower()
-    if category_type not in {"material", "service"}:
-        raise HTTPException(422, "Category type must be Material or Service.")
     parent = db.get(VendorCategory, payload.parent_id) if payload.parent_id else None
     if payload.parent_id and not parent:
         raise HTTPException(404, "Parent category not found.")
@@ -281,8 +282,7 @@ def create_category(payload: VendorCategoryIn, actor: User = Depends(require_rol
         raise HTTPException(409, "New subcategories require an active parent category.")
     if parent and parent.parent_id:
         raise HTTPException(422, "Only Main Category and Subcategory levels are supported.")
-    if parent and parent.category_type != category_type:
-        raise HTTPException(422, "Subcategory type must match its parent category.")
+    category_type = parent.category_type if parent else "service"
     duplicate = db.scalar(select(VendorCategory).where(func.lower(VendorCategory.name) == name.lower()))
     if duplicate:
         raise HTTPException(409, "A category with this name already exists.")
@@ -309,15 +309,15 @@ def category_usage_count(category_id: uuid.UUID, db: Session) -> int:
 
 @router.put("/categories/{category_id}")
 def update_category(category_id: uuid.UUID, payload: VendorCategoryUpdateIn, actor: User = Depends(require_roles(*MANAGER_ROLES)), db: Session = Depends(get_db)):
+    # category_type is no longer user-editable (see create_category) - a
+    # subcategory inherits its parent's type; a main category keeps whatever
+    # type it already has (e.g. the legacy "Glass" row stays "material").
     item = db.get(VendorCategory, category_id)
     if not item:
         raise HTTPException(404, "Category not found.")
     name = payload.name.strip()
-    category_type = payload.category_type.strip().lower()
     if not name:
         raise HTTPException(422, "Category name is required.")
-    if category_type not in {"material", "service"}:
-        raise HTTPException(422, "Category type must be Material or Service.")
     if payload.parent_id == item.id:
         raise HTTPException(422, "A category cannot be its own parent.")
 
@@ -326,14 +326,13 @@ def update_category(category_id: uuid.UUID, payload: VendorCategoryUpdateIn, act
         raise HTTPException(404, "Parent category not found.")
     if parent and parent.parent_id:
         raise HTTPException(422, "Only Main Category and Subcategory levels are supported.")
-    if parent and parent.category_type != category_type:
-        raise HTTPException(422, "Subcategory type must match its parent category.")
     if payload.active and parent and not parent.active:
         raise HTTPException(409, "Reactivate the parent category before this subcategory.")
+    category_type = parent.category_type if parent else item.category_type
 
     children = db.scalars(select(VendorCategory).where(VendorCategory.parent_id == item.id)).all()
-    if children and (payload.parent_id or category_type != item.category_type):
-        raise HTTPException(409, "A main category with subcategories cannot change level or type.")
+    if children and payload.parent_id:
+        raise HTTPException(409, "A main category with subcategories cannot change level.")
     duplicate = db.scalar(
         select(VendorCategory).where(
             VendorCategory.id != item.id,

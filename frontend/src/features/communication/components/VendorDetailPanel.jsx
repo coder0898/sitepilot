@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Building2, ChevronRight, ClipboardList, FolderKanban, Mail, MapPin, MessageCircle, PackageOpen, Pencil, Phone, Plus, ShieldAlert, ShieldCheck, Trash2, UserRound, UsersRound, Wrench } from "lucide-react";
+import { Activity, Building2, ChevronRight, ClipboardList, FolderKanban, Mail, MapPin, MessageCircle, Pencil, Phone, Plus, ShieldAlert, ShieldCheck, Trash2, UserRound, UsersRound, Wrench } from "lucide-react";
 import { Button, ConfirmModal, Pill } from "../../../components/ui";
 
 const cleanPhone = (value = "") => value.replace(/[^\d+]/g, "");
@@ -20,11 +20,13 @@ function DetailItem({ icon: Icon, label, value }) {
 
 function CapabilityGroups({ vendor, categories }) {
   const selected = new Set(vendor.category_ids || []);
-  const groups = ["material", "service"].map(type => {
-    const roots = categories.filter(category => !category.parent_id && category.category_type === type && (selected.has(category.id) || categories.some(child => child.parent_id === category.id && selected.has(child.id))));
-    return { type, roots: roots.map(root => ({ root, children: categories.filter(child => child.parent_id === root.id && selected.has(child.id)) })) };
-  });
-  return <div className="grid grid-cols-2 gap-4 max-[720px]:grid-cols-1">{groups.map(({ type, roots }) => { const material = type === "material"; const Icon = material ? PackageOpen : Wrench; return <section key={type} className={`rounded-2xl border p-5 ${material ? "border-amber-200 bg-amber-50/70" : "border-blue-200 bg-blue-50/70"}`}><header className="flex items-center gap-3"><span className={`grid size-10 place-items-center rounded-xl ${material ? "bg-amber-500 text-white" : "bg-blue-700 text-white"}`}><Icon size={18}/></span><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Capability type</p><h4 className="font-black text-slate-950">{material ? "Materials" : "Services"}</h4></div></header><div className="mt-4 grid gap-2">{roots.map(({ root, children }) => <div key={root.id} className="rounded-xl border border-white/80 bg-white/80 p-3 shadow-sm"><strong className="text-sm text-slate-900">{root.name}</strong>{children.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{children.map(child => <span key={child.id} className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${material ? "bg-amber-100 text-amber-900" : "bg-blue-100 text-blue-900"}`}>{child.name}</span>)}</div>}</div>)}{!roots.length && <p className="rounded-xl border border-dashed border-slate-300/80 p-4 text-sm text-slate-500">No {type} capabilities selected.</p>}</div></section>; })}</div>;
+  const roots = categories
+    .filter(category => !category.parent_id && (selected.has(category.id) || categories.some(child => child.parent_id === category.id && selected.has(child.id))))
+    .map(root => ({ root, children: categories.filter(child => child.parent_id === root.id && selected.has(child.id)) }));
+  return <section className="rounded-2xl border border-blue-200 bg-blue-50/70 p-5">
+    <header className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-blue-700 text-white"><Wrench size={18}/></span><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Capabilities</p><h4 className="font-black text-slate-950">Categories selected</h4></div></header>
+    <div className="mt-4 grid gap-2">{roots.map(({ root, children }) => <div key={root.id} className="rounded-xl border border-white/80 bg-white/80 p-3 shadow-sm"><strong className="text-sm text-slate-900">{root.name}</strong>{children.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{children.map(child => <span key={child.id} className="rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-900">{child.name}</span>)}</div>}</div>)}{!roots.length && <p className="rounded-xl border border-dashed border-slate-300/80 p-4 text-sm text-slate-500">No capabilities selected.</p>}</div>
+  </section>;
 }
 
 export function VendorDetailPanel({ vendor, parentVendor, subVendors = [], contacts = [], projects = [], categories = [], logs = [], canManage, onClose, remove, edit, addContact, addSubcontractor, addNote, selectVendor }) {

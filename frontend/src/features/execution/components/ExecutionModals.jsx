@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Archive, ArrowRight, BriefcaseBusiness, ClipboardList, Eye, History, Layers3, LayoutTemplate, PackageOpen, Pencil, Plus, RotateCcw, ShieldCheck, Trash2, UserRound, Wrench } from "lucide-react";
+import { Archive, ArrowRight, BriefcaseBusiness, ClipboardList, Eye, History, Layers3, LayoutTemplate, Pencil, Plus, RotateCcw, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { Button, ConfirmModal, Field, FormActions, FormGrid, Input, Modal, Pill, Select } from "../../../components/ui";
 
 const prettyStatus = value => String(value || "assigned").replaceAll("_", " ");
@@ -28,14 +28,12 @@ export function ProjectSettingsModal({ project, pms, supervisors, submit, remove
   </Modal>;
 }export function ProjectModal({ user, pms, supervisors, templates, submit, close }) { const [templateId, setTemplateId] = useState(templates[0]?.id || ""); const selected = templates.find(item => item.id === templateId); return <Modal title="Create project from template" subtitle="Standard tasks will be generated automatically. Add task is only for exceptions." onClose={close}><form className="modal-form grid gap-3 [&_label]:grid [&_label]:gap-2 [&_label]:text-sm [&_label]:font-extrabold [&_label]:text-slate-700 [&_input]:min-h-11 [&_input]:w-full [&_input]:rounded-xl [&_input]:border [&_input]:border-slate-200 [&_input]:bg-white [&_input]:px-4 [&_input]:py-3 [&_input]:outline-none [&_select]:min-h-11 [&_select]:w-full [&_select]:rounded-xl [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-4 [&_select]:py-3 [&_select]:outline-none [&_textarea]:min-h-24 [&_textarea]:w-full [&_textarea]:resize-y [&_textarea]:rounded-xl [&_textarea]:border [&_textarea]:border-slate-200 [&_textarea]:bg-white [&_textarea]:px-4 [&_textarea]:py-3 [&_textarea]:outline-none focus-within:[&_input]:border-blue-600 focus-within:[&_select]:border-blue-600 focus-within:[&_textarea]:border-blue-600 [&>button]:min-h-12 [&>button]:rounded-xl [&>button]:bg-blue-700 [&>button]:px-5 [&>button]:font-black [&>button]:text-white two-col grid-cols-2 max-[720px]:grid-cols-1" onSubmit={submit}><label className="full-field col-span-full max-[720px]:col-span-1">Execution template<select name="template_id" value={templateId} onChange={event => setTemplateId(event.target.value)} required><option value="" disabled>Select a template</option>{templates.map(template => <option value={template.id} key={template.id}>{template.name} - {template.duration_days} days - {template.tasks.length} tasks</option>)}</select></label>{selected && <div className="full-field col-span-full max-[720px]:col-span-1 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"><strong>{selected.tasks.length} standard tasks will be created automatically</strong><p className="mt-1">Material requirements and reminder preferences are saved with each task for the future WhatsApp workflow.</p></div>}<label>Project name<input name="name" required/></label><label>Client<input name="client_name" required/></label><label>Location<input name="location" required/></label><input type="hidden" name="project_type" value={selected?.project_type || "Interior Fit-out"}/><input type="hidden" name="duration_days" value={selected?.duration_days || 3}/><label>Start date<input type="date" name="start_date" required/></label>{user.role !== "project_manager" && <label>Project Manager<select name="project_manager_id" required><option value="">Select PM</option>{pms.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<label>Supervisor<select name="supervisor_id" required><option value="">Select supervisor</option>{supervisors.map(item => <option value={item.id} key={item.id}>{item.name}{item.phone ? "" : " - phone missing"}</option>)}</select></label><label>Area<input name="area"/></label><button className="full-field col-span-full max-[720px]:col-span-1">Create schedule with {selected?.tasks.length || 0} tasks</button></form></Modal>; }export function TaskModal({ project, day, task, supervisors, mains, subsFor, categories = [], submit, close }) {
   const categoryById = Object.fromEntries(categories.map(item => [item.id, item]));
-  const initialCategory = categoryById[task?.category_id];
-  const [categoryType, setCategoryType] = useState(initialCategory?.category_type || "service");
   const [categoryId, setCategoryId] = useState(task?.category_id || "");
   const [subcategoryId, setSubcategoryId] = useState(task?.subcategory_id || "");
   const [main, setMain] = useState(task?.assigned_contractor_id || "");
   const [sub, setSub] = useState(task?.assigned_subcontractor_id || "");
   const [reminder, setReminder] = useState(task?.material_reminder || false);
-  const roots = categories.filter(item => !item.parent_id && item.category_type === categoryType && item.active !== false);
+  const roots = categories.filter(item => !item.parent_id && item.active !== false);
   const children = categories.filter(item => item.parent_id === categoryId && item.active !== false);
   const selectedCategory = categoryById[subcategoryId] || categoryById[categoryId];
   const requiredCategoryId = subcategoryId || categoryId;
@@ -50,14 +48,6 @@ export function ProjectSettingsModal({ project, pms, supervisors, submit, remove
   const eligibleSubs = main ? matchingSubsFor(main) : [];
   const assignmentChanged = main !== (task?.assigned_contractor_id || "") || sub !== (task?.assigned_subcontractor_id || "");
   const isReassignment = Boolean(task && (task.assigned_contractor_id || task.assigned_subcontractor_id) && assignmentChanged);
-
-  function changeType(nextType) {
-    setCategoryType(nextType);
-    setCategoryId("");
-    setSubcategoryId("");
-    setMain("");
-    setSub("");
-  }
 
   function changeCategory(nextId) {
     setCategoryId(nextId);
@@ -86,9 +76,8 @@ export function ProjectSettingsModal({ project, pms, supervisors, submit, remove
         <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_16px_45px_rgba(15,23,42,.05)]">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-700 text-white"><Layers3 size={18}/></span><div><p className="text-[10px] font-black uppercase tracking-[.18em] text-blue-700">Classification</p><h3 className="mt-1 text-lg font-black text-slate-950">Category and subcategory</h3><p className="mt-1 text-xs text-slate-500">This controls which vendors are eligible for assignment.</p></div></div>{task?.category_id ? <Pill tone="green">Structured</Pill> : <Pill tone="orange">Classification required</Pill>}</header>
           <div className="grid gap-4 p-5">
-            <div className="grid grid-cols-2 gap-2">{[["material", PackageOpen, "Material"], ["service", Wrench, "Service"]].map(([value, Icon, label]) => <button type="button" key={value} onClick={() => changeType(value)} className={"min-h-11 items-center justify-center gap-2 rounded-xl border text-sm font-black transition " + (categoryType === value ? "flex border-blue-700 bg-blue-700 text-white shadow-lg shadow-blue-700/20" : "flex border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:text-blue-700")}><Icon size={17}/>{label}</button>)}</div>
             <div className="grid grid-cols-2 gap-4 max-[680px]:grid-cols-1">
-              <label className="grid gap-2 text-sm font-black text-slate-700">Main category<select className={taskFieldClass} value={categoryId} onChange={event => changeCategory(event.target.value)} required><option value="">Select {categoryType} category</option>{roots.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+              <label className="grid gap-2 text-sm font-black text-slate-700">Main category<select className={taskFieldClass} value={categoryId} onChange={event => changeCategory(event.target.value)} required><option value="">Select category</option>{roots.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
               <label className="grid gap-2 text-sm font-black text-slate-700">Subcategory<select className={taskFieldClass} value={subcategoryId} onChange={event => { setSubcategoryId(event.target.value); setMain(""); setSub(""); }} disabled={!categoryId || !children.length}><option value="">{children.length ? "Main category only" : "No subcategories available"}</option>{children.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
             </div>
             {task?.category && !task?.category_id && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Legacy category: <strong>{task.category}</strong>. Select its approved structured replacement before saving.</div>}
@@ -329,7 +318,7 @@ export function TemplateDetail({ template, categories = [], edit, toggle, remove
               <div className="grid gap-2 p-3">{dayTasks.map((task, index) => {
                 const main = categoryById[task.category_id];
                 const sub = categoryById[task.subcategory_id];
-                return <div key={task.id || index} className="rounded-xl border border-slate-200 p-3"><div className="flex items-start justify-between gap-2"><strong className="text-sm text-slate-950">{task.title}</strong><Pill tone={task.priority === "high" ? "red" : task.priority === "low" ? "gray" : "blue"}>{task.priority}</Pill></div><p className="mt-2 text-xs font-bold text-slate-600">{main?.category_type === "material" ? "Material" : "Service"} · {main?.name || task.category}</p>{sub && <span className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-800">{sub.name}</span>}{task.instructions && <p className="mt-2 line-clamp-2 text-xs text-slate-500">{task.instructions}</p>}</div>;
+                return <div key={task.id || index} className="rounded-xl border border-slate-200 p-3"><div className="flex items-start justify-between gap-2"><strong className="text-sm text-slate-950">{task.title}</strong><Pill tone={task.priority === "high" ? "red" : task.priority === "low" ? "gray" : "blue"}>{task.priority}</Pill></div><p className="mt-2 text-xs font-bold text-slate-600">{main?.name || task.category}</p>{sub && <span className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-800">{sub.name}</span>}{task.instructions && <p className="mt-2 line-clamp-2 text-xs text-slate-500">{task.instructions}</p>}</div>;
               })}{!dayTasks.length && <p className="p-3 text-center text-sm text-slate-400">No tasks</p>}</div>
             </article>;
           })}
@@ -409,7 +398,7 @@ export function TemplateModal({ template = null, categories = [], submit, close 
               <label className="grid gap-2 text-sm font-black text-slate-700">Priority<select className={taskFieldClass} value={item.priority} onChange={event => updateTask(item.key,{ priority:event.target.value })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
             </div>
             <div className="grid grid-cols-2 gap-4 max-[640px]:grid-cols-1">
-              <label className="grid gap-2 text-sm font-black text-slate-700">Main category<select className={taskFieldClass} value={item.category_id} onChange={event => updateTask(item.key,{ category_id:event.target.value, subcategory_id:"" })} required><option value="">Select category</option>{["material","service"].map(type => <optgroup key={type} label={type === "material" ? "Materials" : "Services"}>{roots.filter(category => category.category_type === type).map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</optgroup>)}</select></label>
+              <label className="grid gap-2 text-sm font-black text-slate-700">Main category<select className={taskFieldClass} value={item.category_id} onChange={event => updateTask(item.key,{ category_id:event.target.value, subcategory_id:"" })} required><option value="">Select category</option>{roots.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
               <label className="grid gap-2 text-sm font-black text-slate-700">Subcategory<select className={taskFieldClass} value={item.subcategory_id} onChange={event => updateTask(item.key,{ subcategory_id:event.target.value })} disabled={!children.length}><option value="">{children.length ? "Main category only" : "No subcategories"}</option>{children.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
             </div>
             <div className="grid grid-cols-2 gap-4 max-[640px]:grid-cols-1">

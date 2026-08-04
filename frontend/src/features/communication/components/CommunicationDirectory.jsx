@@ -54,7 +54,7 @@ function VendorForm({ vendor, categories, fixedMainVendor, includeContact, submi
   function submit(event) {
     if (!selectedCategories.length) {
       event.preventDefault();
-      setCategoryError("Select at least one Material or Service category.");
+      setCategoryError("Select at least one category.");
       return;
     }
     setCategoryError("");

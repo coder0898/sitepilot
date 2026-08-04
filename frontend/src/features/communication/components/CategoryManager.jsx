@@ -1,15 +1,10 @@
 import { useMemo, useState } from "react";
-import { Archive, Boxes, ChevronRight, FolderTree, PackageOpen, Pencil, Plus, Search, Trash2, Wrench, X } from "lucide-react";
+import { Archive, Boxes, ChevronRight, FolderTree, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { ConfirmModal, Modal, Pill } from "../../../components/ui";
 
 const fieldClass = "min-h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100";
-const typeMeta = {
-  material: { label: "Materials", icon: PackageOpen, tone: "orange" },
-  service: { label: "Services", icon: Wrench, tone: "blue" },
-};
 
 export function CategoryManager({ categories = [], save, remove, close }) {
-  const [type, setType] = useState("material");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [draftParentId, setDraftParentId] = useState(null);
@@ -17,16 +12,16 @@ export function CategoryManager({ categories = [], save, remove, close }) {
   const [deleteError, setDeleteError] = useState("");
   const selected = categories.find(item => item.id === selectedId);
   const roots = useMemo(() => categories
-    .filter(item => !item.parent_id && item.category_type === type)
+    .filter(item => !item.parent_id)
     .filter(item => {
       const needle = query.trim().toLowerCase();
       if (!needle) return true;
       return item.name.toLowerCase().includes(needle)
         || categories.some(child => child.parent_id === item.id && child.name.toLowerCase().includes(needle));
-    }), [categories, query, type]);
+    }), [categories, query]);
   const parent = categories.find(item => item.id === (selected?.parent_id || draftParentId));
   const editing = Boolean(selected);
-  const formKey = selected?.id || draftParentId || `new-${type}`;
+  const formKey = selected?.id || draftParentId || "new";
   const usageCount = selected?.usage_count || 0;
   const childCount = selected?.child_count || 0;
   const deletionBlocked = usageCount > 0 || childCount > 0;
@@ -42,7 +37,6 @@ export function CategoryManager({ categories = [], save, remove, close }) {
   function beginChild(root) {
     setSelectedId(null);
     setDraftParentId(root.id);
-    setType(root.category_type);
   }
 
   async function submit(event) {
@@ -50,7 +44,6 @@ export function CategoryManager({ categories = [], save, remove, close }) {
     const data = new FormData(event.currentTarget);
     const payload = {
       name: data.get("name"),
-      category_type: data.get("category_type"),
       parent_id: data.get("parent_id") || null,
       description: data.get("description") || null,
       active: data.get("active") === "true",
@@ -64,7 +57,7 @@ export function CategoryManager({ categories = [], save, remove, close }) {
   async function confirmCategoryRemoval() {
     setDeleteError("");
     const result = deletionBlocked
-      ? await save({ name: selected.name, category_type: selected.category_type, parent_id: selected.parent_id || null, description: selected.description || null, active: false }, selected.id)
+      ? await save({ name: selected.name, parent_id: selected.parent_id || null, description: selected.description || null, active: false }, selected.id)
       : await remove(selected.id);
     if (result?.ok) {
       setConfirmDelete(false);
@@ -81,7 +74,7 @@ export function CategoryManager({ categories = [], save, remove, close }) {
         <div className="relative flex items-start justify-between gap-4">
           <div className="flex items-start gap-4">
             <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-950/30"><FolderTree/></span>
-            <div><p className="text-[11px] font-black uppercase tracking-[0.18em] text-blue-300">Phase 1 taxonomy control</p><h2 className="mt-1 text-2xl font-black tracking-tight">Material & service categories</h2><p className="mt-1 max-w-2xl text-sm text-slate-300">Manage the two-level capability structure used by vendors, templates and project tasks.</p></div>
+            <div><p className="text-[11px] font-black uppercase tracking-[0.18em] text-blue-300">Taxonomy control</p><h2 className="mt-1 text-2xl font-black tracking-tight">Vendor capability categories</h2><p className="mt-1 max-w-2xl text-sm text-slate-300">Manage the two-level capability structure used by vendors, templates and project tasks.</p></div>
           </div>
           <button type="button" onClick={close} className="grid size-11 shrink-0 place-items-center rounded-xl border border-white/15 bg-white/10 text-white hover:bg-white/20" aria-label="Close category manager"><X size={22} strokeWidth={3}/></button>
         </div>
@@ -89,8 +82,7 @@ export function CategoryManager({ categories = [], save, remove, close }) {
 
       <div className="grid min-h-[620px] grid-cols-[minmax(280px,.85fr)_minmax(0,1.4fr)] max-[820px]:grid-cols-1">
         <aside className="border-r border-slate-200 bg-white p-5 max-[820px]:border-b max-[820px]:border-r-0">
-          <div className="grid grid-cols-2 gap-2">{Object.entries(typeMeta).map(([value, meta]) => { const Icon = meta.icon; return <button type="button" key={value} onClick={() => { setType(value); beginMain(); }} className={`flex min-h-11 items-center justify-center gap-2 rounded-xl border text-sm font-black ${type === value ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 bg-white text-slate-600"}`}><Icon size={16}/>{meta.label}</button>; })}</div>
-          <label className="mt-4 flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-slate-500 focus-within:border-blue-500"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} className="w-full border-0 bg-transparent text-sm outline-none" placeholder="Search categories"/></label>
+          <label className="flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-slate-500 focus-within:border-blue-500"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} className="w-full border-0 bg-transparent text-sm outline-none" placeholder="Search categories"/></label>
           <button type="button" onClick={beginMain} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 text-sm font-black text-white"><Plus size={16}/> New main category</button>
 
           <div className="mt-4 grid max-h-[440px] gap-2 overflow-y-auto pr-1">
@@ -114,15 +106,12 @@ export function CategoryManager({ categories = [], save, remove, close }) {
 
         <main className="p-6 max-[640px]:p-4">
           <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-            <div><p className="text-[11px] font-black uppercase tracking-[0.16em] text-blue-700">{editing ? "Edit category" : parent ? "New subcategory" : "New main category"}</p><h3 className="mt-1 text-2xl font-black text-slate-950">{editing ? selected.name : parent ? `Under ${parent.name}` : `Create ${typeMeta[type].label.toLowerCase()} category`}</h3></div>
+            <div><p className="text-[11px] font-black uppercase tracking-[0.16em] text-blue-700">{editing ? "Edit category" : parent ? "New subcategory" : "New main category"}</p><h3 className="mt-1 text-2xl font-black text-slate-950">{editing ? selected.name : parent ? `Under ${parent.name}` : "Create category"}</h3></div>
             {editing && <div className="flex gap-2"><button type="button" onClick={() => beginChild(selected.parent_id ? parent : selected)} disabled={Boolean(selected.parent_id) || !selected.active} className="flex min-h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"><Plus size={15}/> Add child</button><button type="button" onClick={() => { setDeleteError(""); setConfirmDelete(true); }} className="grid size-10 place-items-center rounded-xl border border-rose-200 bg-rose-50 text-rose-700" aria-label="Delete category"><Trash2 size={16}/></button></div>}
           </div>
 
           <form key={formKey} onSubmit={submit} className="grid gap-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,.06)] max-[640px]:p-4">
-            <div className="grid grid-cols-2 gap-4 max-[640px]:grid-cols-1">
-              <input type="hidden" name="category_type" value={selected?.category_type || parent?.category_type || type}/><label className="grid gap-2 text-sm font-black text-slate-700">Category type<select className={fieldClass} value={selected?.category_type || parent?.category_type || type} onChange={event => setType(event.target.value)} disabled={Boolean(parent) || Boolean(selected?.parent_id) || Boolean(selected?.child_count)}><option value="material">Material</option><option value="service">Service</option></select></label>
-              <label className="grid gap-2 text-sm font-black text-slate-700">Level<select className={fieldClass} name="parent_id" defaultValue={selected?.parent_id || draftParentId || ""} disabled={Boolean(parent) || Boolean(selected?.child_count)}><option value="">Main category</option>{categories.filter(item => !item.parent_id && item.active && item.category_type === (selected?.category_type || type) && item.id !== selected?.id).map(item => <option value={item.id} key={item.id}>Subcategory of {item.name}</option>)}</select></label>
-            </div>
+            <label className="grid gap-2 text-sm font-black text-slate-700">Level<select className={fieldClass} name="parent_id" defaultValue={selected?.parent_id || draftParentId || ""} disabled={Boolean(parent) || Boolean(selected?.child_count)}><option value="">Main category</option>{categories.filter(item => !item.parent_id && item.active && item.id !== selected?.id).map(item => <option value={item.id} key={item.id}>Subcategory of {item.name}</option>)}</select></label>
             {parent && <input type="hidden" name="parent_id" value={parent.id}/>}
             <label className="grid gap-2 text-sm font-black text-slate-700">Category name<input className={fieldClass} name="name" defaultValue={selected?.name || ""} required placeholder="Example: Electrical services"/></label>
             <label className="grid gap-2 text-sm font-black text-slate-700">Description<textarea className="min-h-28 w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" name="description" defaultValue={selected?.description || ""} placeholder="Describe the work, material or capability covered."/></label>
