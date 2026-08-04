@@ -14,7 +14,7 @@ artifact. Never conflate the two - see the plan's Key Technical Decisions.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -460,3 +460,75 @@ class OutboxEvent(Base):
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class MessageDelivery(Base):
+    """Phase 2 U5: per-recipient delivery record for a pending `OutboxEvent`
+    (R7), read/written by `backend/app/services/message_dispatch.py`'s
+    `MessageDispatchService.process_pending`.
+
+    One `OutboxEvent` fans out to N recipients (e.g. a task event notifies
+    both the project's PM and Supervisor, and sometimes an assigned
+    vendor's primary contact too) - this table is that fan-out target, one
+    row per (event, recipient, template).
+
+    `recipient_phone` is a DENORMALIZED SNAPSHOT of the phone number at
+    dispatch time, not a live join - the underlying `User.phone` /
+    `V2VendorContact.phone` value could change after a message was sent,
+    and this durably records what number a given message actually went to.
+
+    Recipient identity uses two nullable real FK columns
+    (`recipient_employee_id` / `recipient_vendor_contact_id`), never a
+    polymorphic entity_type/entity_id pair - mirrors `TaskEvidence`'s real
+    FK link convention elsewhere in this schema. Exactly one must be set
+    (enforced by a DB CHECK constraint in the migration).
+
+    Idempotency: the migration's unique index on
+    (outbox_event_id, recipient_employee_id, recipient_vendor_contact_id,
+    template) - using `NULLS NOT DISTINCT`, since exactly one recipient
+    column is always null - means retrying dispatch for the same
+    event+recipient+template never creates a second row. A retry after a
+    prior 'failed' attempt updates the EXISTING row (increments
+    `attempt_count`, updates `status`) instead of inserting a new one.
+    """
+
+    __tablename__ = "message_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "(recipient_employee_id is not null and recipient_vendor_contact_id is null) or "
+            "(recipient_employee_id is null and recipient_vendor_contact_id is not null)",
+            name="ck_v2_message_deliveries_recipient_exclusive",
+        ),
+        CheckConstraint(
+            "status in ('queued', 'sending', 'sent', 'delivered', 'read', 'failed', 'suppressed')",
+            name="ck_v2_message_deliveries_status",
+        ),
+        UniqueConstraint(
+            "outbox_event_id", "recipient_employee_id", "recipient_vendor_contact_id", "template",
+            name="uq_v2_message_deliveries_event_recipient_template",
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index(
+            "uq_v2_message_deliveries_provider_message_id", "provider_message_id", unique=True,
+            postgresql_where=text("provider_message_id is not null"),
+            sqlite_where=text("provider_message_id is not null"),
+        ),
+        Index("ix_v2_message_deliveries_outbox_event", "outbox_event_id"),
+        Index("ix_v2_message_deliveries_status", "status"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    outbox_event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.outbox_events.id", ondelete="RESTRICT"), nullable=False)
+    recipient_employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"))
+    recipient_vendor_contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_contacts.id", ondelete="RESTRICT"))
+    recipient_phone: Mapped[str] = mapped_column(Text, nullable=False)
+    template: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False, default="sandbox")
+    provider_message_id: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_code: Mapped[str | None] = mapped_column(Text)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
