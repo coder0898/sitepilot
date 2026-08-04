@@ -532,3 +532,52 @@ class MessageDelivery(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class InboundMessage(Base):
+    """Phase 2 U6: inbound WhatsApp webhook delivery, matched to at most one
+    known identity and translated into the SAME service call a portal
+    action of that kind would make (R8/R9).
+
+    Only a signature-verified webhook delivery ever reaches the point of
+    writing a row here - see `backend/app/routes/whatsapp_webhook_v2.py`'s
+    HMAC gate, which rejects an invalid/missing signature before any query
+    or write against any table. So every row here, whatever its
+    `processing_status`, represents an authentic provider delivery; a
+    'unmatched'/'rejected' row never mutates any other domain state.
+
+    `matched_identity_type`/`matched_identity_id` is a deliberately
+    polymorphic pair - unlike `MessageDelivery`'s two-nullable-real-FK
+    "exactly one set" convention - because a message resolves to at most
+    one of two genuinely different identity tables (`employee_profiles` or
+    `siteops_v2.vendor_contacts`) and, on 'unmatched'/'rejected' rows, BOTH
+    stay null rather than exactly one being required. No FK constraint is
+    placed on `matched_identity_id` since which table it references
+    depends on `matched_identity_type`.
+    """
+
+    __tablename__ = "inbound_messages"
+    __table_args__ = (
+        UniqueConstraint("provider_message_id", name="uq_v2_inbound_messages_provider_message_id"),
+        CheckConstraint(
+            "matched_identity_type is null or matched_identity_type in ('employee', 'vendor_contact')",
+            name="ck_v2_inbound_messages_identity_type",
+        ),
+        CheckConstraint(
+            "processing_status in ('processed', 'unmatched', 'rejected')",
+            name="ck_v2_inbound_messages_processing_status",
+        ),
+        Index("ix_v2_inbound_messages_sender_phone", "sender_phone"),
+        Index("ix_v2_inbound_messages_processing_status", "processing_status"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_phone: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_body: Mapped[str] = mapped_column(Text, nullable=False)
+    matched_identity_type: Mapped[str | None] = mapped_column(Text)
+    matched_identity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    processing_status: Mapped[str] = mapped_column(Text, nullable=False, default="unmatched")
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

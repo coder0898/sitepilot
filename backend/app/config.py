@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_publishable_key: str = ""
     supabase_secret_key: str = ""
+    # Phase 2 U6: HMAC secret used to verify `X-Hub-Signature-256` on
+    # inbound WhatsApp webhook deliveries (see
+    # backend/app/routes/whatsapp_webhook_v2.py). Sourced from
+    # environment/`.env` only, mirroring `supabase_secret_key`'s pattern -
+    # never hardcoded. Empty by default: with no configured secret, no
+    # valid signature can ever be computed, so the route safely rejects
+    # every inbound request until an operator configures this.
+    whatsapp_webhook_secret: str = ""
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""
