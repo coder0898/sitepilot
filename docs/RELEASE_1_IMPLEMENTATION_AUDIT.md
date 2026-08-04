@@ -323,56 +323,64 @@ Medium — demoable as "we've scaffolded and reviewed the approval gates for thi
 ### 1. Phase Name: Vendors (Phase 2, item 10)
 
 ### 2. Implementation Status
-Partially Implemented
+Implemented (per `docs/plans/2026-08-02-002-feat-control-layer-vendor-whatsapp-plan.md`, Implementation Units U1-U3)
 
 ### 3. Existing Implementation Evidence
 Backend:
-- `app/routes/vendors.py` uses the **legacy** `app.models.Vendor` model (not a `siteops_v2` table). Functionally it already implements most of BR-012's rules: `engagement_type` (main/sub_vendor/migration_pending), mandatory `parent_vendor_id` for sub-vendors, `migration_status`, vendor status history, category mapping via `vendor_categories`/`contractor_categories`.
-- No reference to `Vendor`/vendor tables was found anywhere in `project_models.py`, `template_models.py`, or the V2 route files (`projects_v2.py`, `templates_v2.py`, `dependencies_v2.py`) during this audit — confirmed via direct search.
+- `app/vendor_models.py` — new `siteops_v2` tables: `vendors`, `capability_categories`, `vendor_capabilities`, `vendor_contacts`, `project_vendors`, `task_vendor_assignments`, `vendor_acknowledgements`, `vendor_activity_events`, `vendor_activity_evidence`.
+- `app/services/vendor_import.py` — one-time, idempotent, dry-run-first import from the legacy `app.models.Vendor` table (BR-019). `Vendor.parent_vendor_id` is authoritative for sub-vendor relationships; `ContractorRelationship` disagreements are flagged for manual review, not migrated. `migration_pending` vendors are excluded pending legacy-side resolution.
+- `app/services/project_vendor.py`, `task_vendor_assignment.py` — map an active vendor to a project (sub-vendor requires its parent's active mapping to the same project, BR-012); delegate a mapped, capability-matched vendor to a task without transferring Site Supervisor accountability (BR-013). Neither service imports Phase 1's `task_lifecycle`/`task_verification` — proven structurally via `ast`-based import inspection in `test_task_vendor_assignment_v2.py`.
+- `app/services/vendor_acknowledgement.py`, `vendor_activity.py` — PM-submitted, portal-channel acknowledgement (`accepted`/`declined`/`clarification_requested`, append-only); vendor-attributable activity/incident capture (`presence`/`delay`/`rework`/`incident`) with optional evidence, reusing Phase 1's `file_objects` pattern via a dedicated link table (no polymorphic entity references). No endpoint in either service can mutate task lifecycle/verification/approval state — a vendor cannot start/complete/verify/approve/close a task through this mechanism (BR-013).
+- `app/routes/project_vendors_v2.py`, `vendors_router` — full read/write surface: `GET /api/v2/vendors` (active vendors + capabilities), `POST/GET /api/v2/projects/{id}/vendors` (mapping), `POST/GET /api/v2/projects/{id}/tasks/{task_id}/vendor-assignment(s)` (delegation), `.../acknowledge`, `.../activity`, and an evidence download route mirroring Phase 1's task-evidence pattern.
 
-Frontend: `features/vendors/VendorsPage.jsx` — functional vendor CRUD UI, but not surfaced anywhere inside the V2 project workflow (no "assign vendor to this V2 task" screen exists).
+Frontend: `ProjectVendorPanel.jsx` (map a vendor, list current mappings — new "Vendors" tab on `ProjectDetailModal.jsx`), `TaskVendorDelegationForm.jsx` (delegate a mapped vendor to a task, rendered inside `TaskExecutionBoard`'s task detail), `VendorAcknowledgementForm.jsx`, `VendorActivityForm.jsx` (with evidence upload/download) — all PM/Admin-gated for write actions, visible read-only to other project members. `vendorAssignmentApi.js` is the flat API client. The legacy `features/vendors/VendorsPage.jsx` remains the standalone legacy-schema vendor master-data UI and is unchanged.
 
-Testing: no vendor-specific V2 integration test found (expected, since there is no integration).
+Testing: `test_vendor_import_v2.py`, `test_project_vendor_mapping_v2.py`, `test_task_vendor_assignment_v2.py`, `test_vendor_acknowledgement_v2.py`, `test_vendor_activity_v2.py` — 38 tests total, covering happy paths, sub-vendor/parent-mapping edge cases, capability-mismatch rejection, evidence upload/download, and the no-vendor-identity-can-mutate-lifecycle structural proof.
 
 ### 4. Gap Analysis
-Already working: vendor/sub-vendor master data management as a standalone module — genuinely solid and largely rule-compliant, just sitting on the legacy schema rather than a new V2 table.
-Partially working: nothing — this is a clean split (works standalone, doesn't connect).
-Missing: `project_vendors` (V2 project-vendor mapping) and `task_vendor_assignments` (spec §8) do not exist in the V2 schema. A vendor cannot currently be linked to a V2 project or a V2 task at all.
+Already working: the full vendor lifecycle on the new schema — import from legacy, project mapping, task delegation, acknowledgement, and activity/incident capture with evidence — end to end from backend service through a PM-facing portal UI.
+Partially working: nothing — this plan's scope (R1-R5) is complete.
+Missing: nothing in scope. Deliberately out of scope per the plan: vendor self-service login/UI (vendor interaction stays WhatsApp-and-PM-managed, per PRD §11), automated vendor scoring/ranking (explicitly excluded from Release 1 by BR-014), an Admin-facing dashboard aggregating vendor data (Phase 3's job).
 
 ### 5. Architecture Alignment
-Conflicts with the PRD workflow in one specific sense: the data-model spec explicitly states legacy vendor tables are "not carried forward as parallel models" and describes a *new* `siteops_v2.vendors` table — but what's actually deployed and working is the old table, un-migrated, and disconnected from V2 projects. This is a duplicate-system situation worth flagging directly: **vendor master data exists and works, but in the wrong schema relative to the approved architecture, and with no bridge to V2 projects.**
+Now matches the data-model spec's intent: legacy vendor tables are not carried forward as parallel models for new V2 work — `siteops_v2.vendors` is the new authoritative table for project/task-facing vendor operations, populated via the one-time import. The legacy module continues to exist as its own standalone master-data UI (unchanged), which is the intended cutover boundary, not a lingering duplicate-system conflict.
 
 ### 6. Recommendation
-Keep existing implementation (the legacy vendor module) for master-data management in the demo — do not attempt to rebuild it before Monday. If a V2-project-to-vendor link is needed for the demo narrative, that is new, unbuilt integration work, not an existing gap to "fix."
+Complete for this release. Follow-up (not blocking): confirm the one-time import's operational cutover point with Product/Ops (freezing legacy vendor edits during the actual import window), and consider an Admin-facing outbox/delivery monitoring view as a Phase 3 candidate.
 
 ### 7. Risk Level
-Medium — fine to demo vendor management as a standalone module; do not imply it is wired into V2 project execution, because it is not.
+Low — vendor mapping, delegation, acknowledgement, and activity capture are demoable end-to-end through the portal UI, with Supervisor accountability provably unaffected.
 
 ---
 
 ### 1. Phase Name: WhatsApp Notifications and Reassignment Alerts (Phase 2, item 11)
 
 ### 2. Implementation Status
-Not Implemented
+Infrastructure Implemented; Live Sending Externally Gated (per `docs/plans/2026-08-02-002-feat-control-layer-vendor-whatsapp-plan.md`, Implementation Units U4-U6)
 
 ### 3. Existing Implementation Evidence
-Backend: no `outbox_events`, `message_deliveries`, or `inbound_messages` tables exist anywhere in `project_models.py`, `models.py`, or the Supabase migrations. No provider integration code (Meta/WhatsApp Business API client, webhook handler, template-message sender) exists in `backend/app`.
-Frontend: the only "whatsapp" references found are a WhatsApp **contact number field** on vendor/user records (`VendorDetailPanel.jsx`, `VendorsPage.jsx`, `UserModals.jsx`) and a manually-logged "channel" value in the Communication Hub (`CommunicationHubPage.jsx`) where a human logs that a WhatsApp conversation happened — this is a manual note-taking feature, not automated messaging.
-Testing: none (nothing to test).
+Backend:
+- `app/execution_models.py` (`OutboxEvent`) + `app/services/outbox.py` — every BR-015-mandated mutation point (status transition, verification, approval, blocker, delay, support assignment, role change, evidence submission, vendor assignment) writes a durable `outbox_events` row in the same DB transaction as the domain mutation, with a deterministic idempotency key. Instrumented across every Phase 1 mutation service plus this plan's `task_vendor_assignment.py`.
+- `app/services/message_dispatch.py` — `MessageDispatchService.process_pending()` resolves recipients from the event's aggregate plus current approved assignments (PM/Supervisor/vendor contact; `super_admin` is structurally never a queryable recipient role) and dispatches through a `WhatsAppProviderAdapter` interface. `SandboxProviderAdapter` simulates provider responses for testing — swapping in a real Meta/WABA client is a configuration change, not a schema change.
+- `app/routes/whatsapp_webhook_v2.py`, `app/services/inbound_message.py` — `POST /api/v2/whatsapp/inbound` verifies `X-Hub-Signature-256` (HMAC-SHA256, constant-time compare) before any parsing or matching. A verified sender phone matches against active employees (`user_profiles.phone_e164`) or vendor contacts (`vendor_contacts.phone_e164`/`whatsapp_e164`); zero or multiple matches is always logged `unmatched`, never auto-resolved. A matched, authorized command calls the identical Phase 1/U3 service a portal action would (`TaskLifecycleService.transition`, `VendorAcknowledgementService.record_acknowledgement`) — no parallel WhatsApp-only business logic exists.
+
+Frontend: none for U4-U6 by design (Scope Boundaries: no natural end-user screen — outcomes surface indirectly once a recipient acts on a message via U2/U3's UI). A dedicated Admin monitoring dashboard for failed sends/retry queues is a reasonable Phase 3 follow-up, not required here.
+
+Testing: `test_outbox_emission_v2.py` (parametrized across every mandatory event type), `test_message_delivery_dispatch_v2.py`, `test_inbound_message_matching_v2.py` — covering idempotency/duplicate-delivery safety, signature-verification rejection, ambiguous/offboarded-identity handling, and the "same service call a portal action uses" structural proof.
 
 ### 4. Gap Analysis
-Already working: capturing a WhatsApp contact number as a data field; manually logging that a WhatsApp interaction occurred.
-Partially working: nothing.
-Missing: everything described in BR-015 and PG-06 — automated outbound messages for any domain event, delivery tracking, retries, inbound command handling, vendor acknowledgement via WhatsApp. This entire capability does not exist in the codebase.
+Already working: the full outbox → delivery-tracking → inbound-matching *infrastructure*, exercisable end-to-end against the sandbox provider adapter, with idempotency and signature verification enforced as hard gates.
+Partially working: nothing — this plan's infrastructure scope (R6-R9) is complete.
+Missing: **live WhatsApp sending.** This was never an engineering deliverable for this plan (see Scope Boundaries) — it requires Meta/WABA business approval, approved message-template wording, and a recipient/consent matrix that Product/Ops must supply. The `WhatsAppProviderAdapter` interface is ready to receive a real client once that approval lands.
 
 ### 5. Architecture Alignment
-Conflicts with the PRD's stated core positioning ("WhatsApp-first platform," PG-06) — the current implementation is portal-only with a WhatsApp-adjacent contact field. This is the single largest gap between the PRD's product vision and the current codebase, though it is also explicitly the most infrastructure-heavy item (Section G of the architecture index lists Meta/WABA approval, template wording approval, and consent rules as prerequisites Product must supply before this can even start).
+Matches the data-model spec's outbox pattern (§1, §9) precisely: domain mutation and outbox insert share a transaction, delivery is fire-and-forget from the domain's perspective, and the provider is a swappable adapter rather than a hardcoded assumption. The PRD's "WhatsApp-first platform" positioning (PG-06) is now backed by real infrastructure — what remains is exclusively the external business-approval dependency, not an engineering gap.
 
 ### 6. Recommendation
-Defer for later release. This cannot realistically be started, let alone finished, before Monday — it requires external approvals (Meta Business/WABA access, approved message templates) that are outside engineering's control, per `00_ARCHITECTURE_PACKAGE_INDEX.md` §5.
+Coordinate with Product/Ops now on Meta/WABA business approval and template wording approval — this has its own external lead time independent of engineering readiness. Wiring a real provider client behind `WhatsAppProviderAdapter` once approval lands is a configuration-level follow-up, not a re-architecture.
 
 ### 7. Risk Level
-High if anyone expects to see it Tuesday; Low as a Monday engineering risk, because it should be explicitly excluded from this sprint's scope rather than attempted.
+Low as an engineering risk (infrastructure is built, tested, and demoable via the sandbox adapter); the remaining risk is entirely external-approval timeline, outside engineering's control.
 
 ---
 

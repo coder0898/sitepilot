@@ -1,7 +1,7 @@
 ---
 title: Control Layer — Vendor Integration and WhatsApp Infrastructure (Release 1, Phase 2)
 type: feat
-status: active
+status: completed
 date: 2026-08-02
 origin: docs/brainstorms/release-1-completion-requirements.md
 ---

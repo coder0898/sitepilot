@@ -9,6 +9,7 @@ import { TaskLifecycleStepper } from "./TaskLifecycleStepper";
 import { TaskProgressForm } from "./TaskProgressForm";
 import { TaskSupportAssignmentPanel } from "./TaskSupportAssignmentPanel";
 import { TaskTerminalSummary } from "./TaskTerminalSummary";
+import { TaskVendorDelegationForm } from "./TaskVendorDelegationForm";
 
 // U2: forward status-progression buttons, mirrored from
 // TaskLifecycleService.ALLOWED_TRANSITIONS on the backend. This is a UX
@@ -211,6 +212,13 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
           task is still in flight, not gated by task state or role - any
           active project member may log one. */}
       <TaskBlockerDelayPanel projectId={projectId} task={detail} onChanged={refreshAll}/>
+
+      {/* U2/U3: vendor delegation, acknowledgement, and activity/incident
+          capture - purely additive to the task, so shown alongside
+          blockers/support rather than gated by lifecycle_status or role
+          (TaskVendorDelegationForm itself only offers the delegate form to
+          a PM/Admin actor; the history is visible to any project member). */}
+      <TaskVendorDelegationForm projectId={projectId} task={detail} user={user} onChanged={refreshAll}/>
 
       <details className="group rounded-xl border border-slate-200 bg-white">
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-black uppercase tracking-wide text-slate-500">
