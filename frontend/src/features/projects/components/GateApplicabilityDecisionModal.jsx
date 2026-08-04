@@ -89,7 +89,7 @@ export function GateApplicabilityControls({ projectId, gate, onDecided, canDecid
           <p className="mt-1 text-xs leading-5 text-slate-600">The decision is project-specific, append-only in history, and does not change the source template.</p>
         </div>
         <Field label={decision === "not_applicable" ? "Reason (required)" : "Reason (optional)"} htmlFor="gate-decision-reason">
-          <Textarea id="gate-decision-reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={2000} required={decision === "not_applicable"} placeholder={decision === "not_applicable" ? "Explain why this gate does not apply" : "Optional confirmation note"}/>
+          <Textarea id="gate-decision-reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={2000} placeholder={decision === "not_applicable" ? "Explain why this gate does not apply" : "Optional confirmation note"}/>
         </Field>
         {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error}</div>}
         <div className="grid gap-2 sm:grid-cols-2">
