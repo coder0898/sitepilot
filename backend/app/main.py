@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_v2.router)
     app.include_router(execution_tasks_v2.router)
     app.include_router(project_vendors_v2.router)
+    app.include_router(project_vendors_v2.vendors_router)
     app.include_router(whatsapp_webhook_v2.router)
     app.include_router(dependencies_v2.router)
     app.include_router(templates_v2.router)

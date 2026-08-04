@@ -25,6 +25,37 @@ class ProjectVendorOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class V2VendorOut(BaseModel):
+    """Read surface for the vendor picker (ProjectVendorPanel) - an active
+    V2 vendor plus its capability category names, so the picker can show
+    what a vendor is qualified for before it's mapped to a project."""
+
+    id: uuid.UUID
+    name: str
+    engagement_type: str
+    parent_vendor_id: uuid.UUID | None
+    status: str
+    contact_person: str
+    phone: str
+    whatsapp: str | None
+    capability_categories: list[str] = Field(default_factory=list)
+
+
+class ProjectVendorMappingOut(BaseModel):
+    """Read surface for "list current mappings" (ProjectVendorPanel) and
+    the vendor picker inside TaskVendorDelegationForm, which must only
+    offer vendors already mapped to the project."""
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    vendor_id: uuid.UUID
+    vendor_name: str
+    engagement_type: str
+    parent_vendor_id: uuid.UUID | None
+    mapped_by: uuid.UUID
+    created_at: datetime
+
+
 class TaskVendorAssignmentIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vendor_id: uuid.UUID
@@ -88,3 +119,21 @@ class VendorActivityEventOut(BaseModel):
     evidence: list[VendorActivityEvidenceOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaskVendorAssignmentDetailOut(BaseModel):
+    """Read surface for TaskVendorDelegationForm/VendorAcknowledgementForm/
+    VendorActivityForm - a task's vendor assignment(s) plus their full
+    acknowledgement and activity history, so the UI can render current
+    state without re-deriving it from separate list calls."""
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    project_id: uuid.UUID
+    vendor_id: uuid.UUID
+    vendor_name: str
+    status: str
+    assigned_by: uuid.UUID
+    created_at: datetime
+    acknowledgements: list[VendorAcknowledgementOut] = Field(default_factory=list)
+    activity_events: list[VendorActivityEventOut] = Field(default_factory=list)

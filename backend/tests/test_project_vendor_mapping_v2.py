@@ -17,9 +17,10 @@ from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.routes.project_vendors_v2 import router as project_vendors_router
+from app.routes.project_vendors_v2 import vendors_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateVersion
-from app.vendor_models import ProjectVendor, V2Vendor
+from app.vendor_models import ProjectVendor, V2CapabilityCategory, V2Vendor, V2VendorCapability
 
 
 @compiles(JSONB, "sqlite")
@@ -64,6 +65,8 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2AuditEvent.__table__,
             V2Vendor.__table__,
+            V2CapabilityCategory.__table__,
+            V2VendorCapability.__table__,
             ProjectVendor.__table__,
         ):
             table.create(self.engine)
@@ -74,6 +77,7 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
         self.app = FastAPI()
         self.app.include_router(projects_router)
         self.app.include_router(project_vendors_router)
+        self.app.include_router(vendors_router)
 
         def override_db():
             with self.Session() as session:
@@ -162,6 +166,11 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
             self.inactive_vendor_id = inactive_vendor.id
             self.sub_vendor_id = sub_vendor.id
 
+            electrical = V2CapabilityCategory(name="Electrical")
+            session.add(electrical)
+            session.flush()
+            session.add(V2VendorCapability(vendor_id=main_vendor.id, category_id=electrical.id))
+
     def create_draft(self, **overrides):
         payload = {
             "project_name": "Futurex Fitout",
@@ -243,6 +252,49 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
         response = self.map_vendor(project["id"], self.main_vendor_id)
 
         self.assertEqual(response.status_code, 403, response.text)
+
+    # ---- read endpoints (frontend read surface) --------------------------
+
+    def test_list_vendors_returns_active_vendors_with_capabilities(self):
+        self.act_as_pm()
+
+        response = self.client.get("/api/v2/vendors")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        # `inactive_vendor` is excluded - only active vendors are listable.
+        ids = {row["id"] for row in body}
+        self.assertIn(str(self.main_vendor_id), ids)
+        self.assertIn(str(self.sub_vendor_id), ids)
+        self.assertNotIn(str(self.inactive_vendor_id), ids)
+        main_row = next(row for row in body if row["id"] == str(self.main_vendor_id))
+        self.assertEqual(main_row["capability_categories"], ["Electrical"])
+        sub_row = next(row for row in body if row["id"] == str(self.sub_vendor_id))
+        self.assertEqual(sub_row["capability_categories"], [])
+
+    def test_list_project_vendors_returns_only_this_projects_mappings(self):
+        project = self.create_draft()
+        other_project = self.create_draft(project_name="Other Project")
+        self.act_as_pm()
+        self.assertEqual(self.map_vendor(project["id"], self.main_vendor_id).status_code, 200)
+        self.assertEqual(self.map_vendor(other_project["id"], self.main_vendor_id).status_code, 200)
+
+        response = self.client.get(f"/api/v2/projects/{project['id']}/vendors")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["vendor_id"], str(self.main_vendor_id))
+        self.assertEqual(body[0]["vendor_name"], "Acme Electricals")
+
+    def test_list_project_vendors_empty_before_any_mapping(self):
+        project = self.create_draft()
+        self.act_as_pm()
+
+        response = self.client.get(f"/api/v2/projects/{project['id']}/vendors")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), [])
 
 
 if __name__ == "__main__":

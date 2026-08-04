@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, OutboxEvent, ProjectBaseline, Task, TaskDependency
+from app.execution_models import BaselineTask, FileObject, OutboxEvent, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -29,7 +29,16 @@ from app.project_models import (
 from app.routes.project_vendors_v2 import router as project_vendors_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
-from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2CapabilityCategory, V2Vendor, V2VendorCapability
+from app.vendor_models import (
+    ProjectVendor,
+    TaskVendorAssignment,
+    V2CapabilityCategory,
+    V2Vendor,
+    V2VendorCapability,
+    VendorAcknowledgement,
+    VendorActivityEvent,
+    VendorActivityEvidence,
+)
 
 
 @compiles(JSONB, "sqlite")
@@ -84,6 +93,10 @@ class TaskVendorAssignmentApiTests(unittest.TestCase):
             V2VendorCapability.__table__,
             ProjectVendor.__table__,
             TaskVendorAssignment.__table__,
+            VendorAcknowledgement.__table__,
+            FileObject.__table__,
+            VendorActivityEvent.__table__,
+            VendorActivityEvidence.__table__,
             OutboxEvent.__table__,
         ):
             table.create(self.engine)
@@ -343,6 +356,45 @@ class TaskVendorAssignmentApiTests(unittest.TestCase):
                         forbidden, imported,
                         f"{module.__name__} must not import {imported} (Phase 1 accountability path).",
                     )
+
+
+    # ---- read endpoint: list_task_vendor_assignments ---------------------
+
+    def test_list_task_vendor_assignments_reflects_assignment_and_acknowledgement(self):
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+        self.assertEqual(self.map_vendor(project["id"], self.vendor_electrical_id).status_code, 200)
+        assign_response = self.assign_vendor(project["id"], task.id, self.vendor_electrical_id)
+        self.assertEqual(assign_response.status_code, 200, assign_response.text)
+        assignment_id = assign_response.json()["id"]
+
+        self.act_as_pm()
+        ack_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{task.id}/vendor-assignment/{assignment_id}/acknowledge",
+            json={"response": "accepted"},
+        )
+        self.assertEqual(ack_response.status_code, 200, ack_response.text)
+
+        response = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/vendor-assignments")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["vendor_name"], "Electrical Co")
+        self.assertEqual(body[0]["status"], "acknowledged")
+        self.assertEqual(len(body[0]["acknowledgements"]), 1)
+        self.assertEqual(body[0]["acknowledgements"][0]["response"], "accepted")
+        self.assertEqual(body[0]["activity_events"], [])
+
+    def test_list_task_vendor_assignments_empty_before_any_assignment(self):
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+
+        self.act_as_pm()
+        response = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/vendor-assignments")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), [])
 
 
 if __name__ == "__main__":
