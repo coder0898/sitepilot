@@ -39,6 +39,19 @@ class V2VendorOut(BaseModel):
     phone: str
     whatsapp: str | None
     capability_categories: list[str] = Field(default_factory=list)
+    capability_category_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class CapabilityCategoryOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VendorCapabilitiesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class ProjectVendorMappingOut(BaseModel):

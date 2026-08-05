@@ -5,6 +5,8 @@ import { api, fetchBinary } from "./client";
 // since these endpoints live under a separate backend router.
 export const vendorAssignmentApi = {
   listVendors: () => api("/api/v2/vendors"),
+  listCapabilityCategories: () => api("/api/v2/vendors/capability-categories"),
+  setVendorCapabilities: (vendorId, categoryIds) => api(`/api/v2/vendors/${vendorId}/capabilities`, { method: "POST", body: JSON.stringify({ category_ids: categoryIds }) }),
   listProjectVendors: projectId => api(`/api/v2/projects/${projectId}/vendors`),
   mapVendor: (projectId, payload) => api(`/api/v2/projects/${projectId}/vendors`, { method: "POST", body: JSON.stringify(payload) }),
   listTaskVendorAssignments: (projectId, taskId) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/vendor-assignments`),

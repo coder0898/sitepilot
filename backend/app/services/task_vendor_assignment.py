@@ -76,19 +76,34 @@ class TaskVendorAssignmentService:
     # ---- capability matching -------------------------------------------
 
     def _vendor_matches_task_category(self, vendor_id: uuid.UUID, task: Task) -> bool:
-        """R3/plan Approach: a null `Task.category` carries no capability
+        """R3/plan Approach: a null `Task.phase` carries no capability
         requirement, so any mapped vendor may be assigned. Otherwise the
         vendor must hold a `V2VendorCapability` whose category `name`
-        case-insensitively equals the task's category."""
-        category = (task.category or "").strip()
-        if not category:
+        case-insensitively equals the task's PHASE (not its finer-grained
+        `category`).
+
+        Matching against `phase` rather than `category` is deliberate: a
+        vendor's capability categories are a small set of broad trade
+        buckets (the same vocabulary `_ensure_phase_categories` in
+        project_vendors_v2.py seeds from template phases - "Partitions",
+        "Electrical", "Glass", etc.), while `Task.category` is a much finer
+        breakdown within a phase (e.g. "Gypsum", "Interior", "Supports" are
+        all `category` values under the "Partitions" phase). Matching on
+        `category` would require a vendor capability literally named
+        "Gypsum" to exist, which no vendor taxonomy in this system defines -
+        every delegation would 422 regardless of how a vendor's
+        capabilities were set. Phase is the granularity vendor capabilities
+        are actually scoped at.
+        """
+        phase = (task.phase or "").strip()
+        if not phase:
             return True
         match = self.db.scalar(
             select(V2VendorCapability.id)
             .join(V2CapabilityCategory, V2VendorCapability.category_id == V2CapabilityCategory.id)
             .where(
                 V2VendorCapability.vendor_id == vendor_id,
-                func.lower(V2CapabilityCategory.name) == category.lower(),
+                func.lower(V2CapabilityCategory.name) == phase.lower(),
             )
         )
         return match is not None
@@ -118,7 +133,8 @@ class TaskVendorAssignmentService:
             raise HTTPException(422, "This vendor is not mapped to this project.")
 
         if not self._vendor_matches_task_category(vendor.id, task):
-            raise HTTPException(422, "This vendor's capabilities do not match the task's category.")
+            phase_label = (task.phase or "").strip() or "this task's phase"
+            raise HTTPException(422, f"This vendor's trade phase does not cover \"{phase_label}\".")
 
         assignment = TaskVendorAssignment(
             task_id=task.id,

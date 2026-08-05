@@ -183,7 +183,7 @@ class VendorActivityApiTests(unittest.TestCase):
                 template_version_id=published.id, code="T001", sequence_no=1, title="Task T001",
                 schedule_classification="execution", planned_start_day=1, planned_end_day=1,
                 applicability="mandatory", task_class="standard", task_kind="work",
-                evidence_required=False, duration_days=1, phase="Setup", category="Electrical",
+                evidence_required=False, duration_days=1, phase="Electrical", category="Wiring",
             ))
             session.flush()
             self.published_version_id = published.id

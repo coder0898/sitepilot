@@ -20,13 +20,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import current_user
+from app.auth import current_user, require_roles
 from app.config import settings
 from app.database import get_db
 from app.execution_models import FileObject, Task
-from app.models import User
+from app.models import User, UserRole
 from app.routes.projects_v2 import get_project
 from app.schemas.vendor_assignment import (
+    CapabilityCategoryOut,
     ProjectVendorMapIn,
     ProjectVendorMappingOut,
     ProjectVendorOut,
@@ -38,11 +39,13 @@ from app.schemas.vendor_assignment import (
     VendorAcknowledgementOut,
     VendorActivityEventOut,
     VendorActivityEvidenceOut,
+    VendorCapabilitiesIn,
 )
 from app.services.project_vendor import ProjectVendorService
 from app.services.task_vendor_assignment import TaskVendorAssignmentService
 from app.services.vendor_acknowledgement import VendorAcknowledgementService
 from app.services.vendor_activity import VendorActivityService
+from app.template_models import V2TemplateTask, V2TemplateVersion
 from app.vendor_models import (
     ProjectVendor,
     TaskVendorAssignment,
@@ -90,6 +93,102 @@ def _activity_event_out(db: Session, event) -> VendorActivityEventOut:
     )
 
 
+def _ensure_phase_categories(db: Session) -> None:
+    """Idempotently creates a `V2CapabilityCategory` for every distinct,
+    non-null phase used by a published template's tasks (case-insensitive
+    dedupe against categories that already exist - including ones left
+    over from the one-time vendor import, which creates a category per
+    LEGACY vendor.category string and so may not use the same casing/name
+    as a template phase). Mirrors the auto-seed pattern already used for
+    the legacy Vendor Hub (communication.py's get_hub()), applied to the
+    V2 side: vendor capabilities are matched against task PHASE (see
+    TaskVendorAssignmentService._vendor_matches_task_category), so the
+    category picker a PM uses to set a vendor's capabilities must offer
+    the same vocabulary that matching actually checks against - otherwise
+    an Admin has no way to create a vendor capability that could ever
+    match a real task."""
+    phases = [
+        phase for (phase,) in db.execute(
+            select(V2TemplateTask.phase)
+            .join(V2TemplateVersion, V2TemplateTask.template_version_id == V2TemplateVersion.id)
+            .where(V2TemplateVersion.status == "published", V2TemplateTask.phase.is_not(None))
+            .distinct()
+        ).all()
+        if phase and phase.strip()
+    ]
+    if not phases:
+        return
+    existing_by_lower = {
+        name.lower(): True for (name,) in db.execute(select(V2CapabilityCategory.name)).all()
+    }
+    for phase in phases:
+        clean_phase = phase.strip()
+        if clean_phase.lower() in existing_by_lower:
+            continue
+        db.add(V2CapabilityCategory(name=clean_phase))
+        existing_by_lower[clean_phase.lower()] = True
+    db.commit()
+
+
+@vendors_router.get("/capability-categories", response_model=list[CapabilityCategoryOut])
+def list_capability_categories(
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Full capability-category vocabulary a vendor can be assigned into -
+    auto-seeded from published templates' task phases (see
+    `_ensure_phase_categories`) so it always matches what delegation's
+    phase-matching check actually looks for."""
+    _ensure_phase_categories(db)
+    categories = db.scalars(select(V2CapabilityCategory).order_by(V2CapabilityCategory.name)).all()
+    return [CapabilityCategoryOut.model_validate(category) for category in categories]
+
+
+@vendors_router.post("/{vendor_id}/capabilities", response_model=V2VendorOut)
+def set_vendor_capabilities(
+    vendor_id: uuid.UUID,
+    payload: VendorCapabilitiesIn,
+    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin, UserRole.project_manager)),
+    db: Session = Depends(get_db),
+):
+    """Replaces a V2 vendor's full capability set. This is the only write
+    path for `V2VendorCapability` outside the one-time legacy import - a
+    vendor's capabilities were previously frozen at whatever the import
+    produced, with no way to correct or update them (editing a vendor
+    through the legacy Vendor Hub only touches the legacy `VendorCategory`
+    table, which this route and delegation's matching check never read)."""
+    vendor = db.get(V2Vendor, vendor_id)
+    if not vendor:
+        raise HTTPException(404, "Vendor not found.")
+    category_ids = set(payload.category_ids)
+    if category_ids:
+        valid_ids = set(db.scalars(
+            select(V2CapabilityCategory.id).where(V2CapabilityCategory.id.in_(category_ids))
+        ).all())
+        if valid_ids != category_ids:
+            raise HTTPException(422, "One or more capability categories are invalid.")
+    db.execute(V2VendorCapability.__table__.delete().where(V2VendorCapability.vendor_id == vendor.id))
+    for category_id in category_ids:
+        db.add(V2VendorCapability(vendor_id=vendor.id, category_id=category_id))
+    db.commit()
+
+    category_names = db.scalars(
+        select(V2CapabilityCategory.name).where(V2CapabilityCategory.id.in_(category_ids))
+    ).all() if category_ids else []
+    return V2VendorOut(
+        id=vendor.id,
+        name=vendor.name,
+        engagement_type=vendor.engagement_type,
+        parent_vendor_id=vendor.parent_vendor_id,
+        status=vendor.status,
+        contact_person=vendor.contact_person,
+        phone=vendor.phone,
+        whatsapp=vendor.whatsapp,
+        capability_categories=sorted(category_names),
+        capability_category_ids=sorted(category_ids),
+    )
+
+
 @vendors_router.get("", response_model=list[V2VendorOut])
 def list_vendors(
     actor: User = Depends(current_user),
@@ -104,13 +203,15 @@ def list_vendors(
     if not vendors:
         return []
     category_rows = db.execute(
-        select(V2VendorCapability.vendor_id, V2CapabilityCategory.name)
+        select(V2VendorCapability.vendor_id, V2CapabilityCategory.id, V2CapabilityCategory.name)
         .join(V2CapabilityCategory, V2VendorCapability.category_id == V2CapabilityCategory.id)
         .where(V2VendorCapability.vendor_id.in_([vendor.id for vendor in vendors]))
     ).all()
     categories_by_vendor: dict[uuid.UUID, list[str]] = {}
-    for vendor_id, category_name in category_rows:
+    category_ids_by_vendor: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for vendor_id, category_id, category_name in category_rows:
         categories_by_vendor.setdefault(vendor_id, []).append(category_name)
+        category_ids_by_vendor.setdefault(vendor_id, []).append(category_id)
     return [
         V2VendorOut(
             id=vendor.id,
@@ -122,6 +223,7 @@ def list_vendors(
             phone=vendor.phone,
             whatsapp=vendor.whatsapp,
             capability_categories=categories_by_vendor.get(vendor.id, []),
+            capability_category_ids=category_ids_by_vendor.get(vendor.id, []),
         )
         for vendor in vendors
     ]

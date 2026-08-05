@@ -225,7 +225,7 @@ class OutboxEmissionApiTests(unittest.TestCase):
                     template_version_id=published.id, code=code, sequence_no=i, title=f"Task {code}",
                     schedule_classification="execution", planned_start_day=i, planned_end_day=i,
                     applicability="mandatory", task_class=klass, task_kind=kind,
-                    evidence_required=False, duration_days=1, phase="Setup", category=category,
+                    evidence_required=False, duration_days=1, phase="Electrical", category=category,
                 ))
             session.flush()
             self.published_version_id = published.id
