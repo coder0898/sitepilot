@@ -47,6 +47,17 @@ export function ExecutionPage({ user }) {
     let active = true;
     setDetailLoading(true);
     setError("");
+    if (user.role === "internal_employee") {
+      // executionTasks/dependencies/externalGates are whole-project
+      // baselines, not scoped to this actor - TaskExecutionBoard below
+      // already fetches their own (server-filtered) task list directly, so
+      // there's nothing project-wide for this role to load here.
+      setView(null);
+      setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
+      setExternalGates([]);
+      setDetailLoading(false);
+      return () => { active = false; };
+    }
     Promise.all([projectsApi.executionTasks(projectId), projectsApi.dependencies(projectId), projectsApi.externalGates(projectId)])
       .then(([tasksResponse, dependenciesResponse, gatesResponse]) => {
         if (!active) return;
@@ -63,15 +74,17 @@ export function ExecutionPage({ user }) {
       })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [projectId]);
+  }, [projectId, user.role]);
+
+  const selectedProject = projects.find(project => project.id === projectId);
 
   return (
     <section className="grid gap-5">
       <header className="flex flex-col gap-4 rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_16px_50px_rgba(15,23,42,.06)] sm:p-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.2em] text-blue-700"><CalendarCheck size={15}/> Active project task view</div>
-          <h2 className="mt-2 text-2xl font-black tracking-[-.035em] text-slate-950 sm:text-3xl">{view?.project_name || "Select an active project"}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Track and drive task execution for this activated project: status updates, evidence, verification/approval, blockers/delays and support assignment.</p>
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.2em] text-blue-700"><CalendarCheck size={15}/> {user.role === "internal_employee" ? "Your assigned tasks" : "Active project task view"}</div>
+          <h2 className="mt-2 text-2xl font-black tracking-[-.035em] text-slate-950 sm:text-3xl">{view?.project_name || selectedProject?.name || "Select an active project"}</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{user.role === "internal_employee" ? "Only tasks you're actively assigned to support appear here - update their status, log progress and upload evidence." : "Track and drive task execution for this activated project: status updates, evidence, verification/approval, blockers/delays and support assignment."}</p>
         </div>
         <label className="grid min-w-[240px] gap-2 text-sm font-bold text-slate-700">
           <span>Active project</span>
@@ -88,16 +101,24 @@ export function ExecutionPage({ user }) {
         <EmptyState icon={<FolderKanban size={21}/>} title="No activated projects yet" description="A task baseline appears here once Admin activates a project from its draft setup."/>
       ) : detailLoading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-8"><LoadingSpinner label="Loading task baseline..."/></div>
-      ) : view ? (
+      ) : (view || (user.role === "internal_employee" && selectedProject)) ? (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {/* Total/included/excluded/dependency counts are whole-project
+              planning figures, not scoped to this actor - only rendered
+              when `view` (the whole-project baseline fetch, skipped
+              entirely for internal_employee above) actually loaded. */}
+          {view && <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Metric icon={<ClipboardList/>} label="Total tasks" value={view.total_tasks} helper={`${view.included_task_count} included in plan`} tone="blue"/>
             <Metric icon={<ListChecks/>} label="Included tasks" value={view.included_task_count} helper="Part of the active plan" tone="green"/>
             <Metric icon={<Layers/>} label="Excluded tasks" value={view.excluded_task_count} helper="Marked not applicable" tone="orange"/>
             <Metric icon={<GitBranch/>} label="Dependencies" value={dependencies.total || 0} helper={dependencies.excluded_warning_count ? `${dependencies.excluded_warning_count} reference excluded tasks` : "Blocking sequence"} tone="violet"/>
-          </div>
+          </div>}
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-2">
+          {/* An Internal Employee only ever sees their own assigned tasks
+              here (server-filtered - see list_project_tasks) - Dependencies
+              and External Approvals are whole-project planning views with
+              nothing "assigned" about them, so they're not offered. */}
+          {user.role !== "internal_employee" && <div className="rounded-2xl border border-slate-200 bg-white p-2">
             <div className="flex flex-wrap gap-2">
               {[
                 ["tasks", "Tasks", ClipboardList],
@@ -109,7 +130,7 @@ export function ExecutionPage({ user }) {
                 </button>
               ))}
             </div>
-          </div>
+          </div>}
 
           {activeTab === "tasks" && <>
           <div className="rounded-2xl border border-slate-200 bg-white p-3">

@@ -281,6 +281,7 @@ class TaskDependencyRefOut(BaseModel):
 
 class TaskVerificationSummaryOut(BaseModel):
     id: uuid.UUID
+    submission_update_id: uuid.UUID
     decision: str
     remarks: str | None
     verified_by: uuid.UUID

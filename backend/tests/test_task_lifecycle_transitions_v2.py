@@ -271,6 +271,9 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
         self.assertEqual(r2.status_code, 200, r2.text)
         self.assertEqual(r2.json()["lifecycle_status"], "in_progress")
 
+        progress = self.submit_progress(project["id"], t001.id)
+        self.assertEqual(progress.status_code, 200, progress.text)
+
         r3 = self.transition(project["id"], t001.id, "submitted", reason="Work done, submitting.")
         self.assertEqual(r3.status_code, 200, r3.text)
         self.assertEqual(r3.json()["lifecycle_status"], "submitted")
@@ -283,6 +286,67 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             ).all()
             self.assertEqual(len(events), 3)
             self.assertTrue(all(e.action == "TASK_STATUS_CHANGED" for e in events))
+
+    def test_submitting_a_work_task_without_a_logged_progress_update_is_rejected(self):
+        # Regression test: a Supervisor self-executing a task (no Internal
+        # Employee assigned) could previously click straight through
+        # ready -> in_progress -> submitted without ever logging a progress
+        # update, stranding the task at `submitted` with no valid Verify or
+        # Reject path out (both require a TaskProgressUpdate to act on).
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "ready", reason="Ready to start.")
+        self.transition(project["id"], t001.id, "in_progress", reason="Crew on site.")
+
+        response = self.transition(project["id"], t001.id, "submitted", reason="Skipping progress log.")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("progress update", response.text)
+
+        with self.Session() as session:
+            refreshed = session.get(Task, t001.id)
+            self.assertEqual(refreshed.lifecycle_status, "in_progress")
+
+    def test_resubmitting_after_rejection_without_a_new_progress_update_is_rejected(self):
+        # Regression test: after a rejection reopens the task to
+        # `in_progress`, its one existing TaskProgressUpdate is already
+        # "spent" (a TaskVerification row now references it as the rejected
+        # submission). Submit for review must not be immediately clickable
+        # again on that same, already-decided evidence - it needs a fresh
+        # progress update logged for the new work cycle.
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t001 = tasks["T001"]
+
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "ready", reason="Ready to start.")
+        self.transition(project["id"], t001.id, "in_progress", reason="Crew on site.")
+
+        first_progress = self.submit_progress(project["id"], t001.id, note="Initial attempt.")
+        self.assertEqual(first_progress.status_code, 200, first_progress.text)
+
+        submitted = self.transition(project["id"], t001.id, "submitted", reason="Submitting for review.")
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+
+        rejected = self.verify(project["id"], t001.id, decision="rejected", remarks="Needs correction.")
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["task"]["lifecycle_status"], "in_progress")
+
+        # No new progress update logged - resubmitting on the same, already-
+        # rejected evidence must be blocked.
+        stale_resubmit = self.transition(project["id"], t001.id, "submitted", reason="Resubmitting without changes.")
+        self.assertEqual(stale_resubmit.status_code, 409, stale_resubmit.text)
+        self.assertIn("new progress update", stale_resubmit.text)
+
+        # Logging a genuinely new progress update unblocks it.
+        second_progress = self.submit_progress(project["id"], t001.id, note="Corrected per feedback.")
+        self.assertEqual(second_progress.status_code, 200, second_progress.text)
+
+        fresh_resubmit = self.transition(project["id"], t001.id, "submitted", reason="Resubmitting with correction.")
+        self.assertEqual(fresh_resubmit.status_code, 200, fresh_resubmit.text)
+        self.assertEqual(fresh_resubmit.json()["lifecycle_status"], "submitted")
 
     # ---- milestone auto-completion --------------------------------------
 

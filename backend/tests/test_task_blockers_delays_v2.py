@@ -26,6 +26,7 @@ from app.execution_models import (
     TaskEvidence,
     TaskProgressUpdate,
     TaskSupportAssignment,
+    TaskVerification,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
@@ -96,6 +97,7 @@ class TaskBlockersDelaysApiTests(unittest.TestCase):
             TaskProgressUpdate.__table__,
             FileObject.__table__,
             TaskEvidence.__table__,
+            TaskVerification.__table__,
             TaskBlocker.__table__,
             TaskDelayEvent.__table__,
             OutboxEvent.__table__,
@@ -381,6 +383,10 @@ class TaskBlockersDelaysApiTests(unittest.TestCase):
         # And the task remains free to keep transitioning forward - blocker/
         # delay presence never gated the lifecycle machine.
         self.act_as_supervisor()
+        progress_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{task.id}/progress", data={"note": "Work done despite open blocker."},
+        )
+        self.assertEqual(progress_response.status_code, 200, progress_response.text)
         r = self.transition(project["id"], task.id, "submitted", reason="Work submitted despite open blocker.")
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["lifecycle_status"], "submitted")

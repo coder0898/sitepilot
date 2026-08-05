@@ -28,7 +28,7 @@ from app.execution_models import (
     TaskSupportAssignment,
     TaskVerification,
 )
-from app.models import EmployeeProfile, User
+from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent
 from app.routes.projects_v2 import get_project
 from app.schemas.execution_tasks import (
@@ -76,11 +76,25 @@ def list_project_tasks(
     counterpart to the planning-time `GET /{project_id}/execution-tasks`
     placeholder. Returns `tasks` rows (not `V2ProjectTask`), with each
     row's live lifecycle_status plus small summary counts a board list
-    needs without fetching every task's full detail."""
+    needs without fetching every task's full detail.
+
+    An Internal Employee only sees tasks they're actively support-assigned
+    to on this project - "delegated task support" (their own role
+    description) means exactly the tasks delegated to them, not every task
+    in a project they happen to be a member of. Every other role (Admin,
+    PM, Supervisor) keeps the full unfiltered project view they already had."""
     project = get_project(db, project_id, actor)
-    tasks = list(db.scalars(
-        select(Task).where(Task.project_id == project.id).order_by(Task.template_sequence.asc())
-    ).all())
+    tasks_query = select(Task).where(Task.project_id == project.id).order_by(Task.template_sequence.asc())
+    if actor.role == UserRole.internal_employee:
+        actor_employee_id = db.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == actor.id))
+        assigned_task_ids = select(TaskSupportAssignment.task_id).where(
+            TaskSupportAssignment.project_id == project.id,
+            TaskSupportAssignment.employee_id == actor_employee_id,
+            TaskSupportAssignment.status == "active",
+            TaskSupportAssignment.ends_at.is_(None),
+        )
+        tasks_query = tasks_query.where(Task.id.in_(assigned_task_ids))
+    tasks = list(db.scalars(tasks_query).all())
 
     open_blocker_counts: dict[uuid.UUID, int] = {}
     for task_id, count in db.execute(
@@ -201,6 +215,12 @@ def get_project_task(
         s.employee_id == actor_employee_id and s.status == "active" and s.ends_at is None
         for s in support_assignments
     )
+    # Mirrors list_project_tasks' own filter: an Internal Employee reaching
+    # a task ID directly (not through their own filtered list) must not see
+    # a task they're not actively assigned to - the list filter alone would
+    # only be a UI convenience, not real access control, without this.
+    if actor.role == UserRole.internal_employee and not actor_is_assigned_support:
+        raise HTTPException(403, "You can only view tasks you are actively assigned to support.")
 
     actor_names = _resolve_actor_names(
         db,
@@ -234,7 +254,7 @@ def get_project_task(
         progress_updates=[_progress_update_out(db, update) for update in progress_updates],
         verifications=[
             TaskVerificationSummaryOut(
-                id=v.id, decision=v.decision, remarks=v.remarks,
+                id=v.id, submission_update_id=v.submission_update_id, decision=v.decision, remarks=v.remarks,
                 verified_by=v.verified_by, verified_by_name=actor_names.get(v.verified_by),
                 verified_at=v.verified_at,
             )

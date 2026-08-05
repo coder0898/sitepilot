@@ -46,6 +46,12 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
 
     if user.role in {UserRole.super_admin, UserRole.admin, UserRole.project_manager, UserRole.supervisor}:
         modules = ["projects", "execution", "communication", "users"]
+    elif user.role == UserRole.internal_employee:
+        # Execution is scoped server-side (list_project_tasks/get_project_task
+        # in execution_tasks_v2.py) to only this actor's actively assigned
+        # tasks - granting the module here is safe because the underlying
+        # data is already filtered, not just the nav entry.
+        modules = ["projects", "execution", "users"]
     else:
         modules = ["projects", "users"]
 

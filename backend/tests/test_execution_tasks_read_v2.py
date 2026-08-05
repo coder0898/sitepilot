@@ -293,6 +293,11 @@ class ExecutionTasksReadApiTests(unittest.TestCase):
         self.assertEqual(body["progress_updates"][0]["note"], "Work completed, ready for review.")
         self.assertEqual(len(body["verifications"]), 1)
         self.assertEqual(body["verifications"][0]["decision"], "verified")
+        # The frontend relies on this to tell an already-decided progress
+        # update apart from a fresh one (TaskExecutionBoard's
+        # needsFreshProgressUpdate) - it must name the actual update decided
+        # on, not just be present.
+        self.assertEqual(body["verifications"][0]["submission_update_id"], body["progress_updates"][0]["id"])
         self.assertEqual(body["blockers"], [])
         self.assertEqual(body["support_assignments"], [])
         # T001 is standard work: verification only, no PM approval, and it

@@ -56,6 +56,26 @@ function forwardTargetsFor(detail, user) {
   });
 }
 
+// Mirrors task_lifecycle.py's own "submitted" precondition exactly: a
+// progress update counts as "spent" once some TaskVerification decision
+// names it as `submission_update_id`. Submission needs at least one
+// progress update that isn't in that consumed set. This used to be
+// approximated by comparing counts (fewer updates than decisions -> none
+// left unconsumed), which breaks the moment the SAME update gets decided on
+// more than once - real, observed data: a task rejected twice in a row
+// before this fix existed left 2 TaskVerification rows pointing at the
+// SAME 1 progress update, so "updates <= verifications" (1 <= 2) wrongly
+// stayed true forever even after a genuinely new update was logged.
+// Comparing the actual id set removes that whole class of mismatch.
+function needsFreshProgressUpdate(detail) {
+  const isWorkKind = detail.task_kind !== "milestone" && detail.task_kind !== "approval_gate";
+  if (!isWorkKind) return false;
+  const updates = detail.progress_updates || [];
+  if (!updates.length) return true;
+  const consumedIds = new Set((detail.verifications || []).map(v => v.submission_update_id));
+  return updates.every(u => consumedIds.has(u.id));
+}
+
 function plannedDayLabel(task) {
   if (!task.planned_start_day) return "Pre-activation";
   if (task.planned_end_day && task.planned_end_day !== task.planned_start_day) return `Day ${task.planned_start_day}-${task.planned_end_day}`;
@@ -182,8 +202,12 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
       {(forwardTargets.length > 0 || showCancel) && <section className="rounded-xl border border-blue-200 bg-blue-50 p-4">
         <h4 className="text-xs font-black uppercase tracking-wide text-blue-700">Status</h4>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          {forwardTargets.map(target => <Button key={target} size="sm" loading={transitioning === target} onClick={() => transition(target)}>{TRANSITION_LABEL[target] || target}</Button>)}
+          {forwardTargets.map(target => {
+            const needsProgress = target === "submitted" && needsFreshProgressUpdate(detail);
+            return <Button key={target} size="sm" loading={transitioning === target} disabled={needsProgress} title={needsProgress ? "Log a new progress update below first." : undefined} onClick={() => transition(target)}>{TRANSITION_LABEL[target] || target}</Button>;
+          })}
         </div>
+        {forwardTargets.includes("submitted") && needsFreshProgressUpdate(detail) && <p className="mt-2 text-xs font-bold text-blue-800">Log a new progress update (a note and/or evidence) below before submitting for review.</p>}
         {showCancel && <div className="mt-3 border-t border-blue-100 pt-3"><CancelControl projectId={projectId} task={detail} onChanged={refreshAll}/></div>}
       </section>}
 
@@ -269,7 +293,7 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
 
   if (loading) return <div className="rounded-2xl border border-slate-200 bg-white p-8"><LoadingSpinner label="Loading task execution board..."/></div>;
   if (error) return <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5"><p className="text-sm font-bold text-rose-700">{error}</p><Button className="mt-3" variant="secondary" size="sm" onClick={load}><RefreshCw size={15}/> Retry</Button></div>;
-  if (!filtered.length) return <EmptyState icon={<ClipboardList size={21}/>} title={tasks.length ? "No tasks match this search" : "No execution tasks yet"} description={tasks.length ? "Try a different search term." : "This project's baseline has no tasks to execute."}/>;
+  if (!filtered.length) return <EmptyState icon={<ClipboardList size={21}/>} title={tasks.length ? "No tasks match this search" : "No execution tasks yet"} description={tasks.length ? "Try a different search term." : user?.role === "internal_employee" ? "No task is currently assigned to you on this project." : "This project's baseline has no tasks to execute."}/>;
 
   return <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="Task execution board">
     {filtered.map(task => {

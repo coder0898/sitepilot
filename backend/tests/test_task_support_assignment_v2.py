@@ -21,10 +21,14 @@ from app.execution_models import (
     ProjectBaseline,
     SupportAssignmentChange,
     Task,
+    TaskApprovalDecision,
+    TaskBlocker,
+    TaskDelayEvent,
     TaskDependency,
     TaskEvidence,
     TaskProgressUpdate,
     TaskSupportAssignment,
+    TaskVerification,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
@@ -97,6 +101,10 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             TaskProgressUpdate.__table__,
             FileObject.__table__,
             TaskEvidence.__table__,
+            TaskVerification.__table__,
+            TaskApprovalDecision.__table__,
+            TaskBlocker.__table__,
+            TaskDelayEvent.__table__,
             TaskSupportAssignment.__table__,
             SupportAssignmentChange.__table__,
             OutboxEvent.__table__,
@@ -420,6 +428,10 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         self.act_as_internal()
         started = self.transition(project["id"], t001.id, "in_progress")
         self.assertEqual(started.status_code, 200, started.text)
+        progress = self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{t001.id}/progress", data={"note": "Work done."},
+        )
+        self.assertEqual(progress.status_code, 200, progress.text)
         submitted = self.transition(project["id"], t001.id, "submitted")
         self.assertEqual(submitted.status_code, 200, submitted.text)
         self.assertEqual(submitted.json()["lifecycle_status"], "submitted")
@@ -468,6 +480,10 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         self.assertEqual(ready.status_code, 200, ready.text)
         started = self.transition(project["id"], t001.id, "in_progress")
         self.assertEqual(started.status_code, 200, started.text)
+        progress = self.client.post(
+            f"/api/v2/projects/{project['id']}/tasks/{t001.id}/progress", data={"note": "Work done."},
+        )
+        self.assertEqual(progress.status_code, 200, progress.text)
         submitted = self.transition(project["id"], t001.id, "submitted")
         self.assertEqual(submitted.status_code, 200, submitted.text)
 
@@ -485,6 +501,83 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         self.act_as_internal()
         blocked = self.transition(project["id"], t001.id, "in_progress")
         self.assertEqual(blocked.status_code, 403, blocked.text)
+
+    # ---- Internal Employee visibility is scoped to their own assignments -
+
+    def test_internal_employee_task_list_only_shows_actively_assigned_tasks(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        t002 = self.task_by_code(project["id"], "T002")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], t001.id, internal_employee_id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        self.act_as_internal()
+        response = self.client.get(f"/api/v2/projects/{project['id']}/tasks")
+        self.assertEqual(response.status_code, 200, response.text)
+        codes = [item["original_code"] for item in response.json()]
+        self.assertEqual(codes, ["T001"])
+        self.assertNotIn(t002.original_code, codes)
+
+        # Every other role keeps the full, unfiltered project task list.
+        self.act_as_supervisor()
+        full_list = self.client.get(f"/api/v2/projects/{project['id']}/tasks")
+        self.assertEqual(sorted(item["original_code"] for item in full_list.json()), ["T001", "T002"])
+
+    def test_internal_employee_with_no_assignment_sees_an_empty_task_list(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+
+        self.act_as_internal()
+        response = self.client.get(f"/api/v2/projects/{project['id']}/tasks")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), [])
+
+    def test_internal_employee_cannot_open_detail_of_an_unassigned_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_internal()
+        response = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t001.id}")
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_internal_employee_can_open_detail_of_their_own_assigned_task(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], t001.id, internal_employee_id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        self.act_as_internal()
+        response = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t001.id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["original_code"], "T001")
+
+    def test_internal_employee_loses_task_visibility_once_their_support_assignment_ends(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        internal_employee_id = self.employee_id_for(INTERNAL_ID)
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], t001.id, internal_employee_id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        assignment_id = assigned.json()["id"]
+        ended = self.end_support(project["id"], t001.id, assignment_id)
+        self.assertEqual(ended.status_code, 200, ended.text)
+
+        self.act_as_internal()
+        list_response = self.client.get(f"/api/v2/projects/{project['id']}/tasks")
+        self.assertEqual(list_response.json(), [])
+        detail_response = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t001.id}")
+        self.assertEqual(detail_response.status_code, 403, detail_response.text)
 
 
 if __name__ == "__main__":

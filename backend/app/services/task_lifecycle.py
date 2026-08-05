@@ -22,6 +22,7 @@ from app.execution_models import (
     TASK_LIFECYCLE_STATUSES,
     Task,
     TaskDependency,
+    TaskProgressUpdate,
     TaskSupportAssignment,
     TaskVerification,
     is_work_task_kind,
@@ -365,6 +366,49 @@ class TaskLifecycleService:
                 raise HTTPException(
                     409,
                     "One or more blocking predecessor tasks are not yet satisfied.",
+                )
+
+        if target_status == "submitted" and is_work_task_kind(task.task_kind):
+            # U4's TaskVerificationService.verify() requires a
+            # TaskProgressUpdate to record its decision against
+            # (`submission_update_id`), and every verify()/reject() call
+            # names exactly which update it decided on. So "can this task be
+            # submitted" comes down to: does at least one of its progress
+            # updates NOT yet have a TaskVerification decision recorded
+            # against it?
+            #
+            # - No progress update at all -> nothing for Verify/Reject to
+            #   act on -> the task would strand at `submitted` with no valid
+            #   way out (the original bug: a Supervisor self-executing, no
+            #   Internal Employee assigned, clicking straight through the
+            #   forward-transition buttons without ever opening Log
+            #   Progress).
+            # - Every existing progress update already has a
+            #   TaskVerification decision against it (typically: the one
+            #   update that was rejected) -> resubmitting now would silently
+            #   re-send that SAME already-decided evidence for another
+            #   decision, with nothing new logged.
+            #
+            # Deliberately an existence check, not "pick the most recent
+            # update and check it" - `created_at` timestamps are not
+            # guaranteed unique at sub-second resolution (notably under this
+            # codebase's SQLite test harness), so sorting to find "the
+            # latest" and checking only that one can pick the wrong row on a
+            # tie. An existence check has no such ordering dependency: it's
+            # correct the moment ANY unconsumed update exists, regardless of
+            # which one a timestamp sort would call "latest".
+            consumed_update_ids = select(TaskVerification.submission_update_id).where(
+                TaskVerification.task_id == task.id
+            )
+            has_unreviewed_progress_update = self.db.scalar(
+                select(TaskProgressUpdate.id)
+                .where(TaskProgressUpdate.task_id == task.id, TaskProgressUpdate.id.not_in(consumed_update_ids))
+                .limit(1)
+            ) is not None
+            if not has_unreviewed_progress_update:
+                raise HTTPException(
+                    409,
+                    "Log a new progress update (a note and/or evidence) before submitting this task for review.",
                 )
 
         before_status = current_status

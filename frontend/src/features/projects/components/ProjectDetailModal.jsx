@@ -31,6 +31,81 @@ function Overview({ project }) {
   </div>;
 }
 
+// Mirrors set_membership's own `allowed` computation (backend/app/routes/
+// projects_v2.py) exactly: Admin can assign any role; a PM can assign
+// Supervisor/Internal Employee; a Supervisor can assign Internal Employee
+// only. Project-specific (is this actor the PM/Supervisor *of this
+// project*), not the actor's global role - same distinction the backend
+// itself draws.
+const TEAM_ROLE_OPTIONS = [
+  { value: "project_manager", label: "Project Manager", referenceKey: "project_managers" },
+  { value: "site_supervisor", label: "Site Supervisor", referenceKey: "supervisors" },
+  { value: "internal_employee", label: "Internal Employee", referenceKey: "internal_employees" },
+];
+
+function AddTeamMemberForm({ project, user, references, onChanged }) {
+  const isAdmin = user.role === "admin" || user.role === "super_admin";
+  const isPmOnProject = project.memberships?.some(m => m.project_role === "project_manager" && m.user_id === user.id);
+  const isSupervisorOnProject = project.memberships?.some(m => m.project_role === "site_supervisor" && m.user_id === user.id);
+  const assignableRoles = TEAM_ROLE_OPTIONS.filter(option => {
+    if (option.value === "project_manager") return isAdmin;
+    if (option.value === "site_supervisor") return isAdmin || isPmOnProject;
+    return isAdmin || isPmOnProject || isSupervisorOnProject;
+  });
+
+  const [role, setRole] = useState(assignableRoles[0]?.value || "");
+  const [employeeId, setEmployeeId] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [error, setError] = useState(null);
+
+  if (!assignableRoles.length || project.status === "completed" || project.status === "archived") return null;
+
+  const candidates = references[TEAM_ROLE_OPTIONS.find(option => option.value === role)?.referenceKey] || [];
+
+  async function submit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await projectsApi.setMembership(project.id, { employee_id: employeeId, project_role: role, reason });
+      setNotice(result.status ? "Replacement request submitted - pending approval." : "Added to the project team.");
+      setEmployeeId("");
+      setReason("");
+      await onChanged();
+    } catch (caught) {
+      setError(caught?.message || "Could not add this team member.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <section className="rounded-2xl border bg-white p-4">
+    <h3 className="font-black">Add team member</h3>
+    <form onSubmit={submit} className="mt-3 grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+      <Field label="Role">
+        <Select value={role} onChange={event => { setRole(event.target.value); setEmployeeId(""); }}>
+          {assignableRoles.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </Select>
+      </Field>
+      <Field label="Person">
+        <Select value={employeeId} onChange={event => setEmployeeId(event.target.value)} required>
+          <option value="">{candidates.length ? "Select person" : "No eligible active users"}</option>
+          {candidates.map(candidate => <option key={candidate.employee_id} value={candidate.employee_id}>{candidate.name} - {candidate.designation}</option>)}
+        </Select>
+      </Field>
+      <Field label="Reason">
+        <Input value={reason} onChange={event => setReason(event.target.value)} minLength={4} required placeholder="Why is this person joining the team?"/>
+      </Field>
+      <Button type="submit" loading={saving} disabled={!employeeId}>Add</Button>
+    </form>
+    {notice && <p className="mt-3 text-sm font-bold text-emerald-700">{notice}</p>}
+    {error && <p className="mt-3 text-sm font-bold text-rose-700">{error}</p>}
+  </section>;
+}
+
 function Team({ project, references, user, onChanged }) {
   const [replaceRole, setReplaceRole] = useState(null);
   const pm = project.memberships?.find(m => m.project_role === "project_manager");
@@ -60,6 +135,8 @@ function Team({ project, references, user, onChanged }) {
         <div key={m.id} className="rounded-xl border p-3">{m.name} - {roleLabel[m.project_role]}</div>
       )}</div>
     </section>
+
+    <AddTeamMemberForm project={project} user={user} references={references} onChanged={onChanged}/>
 
     <PendingRoleChangesPanel projectId={project.id} user={user} onChanged={onChanged}/>
 
