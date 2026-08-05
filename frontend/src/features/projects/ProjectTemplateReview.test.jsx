@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
 import { ProjectTemplateReview } from "./components/ProjectTemplateReview";
@@ -138,7 +138,7 @@ describe("Project template review", () => {
   it("uses responsive task rows and hides Template Review navigation from field-only roles", async () => {
     render(<ProjectTemplateReview projectId="p1" user={{ role: "project_manager" }} debounceMs={0}/>);
     expect((await screen.findAllByTestId("review-task"))[0]).toHaveClass("lg:grid-cols-[76px_minmax(0,1fr)_104px_100px_104px_minmax(220px,auto)]");
-    document.body.innerHTML = "";
+    cleanup();
     projectsApi.detail.mockResolvedValue({ id: "p1", code: "P1", name: "Project", client_name: "Client", site_address: "Site", start_date: "2026-08-01", target_handover_date: null, template_version_id: "v1", status: "draft", memberships: [], setup: { has_project_manager: true, has_site_supervisor: true, has_template: true, has_target_handover_date: false, activation_ready: false } });
     projectsApi.activity.mockResolvedValue([]);
     render(<ProjectDetailModal projectId="p1" references={{ project_managers: [], supervisors: [], internal_employees: [] }} user={{ role: "supervisor", id: "s1" }} templates={[]} onClose={vi.fn()} onEdit={vi.fn()} onChanged={vi.fn()} onDeleted={vi.fn()}/>);

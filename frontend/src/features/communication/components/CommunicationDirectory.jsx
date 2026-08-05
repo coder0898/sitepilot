@@ -47,7 +47,7 @@ function SectionHeading({ icon: Icon, eyebrow, title, text }) {
   return <header className="col-span-full flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-slate-950 text-white"><Icon size={18}/></span><div><p className="text-[11px] font-black uppercase tracking-[0.18em] text-blue-700">{eyebrow}</p><h3 className="mt-1 text-lg font-black text-slate-950">{title}</h3>{text && <p className="mt-1 text-sm leading-6 text-slate-500">{text}</p>}</div></header>;
 }
 
-function VendorForm({ vendor, categories, fixedMainVendor, includeContact, submitLabel, onSubmit }) {
+function VendorForm({ formId, vendor, categories, fixedMainVendor, includeContact, onSubmit }) {
   const [selectedCategories, setSelectedCategories] = useState(vendor?.category_ids || []);
   const [categoryError, setCategoryError] = useState("");
 
@@ -61,7 +61,7 @@ function VendorForm({ vendor, categories, fixedMainVendor, includeContact, submi
     onSubmit(event);
   }
 
-  return <form className="grid grid-cols-2 gap-5 max-[720px]:grid-cols-1" onSubmit={submit}>
+  return <form id={formId} className="grid grid-cols-2 gap-5 max-[720px]:grid-cols-1" onSubmit={submit}>
     {fixedMainVendor && <div className="col-span-full flex items-center gap-4 rounded-2xl border border-blue-200 bg-blue-50 p-4"><span className="grid size-11 place-items-center rounded-xl bg-blue-700 text-white"><Building2 size={20}/></span><div><span className="text-[11px] font-black uppercase tracking-[0.16em] text-blue-700">Approved parent vendor</span><strong className="mt-1 block text-slate-950">{fixedMainVendor.name}</strong></div><ShieldCheck className="ml-auto text-blue-700"/><input type="hidden" name="main_contractor_id" value={fixedMainVendor.id}/></div>}
 
     <section className="col-span-full grid grid-cols-2 gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 max-[720px]:grid-cols-1">
@@ -88,14 +88,18 @@ function VendorForm({ vendor, categories, fixedMainVendor, includeContact, submi
       <label className="col-span-full grid gap-2 text-sm font-black text-slate-700 max-[720px]:col-span-1">Internal notes<textarea className={`${inputClass} min-h-24 resize-y`} name="notes" defaultValue={vendor?.notes || ""} placeholder="Scope, working preferences, important context…"/></label>
     </section>
 
-    <div className="sticky bottom-0 col-span-full -mx-6 -mb-6 flex justify-end border-t border-slate-200 bg-white/95 px-6 py-4 backdrop-blur max-[720px]:mx-0 max-[720px]:mb-0"><button className="min-h-12 rounded-xl bg-blue-700 px-6 font-black text-white shadow-[0_10px_24px_rgba(29,78,216,0.22)] transition hover:bg-blue-800">{submitLabel}</button></div>
   </form>;
 }
 
+const submitButtonClass = "min-h-12 rounded-xl bg-blue-700 px-6 font-black text-white shadow-[0_10px_24px_rgba(29,78,216,0.22)] transition hover:bg-blue-800";
+
 export function CompanyModal({ title, categories, fixedMainContractor, onClose, onSubmit }) {
-  return <Modal className="max-w-5xl" title={title} subtitle={fixedMainContractor ? "Create a sub-vendor inside the approved parent relationship." : "Create a structured vendor profile for project and task assignment."} onClose={onClose}><VendorForm categories={categories} fixedMainVendor={fixedMainContractor} includeContact submitLabel={fixedMainContractor ? "Create sub-vendor" : "Create main vendor"} onSubmit={onSubmit}/></Modal>;
+  const formId = "vendor-company-form";
+  const submitLabel = fixedMainContractor ? "Create sub-vendor" : "Create main vendor";
+  return <Modal className="max-w-5xl" title={title} subtitle={fixedMainContractor ? "Create a sub-vendor inside the approved parent relationship." : "Create a structured vendor profile for project and task assignment."} onClose={onClose} footer={<div className="flex justify-end"><button type="submit" form={formId} className={submitButtonClass}>{submitLabel}</button></div>}><VendorForm formId={formId} categories={categories} fixedMainVendor={fixedMainContractor} includeContact onSubmit={onSubmit}/></Modal>;
 }
 
 export function ProfileModal({ vendor, categories, onClose, onSubmit }) {
-  return <Modal className="max-w-5xl" title={`Edit ${vendor.name}`} subtitle="Update company details, categories and assignment availability." onClose={onClose}><VendorForm vendor={vendor} categories={categories} submitLabel="Save vendor changes" onSubmit={onSubmit}/></Modal>;
+  const formId = "vendor-profile-form";
+  return <Modal className="max-w-5xl" title={`Edit ${vendor.name}`} subtitle="Update company details, categories and assignment availability." onClose={onClose} footer={<div className="flex justify-end"><button type="submit" form={formId} className={submitButtonClass}>Save vendor changes</button></div>}><VendorForm formId={formId} vendor={vendor} categories={categories} onSubmit={onSubmit}/></Modal>;
 }

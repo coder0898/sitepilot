@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { templatesApi } from "../../api/templatesApi";
 import { TemplateDraftEditorEntry } from "./components/TemplateDraftEditorEntry";
@@ -112,7 +112,7 @@ describe("draft dependency authoring",()=>{
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("button",{name:/add relationship/i})).not.toBeInTheDocument();
 
-    document.body.innerHTML="";
+    cleanup();
     templatesApi.getVersion.mockResolvedValue(summary);
     view("admin");
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();

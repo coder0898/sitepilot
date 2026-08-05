@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { templatesApi } from "../../api/templatesApi";
 import { TemplateDraftEditorEntry } from "./components/TemplateDraftEditorEntry";
@@ -97,7 +97,7 @@ describe("template validation and publication", () => {
   it("keeps controls mobile-friendly and unavailable to non-Super-Admin roles", async () => {
     view(); await openValidation();
     expect(screen.getByRole("button", { name:/validate draft/i })).toHaveClass("w-full");
-    document.body.innerHTML = "";
+    cleanup();
     view({ role:"admin" });
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name:/validate draft/i })).not.toBeInTheDocument();
