@@ -9,3 +9,6 @@ npm-debug.log*
 **/.env
 **/.env.*
 !**/.env.example
+
+# Internal planning/reference docs — not part of the shipped repo
+docs/
