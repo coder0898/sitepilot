@@ -24,3 +24,4 @@ backend/evidence_storage/
 
 # Internal planning/reference docs — not part of the shipped repo
 docs/
+todo.md
