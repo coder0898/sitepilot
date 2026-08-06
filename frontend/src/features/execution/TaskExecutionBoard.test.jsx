@@ -137,6 +137,27 @@ describe("TaskExecutionBoard", () => {
     expect(screen.queryByText("Log progress")).not.toBeInTheDocument();
   });
 
+  it("hides the progress form from the Supervisor once an Internal Employee is assigned and actively executing", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail, lifecycle_status: "in_progress", actor_is_assigned_support: false,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "e1", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u1", created_at: "2026-08-01T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    await screen.findByText("Set up the site office and hoarding.");
+    expect(screen.queryByText("Log progress")).not.toBeInTheDocument();
+  });
+
+  it("shows the progress form to the assigned Internal Employee", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail, lifecycle_status: "in_progress", actor_is_assigned_support: true,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "e1", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u1", created_at: "2026-08-01T00:00:00Z" }],
+    });
+    render(<TaskExecutionBoard projectId="p1" user={{ role: "internal_employee" }}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+    expect(await screen.findByText("Log progress")).toBeInTheDocument();
+  });
+
   it("mounts the decision controls for a role that can drive transitions", async () => {
     taskExecutionApi.detail.mockResolvedValue({ ...detail, task_kind: "work", task_class: "standard", lifecycle_status: "submitted" });
     render(<TaskExecutionBoard projectId="p1" user={{ role: "supervisor" }}/>);

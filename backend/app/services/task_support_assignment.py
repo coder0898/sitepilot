@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.execution_models import SupportAssignmentChange, Task, TaskSupportAssignment
+from app.execution_models import SupportAssignmentChange, Task, TaskSupportAssignment, is_work_task_kind
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
@@ -76,18 +76,29 @@ class TaskSupportAssignmentService:
         """BR-005: Supervisor controls support for `work` tasks; PM
         controls follow-up support for `approval_gate` tasks. Milestones
         have no support-assignment concept (no work is performed on a
-        system-derived milestone)."""
+        system-derived milestone).
+
+        Checked via `is_work_task_kind()`, not a bare `== "work"` comparison
+        - `task_kind` is nullable (a task whose template row never had a
+        kind assigned), and every other consumer of this field
+        (TaskLifecycleService, TaskVerificationService, the approval-metadata
+        projection) already treats a null kind as ordinary work. A literal
+        equality check here would silently exclude every unclassified task
+        from support assignment, which is not "not applicable" - it's the
+        same work task everything else in the system already lets a
+        Supervisor delegate.
+        """
         if actor.role in (UserRole.super_admin, UserRole.admin):
             return
         roles = self._actor_project_roles(project.id, actor)
-        if task.task_kind == "work":
-            if "site_supervisor" in roles:
-                return
-            raise HTTPException(403, "Only the project's Supervisor, or an Admin, can assign task support for work tasks.")
         if task.task_kind == "approval_gate":
             if "project_manager" in roles:
                 return
             raise HTTPException(403, "Only the project's PM, or an Admin, can assign follow-up support for approval gates.")
+        if is_work_task_kind(task.task_kind):
+            if "site_supervisor" in roles:
+                return
+            raise HTTPException(403, "Only the project's Supervisor, or an Admin, can assign task support for work tasks.")
         raise HTTPException(409, "Support assignment is not applicable to this task kind.")
 
     def _require_active_internal_employee(self, project_id: uuid.UUID, employee_id: uuid.UUID) -> EmployeeProfile:

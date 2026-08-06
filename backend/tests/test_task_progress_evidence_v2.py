@@ -27,6 +27,7 @@ from app.execution_models import (
     TaskDependency,
     TaskEvidence,
     TaskProgressUpdate,
+    TaskSupportAssignment,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
@@ -51,6 +52,7 @@ ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
+INTERNAL_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
 
 TINY_PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -103,6 +105,7 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            TaskSupportAssignment.__table__,
             TaskProgressUpdate.__table__,
             FileObject.__table__,
             TaskEvidence.__table__,
@@ -152,6 +155,12 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             role=UserRole.supervisor, active=True,
         ))
 
+    def act_as_internal_employee(self) -> None:
+        self.act_as(User(
+            id=INTERNAL_ID, name="Internal", email="internal@example.com",
+            role=UserRole.internal_employee, active=True,
+        ))
+
     # ---- seeding -------------------------------------------------------
 
     def _seed(self):
@@ -169,7 +178,11 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
                 id=OUTSIDER_ID, name="Outsider", email="outsider@example.com",
                 role=UserRole.supervisor, active=True,
             )
-            session.add_all([admin, pm, supervisor, outsider])
+            internal = User(
+                id=INTERNAL_ID, name="Internal", email="internal@example.com",
+                role=UserRole.internal_employee, active=True,
+            )
+            session.add_all([admin, pm, supervisor, outsider, internal])
             session.flush()
             session.add_all([
                 EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
@@ -178,6 +191,9 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
                 ),
                 EmployeeProfile(
                     user_id=OUTSIDER_ID, employee_code="OUT-001", designation="Supervisor", availability="available",
+                ),
+                EmployeeProfile(
+                    user_id=INTERNAL_ID, employee_code="INT-001", designation="Internal Employee", availability="available",
                 ),
             ])
             template = V2Template(code="WORKVED-45", name="Workved 45 Day")
@@ -232,6 +248,31 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             return session.scalar(
                 select(Task).where(Task.project_id == uuid.UUID(project_id), Task.original_code == "T001")
             )
+
+    @property
+    def internal_employee_id(self) -> uuid.UUID:
+        with self.Session() as session:
+            return session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == INTERNAL_ID))
+
+    def add_internal_member(self, project_id: str) -> None:
+        previous_actor = self._current_actor
+        self.act_as(User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True))
+        response = self.client.post(
+            f"/api/v2/projects/{project_id}/memberships",
+            json={
+                "employee_id": str(self.internal_employee_id),
+                "project_role": "internal_employee",
+                "reason": "Add support staff.",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self._current_actor = previous_actor
+
+    def assign_support(self, project_id: str, task_id):
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/tasks/{task_id}/support-assignments",
+            json={"employee_id": str(self.internal_employee_id), "responsibility": "Execution."},
+        )
 
     def submit_progress(self, project_id: str, task_id, note=None, status_claim=None, files=None):
         data = {}
@@ -327,6 +368,86 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
         self.act_as_supervisor()
         response = self.submit_progress(project["id"], task.id)
         self.assertEqual(response.status_code, 422, response.text)
+
+    # ---- permission: assigned Internal Employee owns progress logging -----
+
+    def test_supervisor_cannot_log_progress_once_an_internal_employee_is_assigned(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        self.add_internal_member(project["id"])
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], task.id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        response = self.submit_progress(project["id"], task.id, note="Supervisor trying to log on their behalf.")
+        self.assertEqual(response.status_code, 403, response.text)
+
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(TaskProgressUpdate).limit(1)), None)
+
+    def test_assigned_internal_employee_can_log_progress(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        self.add_internal_member(project["id"])
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], task.id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        self.act_as_internal_employee()
+        response = self.submit_progress(project["id"], task.id, note="Formwork complete.")
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_unassigned_internal_employee_cannot_log_progress_on_a_task_assigned_to_someone_else(self):
+        # A second Internal Employee, project member but never
+        # support-assigned to THIS task, must not be able to log progress
+        # on it - only the assigned one may, per _require_progress_actor.
+        other_id = uuid.uuid4()
+        with self.Session.begin() as session:
+            other = User(
+                id=other_id, name="Other Internal", email="other-internal@example.com",
+                role=UserRole.internal_employee, active=True,
+            )
+            session.add(other)
+            session.flush()
+            session.add(EmployeeProfile(
+                user_id=other_id, employee_code="INT-002", designation="Internal Employee", availability="available",
+            ))
+
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        self.add_internal_member(project["id"])
+
+        self.act_as(User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True))
+        with self.Session() as session:
+            other_employee_id = session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == other_id))
+        membership = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships",
+            json={"employee_id": str(other_employee_id), "project_role": "internal_employee", "reason": "Add second employee."},
+        )
+        self.assertEqual(membership.status_code, 200, membership.text)
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], task.id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        self.act_as(User(id=other_id, name="Other Internal", email="other-internal@example.com", role=UserRole.internal_employee, active=True))
+        response = self.submit_progress(project["id"], task.id, note="Not my task.")
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_admin_can_log_progress_even_with_an_assigned_internal_employee(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        self.add_internal_member(project["id"])
+
+        self.act_as_supervisor()
+        assigned = self.assign_support(project["id"], task.id)
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+
+        self.act_as_admin()
+        response = self.submit_progress(project["id"], task.id, note="Admin override.")
+        self.assertEqual(response.status_code, 200, response.text)
 
     # ---- error path: no active project membership -------------------------
 

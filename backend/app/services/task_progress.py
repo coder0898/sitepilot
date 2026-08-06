@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.execution_models import FileObject, Task, TaskEvidence, TaskProgressUpdate
+from app.execution_models import FileObject, Task, TaskEvidence, TaskProgressUpdate, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
@@ -78,6 +78,42 @@ class TaskProgressService:
             raise HTTPException(404, "Task not found.")
         return task
 
+    def _actor_employee_id(self, actor: User) -> uuid.UUID | None:
+        employee = self.db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == actor.id))
+        return employee.id if employee else None
+
+    def _active_internal_employee_assignee_ids(self, task_id: uuid.UUID) -> set[uuid.UUID]:
+        return set(self.db.scalars(
+            select(TaskSupportAssignment.employee_id).where(
+                TaskSupportAssignment.task_id == task_id,
+                TaskSupportAssignment.status == "active",
+                TaskSupportAssignment.ends_at.is_(None),
+            )
+        ))
+
+    # Mirrors TaskLifecycleService._require_role_for_transition's
+    # executor-driven branch: once an Internal Employee is actively
+    # support-assigned to a task, logging progress on it (the evidence a
+    # later `submitted` transition references) is their job alone - a
+    # Supervisor/PM must not silently narrate the work on their behalf.
+    # With no assignee yet, Supervisor/PM keep the self-execute fallback.
+    def _require_progress_actor(self, project: V2Project, task: Task, actor: User) -> None:
+        if actor.role in (UserRole.super_admin, UserRole.admin):
+            return
+        assignee_ids = self._active_internal_employee_assignee_ids(task.id)
+        if assignee_ids:
+            if self._actor_employee_id(actor) in assignee_ids:
+                return
+            raise HTTPException(
+                403,
+                "An Internal Employee is assigned to this task; only they can log progress. "
+                "End their support assignment to change who executes it.",
+            )
+        roles = self._actor_project_roles(project.id, actor)
+        if "site_supervisor" in roles or "project_manager" in roles:
+            return
+        raise HTTPException(403, "Only the assigned Internal Employee, the project's Supervisor, PM, or an Admin can log progress on this task.")
+
     # ---- submit -----------------------------------------------------------
 
     def submit_progress(
@@ -94,6 +130,7 @@ class TaskProgressService:
     ) -> TaskProgressUpdate:
         project = self._require_access(project_id, actor)
         task = self._get_task(project.id, task_id)
+        self._require_progress_actor(project, task, actor)
 
         clean_note = (note or "").strip() or None
         clean_status_claim = (status_claim or "").strip() or None

@@ -131,6 +131,17 @@ class TaskLifecycleService:
                     "An Internal Employee is assigned to this task; only they can start or submit it. "
                     "End their support assignment to change who executes it.",
                 )
+            # Approval-gate work has no Supervisor/PM self-execute fallback:
+            # unlike ordinary work, a PM can't just do the task themselves
+            # when nobody's assigned - an Internal Employee must be
+            # delegated first. The PM still retains the actual approval
+            # decision either way (TaskApprovalService); this only removes
+            # the shortcut around who performs the underlying work.
+            if task.task_kind == "approval_gate":
+                raise HTTPException(
+                    409,
+                    "This is an approval-gate task; assign it to an Internal Employee before work can start.",
+                )
             if "site_supervisor" in roles or "project_manager" in roles:
                 return
             raise HTTPException(403, "Only the project's Supervisor, PM, or an Admin can make this task transition.")

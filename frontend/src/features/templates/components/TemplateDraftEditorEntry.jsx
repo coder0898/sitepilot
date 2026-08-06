@@ -45,25 +45,26 @@ async function loadEveryTask(versionId) {
   return [first, ...pages].flatMap(page => page.items);
 }
 
-function TaskRow({ task, index, count, onEdit, onDelete, onMove }) {
+function TaskRow({ task, index, count, disableMove, onEdit, onDelete, onMove }) {
+  const isGate = task.task_kind === "approval_gate";
   return <article data-testid={"draft-task-" + task.code} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_28px_rgba(15,23,42,.05)]">
     <div className="flex items-start gap-3">
       <span className="mt-0.5 hidden text-slate-300 sm:block"><GripVertical size={18}/></span>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{task.code}</span><Pill tone={task.applicability === "conditional" ? "orange" : "blue"}>{task.applicability}</Pill><span className="text-xs font-bold text-slate-400">Sequence {index + 1}</span></div>
+        <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{task.code}</span><Pill tone={task.applicability === "conditional" ? "orange" : "blue"}>{task.applicability}</Pill><Pill tone={isGate ? "violet" : "gray"}>{isGate ? "External approval gate" : "Standard work"}</Pill><span className="text-xs font-bold text-slate-400">Sequence {index + 1}</span></div>
         <h3 className="mt-2 text-sm font-black leading-5 text-slate-950">{task.title}</h3>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-slate-500"><span>{formatPlannedDays(task)}</span><span>{task.phase || "No phase"}</span><span>{task.category || "No category"}</span></div>
       </div>
       <div className="hidden items-center gap-1 sm:flex">
-        <Button size="icon" variant="ghost" aria-label={"Move " + task.code + " up"} disabled={index===0} onClick={() => onMove(index,-1)}><ArrowUp size={16}/></Button>
-        <Button size="icon" variant="ghost" aria-label={"Move " + task.code + " down"} disabled={index===count-1} onClick={() => onMove(index,1)}><ArrowDown size={16}/></Button>
+        <Button size="icon" variant="ghost" aria-label={"Move " + task.code + " up"} disabled={disableMove || index===0} onClick={() => onMove(index,-1)}><ArrowUp size={16}/></Button>
+        <Button size="icon" variant="ghost" aria-label={"Move " + task.code + " down"} disabled={disableMove || index===count-1} onClick={() => onMove(index,1)}><ArrowDown size={16}/></Button>
         <Button size="icon" variant="secondary" aria-label={"Edit " + task.code} onClick={() => onEdit(task)}><PencilLine size={16}/></Button>
         <Button size="icon" variant="danger" aria-label={"Delete " + task.code} onClick={() => onDelete(task)}><Trash2 size={16}/></Button>
       </div>
     </div>
     <div className="mt-4 grid grid-cols-4 gap-2 border-t border-slate-100 pt-3 sm:hidden">
-      <Button size="sm" variant="ghost" aria-label={"Move " + task.code + " up"} disabled={index===0} onClick={() => onMove(index,-1)}><ArrowUp size={15}/></Button>
-      <Button size="sm" variant="ghost" aria-label={"Move " + task.code + " down"} disabled={index===count-1} onClick={() => onMove(index,1)}><ArrowDown size={15}/></Button>
+      <Button size="sm" variant="ghost" aria-label={"Move " + task.code + " up"} disabled={disableMove || index===0} onClick={() => onMove(index,-1)}><ArrowUp size={15}/></Button>
+      <Button size="sm" variant="ghost" aria-label={"Move " + task.code + " down"} disabled={disableMove || index===count-1} onClick={() => onMove(index,1)}><ArrowDown size={15}/></Button>
       <Button size="sm" variant="secondary" aria-label={"Edit " + task.code} onClick={() => onEdit(task)}><PencilLine size={15}/></Button>
       <Button size="sm" variant="danger" aria-label={"Delete " + task.code} onClick={() => onDelete(task)}><Trash2 size={15}/></Button>
     </div>
@@ -128,6 +129,7 @@ function DeleteGateModal({gate,busy,error,onClose,onConfirm}){return <Modal titl
 export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack, onPublished }) {
   const [summary, setSummary] = useState(initialSummary);
   const [activeEditorTab, setActiveEditorTab] = useState("tasks");
+  const [taskKindFilter, setTaskKindFilter] = useState("all");
   const [tasks, setTasks] = useState([]);
   const [dependencies, setDependencies] = useState([]);
   const [gates, setGates] = useState([]);
@@ -156,6 +158,10 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   const editable = user?.role === "super_admin" && summary?.status === "draft";
   const reorderDirty = useMemo(() => tasks.map(task => task.id).join("|") !== savedOrder.join("|"), [savedOrder,tasks]);
   const dirty = formDirty || reorderDirty;
+  const gateTaskCount = useMemo(() => tasks.filter(task => task.task_kind === "approval_gate").length, [tasks]);
+  const standardTaskCount = tasks.length - gateTaskCount;
+  const visibleTasks = useMemo(() => taskKindFilter === "all" ? tasks
+    : tasks.filter(task => (task.task_kind === "approval_gate") === (taskKindFilter === "approval_gate")), [tasks,taskKindFilter]);
 
   const refresh = useCallback(() => {
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
@@ -299,7 +305,13 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     {activeEditorTab === "tasks" ? <>
       <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><BookOpenCheck className="mt-0.5 shrink-0 text-amber-700" size={19}/><div><strong className="text-amber-950">Tasks · Draft authoring</strong><p className="mt-1 text-xs font-semibold leading-5 text-amber-800">Create, edit and order this working copy. Dependencies and gate references are never removed automatically.</p></div></div><Button className="w-full sm:w-auto" onClick={openAdd}><Plus size={17}/> Add task</Button></div>
       {mutationError && <Alert tone="danger" role="alert" className="items-center"><div><strong>Draft update failed</strong><span className="mt-1 block">{apiMessage(mutationError)}</span></div><Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={15}/> Refresh draft</Button></Alert>}
-      {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading draft tasks..."/></div> : loadError ? <Alert tone="danger" className="items-center"><div><strong>Draft tasks unavailable</strong><span className="mt-1 block">{apiMessage(loadError)}</span></div><Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={15}/> Retry</Button></Alert> : tasks.length===0 ? <EmptyState className="min-h-64 bg-white" title="This draft has no tasks" description="Add the first controlled task to begin authoring." action={<Button onClick={openAdd}><Plus size={16}/> Add first task</Button>}/> : <div className="grid gap-3">{tasks.map((task,index)=><TaskRow key={task.id} task={task} index={index} count={tasks.length} onEdit={openEdit} onDelete={task=>{setDeleteTask(task);setDeleteError(null);}} onMove={move}/>)}</div>}
+      {tasks.length > 0 && <div className="grid grid-cols-1 gap-2 rounded-2xl border border-slate-200 bg-white p-2 sm:grid-cols-3" role="tablist" aria-label="Filter tasks by kind">
+        <Button variant={taskKindFilter === "all" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("all")}>All ({tasks.length})</Button>
+        <Button variant={taskKindFilter === "work" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("work")}>Standard work ({standardTaskCount})</Button>
+        <Button variant={taskKindFilter === "approval_gate" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("approval_gate")}>External approval gate ({gateTaskCount})</Button>
+      </div>}
+      {tasks.length > 0 && taskKindFilter !== "all" && <p className="text-xs font-semibold text-slate-500">Reordering is only available from the "All" tab, since sequence spans both kinds.</p>}
+      {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading draft tasks..."/></div> : loadError ? <Alert tone="danger" className="items-center"><div><strong>Draft tasks unavailable</strong><span className="mt-1 block">{apiMessage(loadError)}</span></div><Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={15}/> Retry</Button></Alert> : tasks.length===0 ? <EmptyState className="min-h-64 bg-white" title="This draft has no tasks" description="Add the first controlled task to begin authoring." action={<Button onClick={openAdd}><Plus size={16}/> Add first task</Button>}/> : visibleTasks.length===0 ? <EmptyState className="min-h-64 bg-white" title="No tasks of this kind yet" description="Switch tabs or add a task and set its kind."/> : <div className="grid gap-3">{visibleTasks.map(task=>{const index=tasks.indexOf(task);return <TaskRow key={task.id} task={task} index={index} count={tasks.length} disableMove={taskKindFilter !== "all"} onEdit={openEdit} onDelete={task=>{setDeleteTask(task);setDeleteError(null);}} onMove={move}/>;})}</div>}
       {!loading && tasks.length>0 && <footer className="sticky bottom-3 z-10 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-[0_18px_50px_rgba(15,23,42,.16)] backdrop-blur sm:flex-row sm:items-center sm:justify-between"><div className="px-1"><strong className="text-sm text-slate-950">{tasks.length} draft task{tasks.length===1?"":"s"}</strong><p className="mt-0.5 text-xs font-semibold text-slate-500">{reorderDirty ? "Order changed — save to create a new revision." : "Sequence is saved."}</p></div><div className="grid grid-cols-2 gap-2"><Button variant="secondary" disabled={!reorderDirty||savingOrder} onClick={()=>{const restored=savedOrder.map(id=>tasks.find(task=>task.id===id)).filter(Boolean);setTasks(restored);}}>Cancel order</Button><Button loading={savingOrder} disabled={!reorderDirty} onClick={saveOrder}><Save size={16}/> Save order</Button></div></footer>}
     </> : activeEditorTab === "dependencies" ? <>
       <div className="flex flex-col gap-3 rounded-2xl border border-cyan-200 bg-cyan-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><GitBranch className="mt-0.5 shrink-0 text-cyan-700" size={19}/><div><strong className="text-cyan-950">Dependencies · Draft authoring</strong><p className="mt-1 text-xs font-semibold leading-5 text-cyan-800">Add explicit task relationships. Cycles and duplicate relationships are rejected by the backend.</p></div></div><Button className="w-full sm:w-auto" onClick={openAddDependency} disabled={tasks.length < 2}><Plus size={17}/> Add relationship</Button></div>

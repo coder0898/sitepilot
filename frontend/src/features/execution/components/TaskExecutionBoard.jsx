@@ -41,18 +41,30 @@ function canCancel(user) {
 // Internal Employee once one is actively support-assigned to the task - a
 // Supervisor/PM must not silently take over execution from them. Everything
 // else (`ready`, reopening choices, decisions) stays Supervisor/PM/Admin.
-function forwardTargetsFor(detail, user) {
-  const targets = FORWARD_TRANSITIONS[detail.lifecycle_status] || [];
-  if (!targets.length) return [];
+// Shared with the "Log progress" form below: whoever may drive
+// start/submit is exactly who may log the progress evidence those
+// transitions consume, per task_lifecycle.py/task_progress.py's identical
+// executor-driven check.
+function canExecute(detail, user) {
   const hasAssignedEmployee = (detail.support_assignments || []).some(a => a.status === "active");
   const isAssignedActor = user?.role === "internal_employee" && detail.actor_is_assigned_support;
   const isAdmin = user?.role === "admin" || user?.role === "super_admin";
   const isSupervisorOrPm = user?.role === "supervisor" || user?.role === "project_manager";
+  if (isAdmin) return true;
+  if (hasAssignedEmployee) return isAssignedActor;
+  return isSupervisorOrPm;
+}
+
+function forwardTargetsFor(detail, user) {
+  const targets = FORWARD_TRANSITIONS[detail.lifecycle_status] || [];
+  if (!targets.length) return [];
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const isSupervisorOrPm = user?.role === "supervisor" || user?.role === "project_manager";
+  const canExec = canExecute(detail, user);
 
   return targets.filter(target => {
     if (!EXECUTOR_TARGETS.includes(target)) return isSupervisorOrPm || isAdmin;
-    if (hasAssignedEmployee) return isAssignedActor || isAdmin;
-    return isSupervisorOrPm || isAdmin;
+    return canExec;
   });
 }
 
@@ -213,7 +225,7 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
 
       <TaskDecisionModal projectId={projectId} task={detail} user={user} onDecided={refreshAll}/>
 
-      {detail.lifecycle_status === "in_progress" && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
+      {detail.lifecycle_status === "in_progress" && canExecute(detail, user) && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
 
       {detail.progress_updates.length > 0 && <section className="rounded-xl border border-slate-200 bg-white p-4">
         <h4 className="text-xs font-black uppercase tracking-wide text-slate-500">Progress updates</h4>
