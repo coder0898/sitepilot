@@ -90,11 +90,6 @@ class VendorCategoryIn(BaseModel):
     name: str
 
 
-class ProjectVendorIn(BaseModel):
-    project_id: uuid.UUID
-    vendor_id: uuid.UUID
-
-
 class ContractorRelationshipIn(BaseModel):
     main_contractor_id: uuid.UUID
     subcontractor_id: uuid.UUID

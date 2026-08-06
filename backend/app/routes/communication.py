@@ -7,15 +7,24 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user, require_roles
 from app.database import get_db
-from app.models import CommunicationLog, ContractorCategory, ContractorRelationship, ExecutionProject, ExecutionProjectContractor, ExecutionTask, ExecutionTemplateTask, User, UserRole, Vendor, VendorCategory, VendorContact, VendorStatusHistory
-from app.schemas.requests import CommunicationLogIn, ContractorProfileIn, ContractorRelationshipIn, ProjectVendorIn, VendorCategoryIn, VendorCategoryUpdateIn, VendorContactIn
+from app.models import CommunicationLog, ContractorCategory, ContractorRelationship, EmployeeProfile, ExecutionProject, ExecutionProjectContractor, ExecutionTask, ExecutionTemplateTask, User, UserRole, Vendor, VendorCategory, VendorContact, VendorStatusHistory
+from app.project_models import V2Project, V2ProjectMembership
+from app.schemas.requests import CommunicationLogIn, ContractorProfileIn, ContractorRelationshipIn, VendorCategoryIn, VendorCategoryUpdateIn, VendorContactIn
 from app.services.history import set_vendor_status
+from app.vendor_models import ProjectVendor, V2Vendor
 
 router = APIRouter(prefix="/api/communication-hub", tags=["communication-hub"])
 MANAGER_ROLES = (UserRole.super_admin, UserRole.admin, UserRole.project_manager)
 VALID_STATUSES = {"active", "inactive", "on_hold"}
 
 
+# `communication_logs.execution_project_id` (used below by add_log) still has
+# a real FK into this legacy table, not V2Project - tagging a note to a
+# project is a separate, pre-existing gap from the vendor-mapping bug fixed
+# below, and needs its own migration (a new FK'd column) before it can point
+# at real V2 projects. Kept deliberately on the legacy table so it matches
+# what add_log actually writes; do not repoint this to V2Project without
+# that migration; V2 project visibility lives in `visible_v2_projects` below.
 def visible_execution_projects(user, db):
     stmt = select(ExecutionProject).order_by(ExecutionProject.created_at.desc())
     if user.role == UserRole.project_manager:
@@ -34,6 +43,27 @@ def require_project(project_id, user, db):
     if not project or project_id not in allowed_project_ids(user, db):
         raise HTTPException(403, "Project is not assigned to you.")
     return project
+
+
+# Vendor Hub's PROJECT LIST and vendor-project MAPPING (used by get_hub()
+# below) are a different story from the above: the live app stopped writing
+# to `ExecutionProject`/`ExecutionProjectContractor` once project creation
+# moved to `V2Project` (see projects_v2.py's `list_projects`, which this
+# mirrors) - Vendor Hub kept showing "no project mapping" for vendors that
+# were, in fact, mapped, because it read a table nothing populated anymore.
+# This queries the real, currently-written project data instead. Any
+# authenticated non-admin sees only projects they hold an active membership
+# on, matching `list_projects`' access model exactly (no special case for
+# PM/Supervisor - membership of any role grants visibility here).
+def visible_v2_projects(user, db):
+    statement = select(V2Project).order_by(V2Project.updated_at.desc())
+    if user.role not in {UserRole.super_admin, UserRole.admin}:
+        employee = db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == user.id))
+        if not employee:
+            return []
+        visible_ids = select(V2ProjectMembership.project_id).where(V2ProjectMembership.employee_id == employee.id, V2ProjectMembership.ends_at.is_(None))
+        statement = statement.where(V2Project.id.in_(visible_ids))
+    return db.scalars(statement).all()
 
 
 def ensure_task_category_vendor_categories(db: Session) -> None:
@@ -95,12 +125,17 @@ def resolve_profile_parent(vendor, requested_parent_id, db):
 @router.get("")
 def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
     ensure_task_category_vendor_categories(db)
-    projects = visible_execution_projects(user, db)
+    projects = visible_v2_projects(user, db)
     project_ids = {project.id for project in projects}
-    links_query = select(ExecutionProjectContractor)
+    # Separate from `projects` above: communication_logs.execution_project_id
+    # is still FK'd to this legacy table (see visible_execution_projects'
+    # docstring), so the "Add note" project picker has to keep offering
+    # these until that column gets its own V2Project-backed migration.
+    note_projects = visible_execution_projects(user, db)
+    links_query = select(ProjectVendor.id, ProjectVendor.project_id, V2Vendor.legacy_vendor_id).join(V2Vendor, V2Vendor.id == ProjectVendor.vendor_id).where(V2Vendor.legacy_vendor_id.is_not(None))
     if user.role in {UserRole.project_manager, UserRole.supervisor}:
-        links_query = links_query.where(ExecutionProjectContractor.project_id.in_(project_ids)) if project_ids else links_query.where(False)
-    project_links = db.scalars(links_query).all()
+        links_query = links_query.where(ProjectVendor.project_id.in_(project_ids)) if project_ids else links_query.where(False)
+    project_links = db.execute(links_query).all()
     relationships = db.scalars(select(ContractorRelationship).order_by(ContractorRelationship.created_at)).all()
     vendors = db.scalars(select(Vendor).order_by(Vendor.created_at.desc(), Vendor.name)).all()
     vendor_ids = {vendor.id for vendor in vendors}
@@ -157,7 +192,8 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "child_count": child_counts.get(c.id, 0),
         } for c in categories],
         "projects": [{"id": str(p.id), "name": p.name, "status": p.status} for p in projects],
-        "project_vendors": [{"id": str(link.id), "project_id": str(link.project_id), "vendor_id": str(link.contractor_id)} for link in project_links],
+        "note_projects": [{"id": str(p.id), "name": p.name, "status": p.status} for p in note_projects],
+        "project_vendors": [{"id": str(link.id), "project_id": str(link.project_id), "vendor_id": str(link.legacy_vendor_id)} for link in project_links],
         "logs": [{"id": str(log.id), "vendor_id": str(log.vendor_id), "contact_id": str(log.contact_id) if log.contact_id else None, "project_id": str(log.execution_project_id) if log.execution_project_id else None, "channel": log.channel, "note": log.note, "created_by_name": log_users.get(log.created_by, "SiteOps user"), "created_at": log.created_at.isoformat()} for log in logs],
     }
 
@@ -367,21 +403,6 @@ def delete_category(category_id: uuid.UUID, actor: User = Depends(require_roles(
     db.delete(item)
     db.commit()
     return {"message": "Category deleted."}
-
-@router.post("/project-vendors")
-def link_vendor(payload: ProjectVendorIn, actor: User = Depends(require_roles(*MANAGER_ROLES)), db: Session = Depends(get_db)):
-    require_project(payload.project_id, actor, db)
-    contractor = require_main_vendor(payload.vendor_id, db)
-    if contractor.migration_status != "ready":
-        raise HTTPException(409, "Resolve this vendor's parent migration before assigning it to a project.")
-    link = ExecutionProjectContractor(project_id=payload.project_id, contractor_id=payload.vendor_id, created_by=actor.id)
-    db.add(link)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(409, "Vendor is already linked to this project.")
-    return {"id": str(link.id)}
 
 
 @router.post("/logs")
