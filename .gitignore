@@ -25,3 +25,6 @@ backend/evidence_storage/
 # Internal planning/reference docs — not part of the shipped repo
 docs/
 todo.md
+
+# Local Claude Code tool config — not part of the shipped app
+.claude/
