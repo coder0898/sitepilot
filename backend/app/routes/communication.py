@@ -132,6 +132,7 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
     # docstring), so the "Add note" project picker has to keep offering
     # these until that column gets its own V2Project-backed migration.
     note_projects = visible_execution_projects(user, db)
+    v2_vendor_id_by_legacy_id = dict(db.execute(select(V2Vendor.legacy_vendor_id, V2Vendor.id).where(V2Vendor.legacy_vendor_id.is_not(None))).all())
     links_query = select(ProjectVendor.id, ProjectVendor.project_id, V2Vendor.legacy_vendor_id).join(V2Vendor, V2Vendor.id == ProjectVendor.vendor_id).where(V2Vendor.legacy_vendor_id.is_not(None))
     if user.role in {UserRole.project_manager, UserRole.supervisor}:
         links_query = links_query.where(ProjectVendor.project_id.in_(project_ids)) if project_ids else links_query.where(False)
@@ -176,6 +177,7 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "engagement_type": v.engagement_type,
             "parent_vendor_id": str(v.parent_vendor_id) if v.parent_vendor_id else None,
             "migration_status": v.migration_status,
+            "v2_vendor_id": str(v2_vendor_id_by_legacy_id[v.id]) if v.id in v2_vendor_id_by_legacy_id else None,
             "email": v.email, "address": v.address, "gst_number": v.gst_number,
             "notes": v.notes, "created_at": v.created_at.isoformat(),
         } for v in vendors],

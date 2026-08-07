@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Building2, Clock3, ContactRound, Filter, FolderKanban, Link2, MessageCircle, Plus, Search, UserPlus, UsersRound } from "lucide-react";
 import { communicationApi } from "../../api/communicationApi";
+import { vendorAssignmentApi } from "../../api/vendorAssignmentApi";
 import { vendorsApi } from "../../api/vendorsApi";
 import { Modal } from "../../components/ui";
 
@@ -75,6 +76,13 @@ export function CommunicationHubPage({ user, action }) {
   async function removeCategory(categoryId) {
     return performPersistent(() => communicationApi.deleteCategory(categoryId), "Category deleted");
   }
+  async function mapToProjects(vendor, projectIds) {
+    return perform(async () => {
+      for (const targetProjectId of projectIds) {
+        await vendorAssignmentApi.mapVendor(targetProjectId, { vendor_id: vendor.v2_vendor_id });
+      }
+    }, `Mapped to ${projectIds.length} project${projectIds.length === 1 ? "" : "s"}`);
+  }
   async function updateCompany(event, vendorId) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -121,7 +129,7 @@ export function CommunicationHubPage({ user, action }) {
       {type !== "sub" && visibleMains.map(main => <ContractorGroup key={main.id} main={main} children={childrenFor(main.id).filter(({ vendor }) => matches(vendor) && projectMatches(vendor))} primaryFor={primaryFor} isOpen={expanded.has(main.id)} toggle={toggle} select={setSelected} showChildren={type === "all"}/>) }
       {type === "sub" && visibleSubs.map(sub => <FlatContractor key={sub.id} vendor={sub} primary={primaryFor(sub.id)} select={setSelected} />)}
       {((type === "sub" && !visibleSubs.length) || (type !== "sub" && !visibleMains.length)) && <div className="comm-empty p-10 text-center text-slate-500">No vendors match these filters.</div>}
-    </section>{selectedVendor && !form && <Modal className="max-w-6xl rounded-[28px]" title="Vendor details" subtitle="Company identity, capabilities and activity" onClose={() => setSelected(null)}><VendorDetailPanel vendor={selectedVendor} parentVendor={vendorById[selectedVendor.parent_vendor_id]} subVendors={childrenFor(selectedVendor.id).map(item => item.vendor)} contacts={contactsFor(selectedVendor.id)} projects={projectsFor(selectedVendor.id)} noteProjects={hub.note_projects} categories={hub.categories} logs={hub.logs.filter(log => log.vendor_id === selectedVendor.id)} canManage={canManage} onClose={() => setSelected(null)} remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected} addNote={(event) => submit(event, payload => communicationApi.addLog({ ...payload, vendor_id: selectedVendor.id, project_id: payload.project_id || null, contact_id: payload.contact_id || null }), "Communication note added")}/></Modal>}</div>
+    </section>{selectedVendor && !form && <Modal className="max-w-6xl rounded-[28px]" title="Vendor details" subtitle="Company identity, capabilities and activity" onClose={() => setSelected(null)}><VendorDetailPanel vendor={selectedVendor} parentVendor={vendorById[selectedVendor.parent_vendor_id]} subVendors={childrenFor(selectedVendor.id).map(item => item.vendor)} contacts={contactsFor(selectedVendor.id)} projects={projectsFor(selectedVendor.id)} unmappedProjects={hub.projects.filter(project => project.status === "active" && !projectsFor(selectedVendor.id).some(mapped => mapped.id === project.id))} mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} noteProjects={hub.note_projects} categories={hub.categories} logs={hub.logs.filter(log => log.vendor_id === selectedVendor.id)} canManage={canManage} onClose={() => setSelected(null)} remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected} addNote={(event) => submit(event, payload => communicationApi.addLog({ ...payload, vendor_id: selectedVendor.id, project_id: payload.project_id || null, contact_id: payload.contact_id || null }), "Communication note added")}/></Modal>}</div>
 
     {canManage && <section className="hub-quick rounded-2xl border border-slate-200 bg-white p-5 [&>h3]:m-0 [&>h3]:font-serif [&>h3]:text-xl [&>div]:mt-4 [&>div]:grid [&>div]:grid-cols-5 [&>div]:gap-3 max-[1000px]:[&>div]:grid-cols-2 max-[520px]:[&>div]:grid-cols-1 [&_button]:grid [&_button]:gap-2 [&_button]:rounded-xl [&_button]:border [&_button]:border-slate-200 [&_button]:bg-slate-50 [&_button]:p-4 [&_button]:text-left [&_button]:text-slate-900 [&_button_span]:text-blue-700 [&_button_small]:text-slate-500"><h3>Quick actions</h3><div><QuickCard icon={<Plus/>} title="Add main vendor" text="Create a structured company" onClick={() => setForm("main")}/>{pendingParentMappings.length > 0 && <QuickCard icon={<Link2/>} title="Resolve parent mapping" text={`${pendingParentMappings.length} legacy record${pendingParentMappings.length === 1 ? "" : "s"} require review`} onClick={() => setForm("parent-mapping")}/>}<QuickCard icon={<UserPlus/>} title="Add contact" text="Add a person to a company" onClick={() => setForm("contact")}/>{canCategories && <QuickCard icon={<Plus/>} title="Manage categories" text="Edit, archive or add capabilities" onClick={() => setForm("category-manager")}/>}</div></section>}
 
