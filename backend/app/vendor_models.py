@@ -38,8 +38,9 @@ class V2Vendor(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # Stable external-ID reference back to app.models.Vendor.id - what makes
-    # re-running VendorImportService.import_from_legacy idempotent.
+    # Historical reference to the dropped legacy `public.vendors.id` a row
+    # was originally imported from. Retained as provenance for the rows that
+    # predate the consolidation; always null for vendors created since.
     legacy_vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     name: Mapped[str] = mapped_column(Text, nullable=False)
     contact_person: Mapped[str] = mapped_column(Text, nullable=False)
@@ -292,5 +293,45 @@ class VendorActivityEvidence(Base):
     )
     file_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class V2VendorNote(Base):
+    """Vendor Hub's "Add note" record - the V2 home for the legacy
+    `communication_logs` table. See
+    `supabase/migrations/202608080001_v2_vendor_notes.sql` for why
+    `V2VendorActivityEvent` could not serve this purpose (it is scoped to a
+    task assignment and to presence/delay/rework/incident event types).
+
+    `project_id` references a real `V2Project`; the legacy column it
+    replaces pointed at `execution_projects`, which nothing had populated
+    since project creation moved to V2."""
+
+    __tablename__ = "vendor_notes"
+    __table_args__ = (
+        CheckConstraint(
+            "channel in ('note', 'call', 'whatsapp', 'email', 'meeting')",
+            name="ck_v2_vendor_notes_channel",
+        ),
+        Index("ix_v2_vendor_notes_vendor", "vendor_id"),
+        Index("ix_v2_vendor_notes_project", "project_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendors.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="SET NULL")
+    )
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_contacts.id", ondelete="SET NULL")
+    )
+    channel: Mapped[str] = mapped_column(Text, nullable=False, default="note")
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

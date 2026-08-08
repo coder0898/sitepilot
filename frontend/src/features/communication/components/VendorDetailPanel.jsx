@@ -56,8 +56,6 @@ function VendorProjectMappingForm({ vendor, unmappedProjects, mapToProjects }) {
     }
   }
 
-  if (!vendor.v2_vendor_id) return <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Resolve this vendor's migration before it can be mapped to a project.</div>;
-
   return <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-4">
     <span className="block text-[10px] font-black uppercase tracking-wide text-blue-800">Map to project(s)</span>
     {unmappedProjects.length

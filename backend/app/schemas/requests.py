@@ -3,7 +3,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from app.models import TaskStatus, UserRole
+from app.models import UserRole
 
 
 

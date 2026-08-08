@@ -29,9 +29,10 @@ from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
 
-# Reuse of the legacy module's (execution_v2.py `submit_task`) MIME
-# allowlist and size-cap pattern - NOT its storage/URL approach, which is
-# the exact public-URL mistake this unit corrects.
+# MIME allowlist and size-cap pattern carried over from the legacy
+# execution module's `submit_task` (routes/execution_v2.py, since deleted)
+# - NOT its storage/URL approach, which is the exact public-URL mistake
+# this unit corrects.
 ALLOWED_EVIDENCE_MIME_TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
     "image/png": ".png",

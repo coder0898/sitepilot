@@ -54,11 +54,6 @@ export function CategorySelector({ categories = [], selected = [], onChange, err
         <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white">{selectedSummary.length} selected</span>
       </header>
 
-      <div className="mx-5 mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900">
-        <Info size={15} className="mt-0.5 shrink-0"/>
-        <span>This is Vendor Hub's own directory classification - it does not control which tasks a vendor can be delegated to. To set a vendor's trade phase for task delegation, use the Vendors tab inside the project itself.</span>
-      </div>
-
       <div className="grid gap-4 p-5">
         <label className="flex min-h-11 min-w-56 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-slate-500 focus-within:border-blue-400 focus-within:bg-white"><Search size={16}/><input className="min-h-0 w-full border-0 bg-transparent p-0 text-sm outline-none" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search categories"/></label>
 

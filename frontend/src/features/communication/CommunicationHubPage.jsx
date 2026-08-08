@@ -8,7 +8,6 @@ import { Modal } from "../../components/ui";
 const emptyHub = { vendors: [], contacts: [], categories: [], projects: [], note_projects: [], project_vendors: [], relationships: [], logs: [] };
 import { CompanyModal, ContractorGroup, FlatContractor, Metric, ProfileModal, QuickCard } from "./components/CommunicationDirectory";
 import { VendorDetailPanel } from "./components/VendorDetailPanel";
-import { CategoryManager } from "./components/CategoryManager";
 
 export function CommunicationHubPage({ user, action }) {
   const [hub, setHub] = useState(emptyHub);
@@ -56,9 +55,11 @@ export function CommunicationHubPage({ user, action }) {
     const contact = { name: legacy.contact_person, designation: data.get("designation") || null, phone: legacy.phone, whatsapp: legacy.whatsapp, is_primary: true };
     await perform(async () => {
       const company = await vendorsApi.create(legacy);
+      // updateContractor already sets parent_vendor_id for a sub-vendor,
+      // which is now the sole source of that relationship - a follow-up
+      // linkSubcontractor call would simply conflict with itself.
       await communicationApi.updateContractor(company.id, profile);
       await communicationApi.addContact({ ...contact, vendor_id: company.id });
-      if (mode === "sub") await communicationApi.linkSubcontractor({ main_contractor_id: data.get("main_contractor_id"), subcontractor_id: company.id });
     }, mode === "main" ? "Main vendor added" : "Sub-vendor added");
   }
   async function performPersistent(fn, message) {
@@ -67,19 +68,10 @@ export function CommunicationHubPage({ user, action }) {
     if (saved) await load();
     return result;
   }
-  async function saveCategory(payload, categoryId) {
-    return performPersistent(
-      () => categoryId ? communicationApi.updateCategory(categoryId, payload) : communicationApi.addCategory(payload),
-      categoryId ? "Category updated" : "Category created",
-    );
-  }
-  async function removeCategory(categoryId) {
-    return performPersistent(() => communicationApi.deleteCategory(categoryId), "Category deleted");
-  }
   async function mapToProjects(vendor, projectIds) {
     return perform(async () => {
       for (const targetProjectId of projectIds) {
-        await vendorAssignmentApi.mapVendor(targetProjectId, { vendor_id: vendor.v2_vendor_id });
+        await vendorAssignmentApi.mapVendor(targetProjectId, { vendor_id: vendor.id });
       }
     }, `Mapped to ${projectIds.length} project${projectIds.length === 1 ? "" : "s"}`);
   }
@@ -114,7 +106,6 @@ export function CommunicationHubPage({ user, action }) {
   });
   const visibleSubs = subcontractors.filter(vendor => projectMatches(vendor) && matches(vendor));
   const selectedVendor = vendorById[selected];
-  const pendingParentMappings = hub.vendors.filter(vendor => vendor.migration_status === "parent_required");
   const toggle = id => setExpanded(current => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const activeProjects = hub.projects.filter(project => project.status === "active").length;
 
@@ -131,16 +122,14 @@ export function CommunicationHubPage({ user, action }) {
       {((type === "sub" && !visibleSubs.length) || (type !== "sub" && !visibleMains.length)) && <div className="comm-empty p-10 text-center text-slate-500">No vendors match these filters.</div>}
     </section>{selectedVendor && !form && <Modal className="max-w-6xl rounded-[28px]" title="Vendor details" subtitle="Company identity, capabilities and activity" onClose={() => setSelected(null)}><VendorDetailPanel vendor={selectedVendor} parentVendor={vendorById[selectedVendor.parent_vendor_id]} subVendors={childrenFor(selectedVendor.id).map(item => item.vendor)} contacts={contactsFor(selectedVendor.id)} projects={projectsFor(selectedVendor.id)} unmappedProjects={hub.projects.filter(project => project.status === "active" && !projectsFor(selectedVendor.id).some(mapped => mapped.id === project.id))} mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} noteProjects={hub.note_projects} categories={hub.categories} logs={hub.logs.filter(log => log.vendor_id === selectedVendor.id)} canManage={canManage} onClose={() => setSelected(null)} remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected} addNote={(event) => submit(event, payload => communicationApi.addLog({ ...payload, vendor_id: selectedVendor.id, project_id: payload.project_id || null, contact_id: payload.contact_id || null }), "Communication note added")}/></Modal>}</div>
 
-    {canManage && <section className="hub-quick rounded-2xl border border-slate-200 bg-white p-5 [&>h3]:m-0 [&>h3]:font-serif [&>h3]:text-xl [&>div]:mt-4 [&>div]:grid [&>div]:grid-cols-5 [&>div]:gap-3 max-[1000px]:[&>div]:grid-cols-2 max-[520px]:[&>div]:grid-cols-1 [&_button]:grid [&_button]:gap-2 [&_button]:rounded-xl [&_button]:border [&_button]:border-slate-200 [&_button]:bg-slate-50 [&_button]:p-4 [&_button]:text-left [&_button]:text-slate-900 [&_button_span]:text-blue-700 [&_button_small]:text-slate-500"><h3>Quick actions</h3><div><QuickCard icon={<Plus/>} title="Add main vendor" text="Create a structured company" onClick={() => setForm("main")}/>{pendingParentMappings.length > 0 && <QuickCard icon={<Link2/>} title="Resolve parent mapping" text={`${pendingParentMappings.length} legacy record${pendingParentMappings.length === 1 ? "" : "s"} require review`} onClick={() => setForm("parent-mapping")}/>}<QuickCard icon={<UserPlus/>} title="Add contact" text="Add a person to a company" onClick={() => setForm("contact")}/>{canCategories && <QuickCard icon={<Plus/>} title="Manage categories" text="Edit, archive or add capabilities" onClick={() => setForm("category-manager")}/>}</div></section>}
+    {canManage && <section className="hub-quick rounded-2xl border border-slate-200 bg-white p-5 [&>h3]:m-0 [&>h3]:font-serif [&>h3]:text-xl [&>div]:mt-4 [&>div]:grid [&>div]:grid-cols-5 [&>div]:gap-3 max-[1000px]:[&>div]:grid-cols-2 max-[520px]:[&>div]:grid-cols-1 [&_button]:grid [&_button]:gap-2 [&_button]:rounded-xl [&_button]:border [&_button]:border-slate-200 [&_button]:bg-slate-50 [&_button]:p-4 [&_button]:text-left [&_button]:text-slate-900 [&_button_span]:text-blue-700 [&_button_small]:text-slate-500"><h3>Quick actions</h3><div><QuickCard icon={<Plus/>} title="Add main vendor" text="Create a structured company" onClick={() => setForm("main")}/><QuickCard icon={<UserPlus/>} title="Add contact" text="Add a person to a company" onClick={() => setForm("contact")}/></div></section>}
 
     <section className="hub-activity rounded-2xl border border-slate-200 bg-white p-5 [&>header]:flex [&>header]:items-center [&>header]:justify-between [&>header]:border-b [&>header]:border-slate-100 [&>header]:pb-4 [&>header>div]:flex [&>header>div]:items-center [&>header>div]:gap-2 [&_h3]:m-0 [&_h3]:font-serif [&_h3]:text-xl [&>div>article]:grid [&>div>article]:grid-cols-[auto_1fr] [&>div>article]:gap-3 [&>div>article]:border-b [&>div>article]:border-slate-100 [&>div>article]:py-3 [&_p]:m-0 [&_p]:text-sm [&_p]:text-slate-600 [&_small]:text-xs [&_small]:text-slate-400"><header><div><Clock3/><h3>Recent communication</h3></div><span>Manual site records</span></header><div>{hub.logs.slice(0, 5).map(log => { const vendor = vendorById[log.vendor_id]; return <article key={log.id}><span className={`activity-icon grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-700 ${log.channel}`}><MessageCircle size={17}/></span><div><strong>{vendor?.name || "Vendor"}</strong><p>{log.note}</p><small>{log.created_by_name} - {new Date(log.created_at).toLocaleString()}</small></div></article>})}{!hub.logs.length && <p className="no-history py-4 text-sm text-slate-500">No communication notes have been added.</p>}</div></section>
 
     {form === "main" && <CompanyModal title="Add main vendor" categories={hub.categories} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "main")}/>}
     {form === "sub" && selectedVendor?.engagement_type === "main" && <CompanyModal title="Add sub-vendor" categories={hub.categories} fixedMainContractor={selectedVendor} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "sub")}/>}
-    {form === "parent-mapping" && <Modal title="Resolve legacy sub-vendor parent" subtitle="Choose the approved main vendor. SiteOps will never guess this relationship." onClose={() => setForm(null)}><form className="modal-form grid gap-4 [&_label]:grid [&_label]:gap-2 [&_label]:text-sm [&_label]:font-extrabold [&_select]:min-h-12 [&_select]:rounded-xl [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-4 [&_button]:min-h-12 [&_button]:rounded-xl [&_button]:bg-blue-700 [&_button]:font-black [&_button]:text-white" onSubmit={event => submit(event, communicationApi.linkSubcontractor, "Sub-vendor parent mapping resolved")}><label>Legacy sub-vendor<select name="subcontractor_id" required><option value="">Select record requiring review</option>{pendingParentMappings.map(vendor => <option value={vendor.id} key={vendor.id}>{vendor.name}</option>)}</select></label><label>Approved parent vendor<select name="main_contractor_id" required><option value="">Select active main vendor</option>{mainContractors.filter(vendor => vendor.status === "active").map(vendor => <option value={vendor.id} key={vendor.id}>{vendor.name}</option>)}</select></label><div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">This decision is stored as an auditable migration resolution and cannot create an independent sub-vendor.</div><button>Confirm parent mapping</button></form></Modal>}
     {form === "edit" && selectedVendor && <ProfileModal vendor={selectedVendor} categories={hub.categories} onClose={() => setForm(null)} onSubmit={event => updateCompany(event, selectedVendor.id)}/>}
     {form === "contact" && <Modal title="Add vendor contact" subtitle="Add a person under a main vendor or sub-vendor" onClose={() => setForm(null)}><form className="modal-form grid gap-3 [&_label]:grid [&_label]:gap-2 [&_label]:text-sm [&_label]:font-extrabold [&_label]:text-slate-700 [&_input]:min-h-11 [&_input]:w-full [&_input]:rounded-xl [&_input]:border [&_input]:border-slate-200 [&_input]:bg-white [&_input]:px-4 [&_input]:py-3 [&_input]:outline-none [&_select]:min-h-11 [&_select]:w-full [&_select]:rounded-xl [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-4 [&_select]:py-3 [&_select]:outline-none [&_textarea]:min-h-24 [&_textarea]:w-full [&_textarea]:resize-y [&_textarea]:rounded-xl [&_textarea]:border [&_textarea]:border-slate-200 [&_textarea]:bg-white [&_textarea]:px-4 [&_textarea]:py-3 [&_textarea]:outline-none focus-within:[&_input]:border-blue-600 focus-within:[&_select]:border-blue-600 focus-within:[&_textarea]:border-blue-600 [&>button]:min-h-12 [&>button]:rounded-xl [&>button]:bg-blue-700 [&>button]:px-5 [&>button]:font-black [&>button]:text-white two-col grid-cols-2 max-[720px]:grid-cols-1" onSubmit={event => submit(event, payload => communicationApi.addContact({ ...payload, is_primary: false }), "Contact added")}><label className="full-field col-span-full max-[720px]:col-span-1">Vendor<select name="vendor_id" defaultValue={selectedVendor?.id || ""} required>{hub.vendors.map(vendor => <option value={vendor.id} key={vendor.id}>{vendor.name}</option>)}</select></label><label>Name<input name="name" required/></label><label>Designation<input name="designation"/></label><label>Phone<input name="phone" required/></label><label>WhatsApp<input name="whatsapp"/></label><button>Add contact</button></form></Modal>}
-    {form === "category-manager" && <CategoryManager categories={hub.categories} save={saveCategory} remove={removeCategory} close={() => setForm(null)}/>}
     {canManage && <button className="mobile-add fixed bottom-24 right-4 z-30 grid size-14 place-items-center rounded-full bg-blue-700 p-0 text-white shadow-xl min-[721px]:hidden" aria-label="Add main vendor" onClick={() => setForm("main")}><Plus/></button>}
   </div>;
 }

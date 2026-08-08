@@ -223,19 +223,11 @@ class BrowserAndLegacyBoundaryTests(unittest.TestCase):
                 offenders.append(str(path.relative_to(self.repo_root())))
         self.assertEqual(offenders, [])
 
-    def test_legacy_template_workspace_does_not_import_or_mutate_v2_models(self):
-        legacy = (self.repo_root() / "backend/app/routes/execution_v2.py").read_text()
-        forbidden = (
-            "V2Template",
-            "V2TemplateVersion",
-            "V2TemplateTask",
-            "siteops_v2.v2_template",
-            "TemplateTaskCommandService",
-            "TemplateDependencyCommandService",
-            "TemplateGateCommandService",
-        )
-        for token in forbidden:
-            self.assertNotIn(token, legacy)
+    # The legacy template workspace (routes/execution_v2.py) used to be
+    # guarded here against importing or mutating governed V2 template
+    # models. That module and its /api/v2/execution router were deleted
+    # once the legacy execution tables were confirmed empty and orphaned
+    # from the UI, so the boundary it policed no longer exists.
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import can_create_role, require_roles
 from app.database import get_db
-from app.models import AccessRequest, AccessRequestEvent, EmployeeProfile, ExecutionProject, ExecutionTask, User, UserAccountEvent, UserRole
+from app.models import AccessRequest, AccessRequestEvent, EmployeeProfile, User, UserAccountEvent, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.schemas.requests import MyProfileUpdateIn, UserCreateIn, UserDeleteIn, UserLifecycleIn, UserUpdateIn
 from app.services.access_control import access_catalog, manageable_roles
@@ -71,15 +71,11 @@ def active_accountability_message(db: Session, target: User) -> str | None:
         )
         if v2_project:
             return "End or replace this employee's active V2 project assignment before offboarding the account."
-    if target.role == UserRole.project_manager:
-        project = db.scalar(select(ExecutionProject).where(ExecutionProject.project_manager_id == target.id, ExecutionProject.status.in_(active_states)))
-        if project:
-            return "Replace this Project Manager on active projects before deactivating the account."
-    if target.role == UserRole.supervisor:
-        project = db.scalar(select(ExecutionProject).where(ExecutionProject.supervisor_id == target.id, ExecutionProject.status.in_(active_states)))
-        task = db.scalar(select(ExecutionTask).where(ExecutionTask.assigned_supervisor_id == target.id))
-        if project or task:
-            return "Replace this Supervisor on active projects and tasks before deactivating the account."
+    # The PM/Supervisor guards that used to follow read the legacy
+    # `execution_projects`/`execution_tasks` tables, which nothing had
+    # written to since project execution moved to V2 - so they could never
+    # fire. The V2 membership check above covers every role's active project
+    # assignment, which is what those guards were protecting.
     return None
 
 
