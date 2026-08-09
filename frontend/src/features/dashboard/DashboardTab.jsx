@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "../../components/ui";
+import { AdminProjectsOverview } from "../admin/AdminProjectsOverview";
 import { CommunicationHubPage } from "../communication/CommunicationHubPage";
 import { ExecutionPage } from "../execution/ExecutionPage";
 import { ProjectsPage } from "../projects/ProjectsPage";
@@ -7,6 +8,7 @@ import { UsersPage } from "../users/UsersPage";
 
 const TAB_COMPONENTS = {
   projects: ProjectsPage,
+  admin_overview: AdminProjectsOverview,
   templates: TemplatesPage,
   execution: ExecutionPage,
   communication: CommunicationHubPage,
