@@ -148,6 +148,14 @@ class Task(Base):
     duration_days: Mapped[int | None] = mapped_column(Integer)
     lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="planned")
     created_from_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Phase 3 U1: when set, a task not `completed`/`cancelled` past this
+    timestamp counts toward the `overdue` derived condition. Nullable -
+    not every task carries a due date."""
+    update_sla_hours: Mapped[int | None] = mapped_column(Integer)
+    """Phase 3 U1: when set, a task not `completed`/`cancelled` whose most
+    recent `TaskProgressUpdate` (or `created_at`, if none exists) is older
+    than this many hours counts toward the `no_update` derived condition."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
