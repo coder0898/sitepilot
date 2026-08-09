@@ -143,6 +143,28 @@ class AdminVisibilityRollupTests(unittest.TestCase):
         self.assertEqual(next(row for row in body if row["code"] == "PRJ-1")["total_count"], 1)
 
     def test_admin_retrieves_cross_project_activity(self):
+        project_a = self.add_project("PRJ-1", "Project 1")
+        project_b = self.add_project("PRJ-2", "Project 2")
+        with self.Session.begin() as session:
+            session.add(V2AuditEvent(
+                actor_user_id=ADMIN_ID, action="PROJECT_ACTIVATED", entity_type="project", entity_id=project_a,
+                project_id=project_a, reason="Go live.",
+            ))
+            session.add(V2AuditEvent(
+                actor_user_id=None, action="SYSTEM_SWEEP", entity_type="project", entity_id=project_b,
+                project_id=project_b, reason="Automated check.",
+            ))
+
+        response = self.client.get("/api/v2/admin/activity")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(len(body), 2)
+        self.assertEqual({row["project_id"] for row in body}, {str(project_a), str(project_b)})
+        by_action = {row["action"]: row for row in body}
+        self.assertEqual(by_action["PROJECT_ACTIVATED"]["actor_name"], "Admin")
+        self.assertEqual(by_action["SYSTEM_SWEEP"]["actor_name"], "System")
+
+    def test_admin_activity_with_no_events_returns_empty_list(self):
         response = self.client.get("/api/v2/admin/activity")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), [])

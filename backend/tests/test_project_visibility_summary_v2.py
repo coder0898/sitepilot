@@ -156,6 +156,26 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
         self.assertEqual([t.original_code for t in summary.blocked_tasks], ["T001"])
         self.assertEqual([t.original_code for t in summary.overdue_tasks], ["T001"])
 
+    def test_blocked_overdue_and_no_update_can_all_apply_to_the_same_task(self):
+        """BR-010: blocked/delayed/overdue/no_update are independently
+        derived conditions, not mutually exclusive lifecycle states - a
+        single task can appear in all three at once."""
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            task = self.make_task(
+                session, "T001", "in_progress", due_at=now - timedelta(days=1),
+                update_sla_hours=24, created_at=now - timedelta(hours=48),
+            )
+            session.flush()
+            session.add(TaskBlocker(
+                task_id=task.id, project_id=self.project_id, type="material", description="Waiting on rebar.",
+            ))
+
+        summary = self.summarize()
+        self.assertEqual([t.original_code for t in summary.blocked_tasks], ["T001"])
+        self.assertEqual([t.original_code for t in summary.overdue_tasks], ["T001"])
+        self.assertEqual([t.original_code for t in summary.no_update_tasks], ["T001"])
+
     # ---- edge cases --------------------------------------------------------
 
     def test_project_with_zero_tasks_returns_all_zero_summary(self):
@@ -234,6 +254,30 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
             session.add(TaskApprovalDecision(
                 task_id=task.id, decision="approved", decided_by=ADMIN_ID, decided_at=now,
             ))
+
+        summary = self.summarize()
+        self.assertEqual(summary.approval_gates_at_risk, [])
+
+    def test_approval_gate_due_inside_risk_window_is_at_risk(self):
+        """APPROVAL_GATE_RISK_WINDOW_HOURS = 48: an undecided gate due
+        within the next 24h (inside the window) is 'approaching' risk."""
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            self.make_task(
+                session, "G001", "approval_pending", task_kind="approval_gate", due_at=now + timedelta(hours=24),
+            )
+
+        summary = self.summarize()
+        self.assertEqual([t.original_code for t in summary.approval_gates_at_risk], ["G001"])
+
+    def test_approval_gate_due_outside_risk_window_is_not_at_risk(self):
+        """A gate due in 72h (outside the 48h risk window) is not yet
+        flagged - only genuinely approaching/past-due gates should surface."""
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            self.make_task(
+                session, "G001", "approval_pending", task_kind="approval_gate", due_at=now + timedelta(hours=72),
+            )
 
         summary = self.summarize()
         self.assertEqual(summary.approval_gates_at_risk, [])

@@ -122,6 +122,7 @@ class Task(Base):
         CheckConstraint("task_class is null or task_class in ('standard', 'class_a')", name="ck_v2_tasks_task_class"),
         CheckConstraint("task_kind is null or task_kind in ('work', 'approval_gate', 'milestone')", name="ck_v2_tasks_task_kind"),
         CheckConstraint(f"lifecycle_status in {TASK_LIFECYCLE_STATUSES!r}", name="ck_v2_tasks_lifecycle_status"),
+        CheckConstraint("update_sla_hours is null or update_sla_hours > 0", name="ck_v2_tasks_update_sla_hours_positive"),
         Index("ix_v2_tasks_project_sequence", "project_id", "template_sequence"),
         Index("ix_v2_tasks_baseline", "baseline_id"),
         Index("ix_v2_tasks_project_status", "project_id", "lifecycle_status"),

@@ -166,6 +166,30 @@ class ReportGenerationTests(unittest.TestCase):
         self.assertIn("ownership_changes", payload)
         self.assertIn("management_decisions_required", payload)
 
+    # ---- integration -------------------------------------------------------
+
+    def test_snapshot_payload_is_frozen_after_live_state_changes(self):
+        """The plan's Key Technical Decision: a report snapshot must never
+        silently change after generation, even if the project's live state
+        (task counts, blockers, etc.) changes afterward."""
+        response = self.generate("daily")
+        self.assertEqual(response.status_code, 200, response.text)
+        snapshot_id = response.json()["id"]
+        original_total_count = response.json()["payload_json"]["summary"]["total_count"]
+        self.assertEqual(original_total_count, 1)
+
+        with self.Session.begin() as session:
+            session.add(Task(
+                id=uuid.uuid4(), project_id=self.project_id, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
+                original_code="T002", template_sequence=2, title="Task T002",
+                schedule_classification="execution", applicability="mandatory", lifecycle_status="planned",
+            ))
+
+        listing = self.client.get(f"/api/v2/projects/{self.project_id}/reports")
+        self.assertEqual(listing.status_code, 200, listing.text)
+        refetched = next(row for row in listing.json() if row["id"] == snapshot_id)
+        self.assertEqual(refetched["payload_json"]["summary"]["total_count"], original_total_count)
+
     # ---- edge cases ------------------------------------------------------
 
     def test_regenerating_same_period_creates_a_new_version_not_an_overwrite(self):

@@ -11,10 +11,10 @@
 create table if not exists siteops_v2.report_snapshots (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references siteops_v2.projects(id) on delete restrict,
-  report_type text not null check (report_type in ('daily', 'weekly')),
+  report_type text not null constraint ck_v2_report_snapshots_report_type check (report_type in ('daily', 'weekly')),
   period_start timestamptz not null,
   period_end timestamptz not null,
-  version_no integer not null check (version_no > 0),
+  version_no integer not null constraint ck_v2_report_snapshots_version_positive check (version_no > 0),
   payload_json jsonb not null,
   generated_by uuid not null references users(id) on delete restrict,
   generated_at timestamptz not null default now(),

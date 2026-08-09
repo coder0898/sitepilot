@@ -39,6 +39,7 @@ from app.project_models import (
 from app.routes.project_dashboard_v2 import router as dashboard_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.vendor_models import TaskVendorAssignment, V2Vendor, VendorActivityEvent
 
 
 @compiles(JSONB, "sqlite")
@@ -87,6 +88,9 @@ class ProjectDashboardRouteTests(unittest.TestCase):
             TaskApprovalDecision.__table__,
             TaskSupportAssignment.__table__,
             OutboxEvent.__table__,
+            V2Vendor.__table__,
+            TaskVendorAssignment.__table__,
+            VendorActivityEvent.__table__,
         ):
             table.create(self.engine)
 
@@ -113,8 +117,9 @@ class ProjectDashboardRouteTests(unittest.TestCase):
                 project_id=self.project_id, employee_id=pm_profile.id, project_role="project_manager",
                 assigned_by=ADMIN_ID, assignment_reason="Initial assignment.",
             ))
+            self.task_id = uuid.uuid4()
             session.add(Task(
-                id=uuid.uuid4(), project_id=self.project_id, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
+                id=self.task_id, project_id=self.project_id, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
                 original_code="T001", template_sequence=1, title="Task T001",
                 schedule_classification="execution", applicability="mandatory", lifecycle_status="in_progress",
             ))
@@ -154,6 +159,33 @@ class ProjectDashboardRouteTests(unittest.TestCase):
         self.assertIn("overdue_tasks", body["summary"])
         self.assertIn("reassignment_required", body["summary"])
         self.assertEqual(body["vendor_risks"], [])
+
+    def test_dashboard_surfaces_vendor_risk_events_when_present(self):
+        with self.Session.begin() as session:
+            vendor = V2Vendor(name="Acme Rebar", contact_person="Raj", phone="9999999999")
+            session.add(vendor)
+            session.flush()
+            assignment = TaskVendorAssignment(
+                task_id=self.task_id, project_id=self.project_id, vendor_id=vendor.id, assigned_by=ADMIN_ID,
+            )
+            session.add(assignment)
+            session.flush()
+            session.add(VendorActivityEvent(
+                task_vendor_assignment_id=assignment.id, event_type="delay",
+                description="Rebar delivery delayed by 2 days.", recorded_by=ADMIN_ID,
+            ))
+            # A 'presence' event is not a risk type and must not appear.
+            session.add(VendorActivityEvent(
+                task_vendor_assignment_id=assignment.id, event_type="presence",
+                description="Crew on site.", recorded_by=ADMIN_ID,
+            ))
+
+        response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")
+        self.assertEqual(response.status_code, 200, response.text)
+        vendor_risks = response.json()["vendor_risks"]
+        self.assertEqual(len(vendor_risks), 1)
+        self.assertEqual(vendor_risks[0]["event_type"], "delay")
+        self.assertEqual(vendor_risks[0]["task_id"], str(self.task_id))
 
     def test_dashboard_with_no_vendor_data_succeeds_with_empty_vendor_risks(self):
         response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")

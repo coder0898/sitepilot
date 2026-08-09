@@ -2,7 +2,7 @@
 
 Composes U1's `ProjectVisibilityService.summarize` with a vendor-risk
 section sourced from Phase 2's `vendor_activity_events`, when that table
-exists - see `_vendor_activity_table_available` for the startup-time,
+exists - see `_vendor_activity_table_available` for the once-per-engine,
 process-lifetime-cached existence check (not a per-request try/catch around
 a missing-table error, per the plan's Key Technical Decisions).
 """
@@ -10,7 +10,6 @@ a missing-table error, per the plan's Key Technical Decisions).
 from __future__ import annotations
 
 import uuid
-from functools import lru_cache
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -18,7 +17,7 @@ from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user
-from app.database import engine, get_db
+from app.database import get_db
 from app.models import User
 from app.project_models import V2_SCHEMA
 from app.schemas.project_visibility import ProjectVisibilitySummary
@@ -26,23 +25,28 @@ from app.services.project_visibility import ProjectVisibilityService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-project-dashboard"])
 
+# Checked once per process lifetime, not per request - Phase 2 either
+# shipped before this process started or it didn't; a table doesn't appear
+# mid-process outside of a migration + restart. Keyed off the request
+# session's own bound engine (not a module-level `app.database.engine`
+# import) so a test overriding `get_db` with an isolated engine gets a
+# correct, independently-cacheable answer instead of silently checking a
+# different database than the one the request actually uses.
+_vendor_activity_cache: dict[int, bool] = {}
 
-@lru_cache(maxsize=1)
-def _vendor_activity_table_available() -> bool:
-    """Checked once per process lifetime, not per request - Phase 2 either
-    shipped before this process started or it didn't; a table doesn't
-    appear mid-process outside of a migration + restart.
 
-    Any connection-level failure (e.g. the database is unreachable, as in a
-    unit test that overrides `get_db` with an in-memory SQLite session but
-    never points `app.database.engine` at it) degrades to "unavailable"
-    rather than raising - this check must never be the reason a dashboard
-    request 500s.
-    """
-    try:
-        return inspect(engine).has_table("vendor_activity_events", schema=V2_SCHEMA)
-    except Exception:
-        return False
+def _vendor_activity_table_available(db: Session) -> bool:
+    """Any connection-level failure (e.g. the database is unreachable)
+    degrades to "unavailable" rather than raising - this check must never
+    be the reason a dashboard request 500s."""
+    bind = db.get_bind()
+    cache_key = id(bind)
+    if cache_key not in _vendor_activity_cache:
+        try:
+            _vendor_activity_cache[cache_key] = inspect(bind).has_table("vendor_activity_events", schema=V2_SCHEMA)
+        except Exception:
+            _vendor_activity_cache[cache_key] = False
+    return _vendor_activity_cache[cache_key]
 
 
 class VendorRiskEventOut(BaseModel):
@@ -56,7 +60,7 @@ class VendorRiskEventOut(BaseModel):
 
 
 def _vendor_risk_events(db: Session, project_id: uuid.UUID) -> list[VendorRiskEventOut]:
-    if not _vendor_activity_table_available():
+    if not _vendor_activity_table_available(db):
         return []
 
     # Imported lazily: importing app.vendor_models at module load time would
