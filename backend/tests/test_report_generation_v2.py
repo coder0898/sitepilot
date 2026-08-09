@@ -18,6 +18,7 @@ from app.execution_models import (
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
+    SupportAssignmentChange,
     Task,
     TaskApprovalDecision,
     TaskBlocker,
@@ -86,6 +87,7 @@ class ReportGenerationTests(unittest.TestCase):
             TaskDelayEvent.__table__,
             TaskApprovalDecision.__table__,
             TaskSupportAssignment.__table__,
+            SupportAssignmentChange.__table__,
             OutboxEvent.__table__,
             ReportSnapshot.__table__,
         ):

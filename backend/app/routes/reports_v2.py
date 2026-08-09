@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import current_user
 from app.database import get_db
@@ -40,8 +40,7 @@ class ReportSnapshotOut(BaseModel):
     generated_by: uuid.UUID
     generated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 @router.post("/{project_id}/reports", response_model=ReportSnapshotOut)

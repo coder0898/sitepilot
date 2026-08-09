@@ -47,6 +47,14 @@ ACTIVE_STATUSES = ("in_progress", "submitted", "verified", "approval_pending", "
 TERMINAL_STATUSES = ("completed", "cancelled")
 
 
+def _aware(value: datetime) -> datetime:
+    """Postgres `timestamptz` columns always round-trip as timezone-aware
+    via psycopg, but SQLite (used by this test suite's harness) silently
+    drops tzinfo on read - treat a naive value as UTC rather than let a
+    naive/aware subtraction raise `TypeError` at request time."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def _task_ref(task: Task) -> TaskRefOut:
     return TaskRefOut(
         id=task.id, original_code=task.original_code, title=task.title, lifecycle_status=task.lifecycle_status,
@@ -131,7 +139,7 @@ class ProjectVisibilityService:
                 due_at=t.due_at,
             )
             for t in tasks
-            if t.due_at is not None and t.due_at < now and t.lifecycle_status not in TERMINAL_STATUSES
+            if t.due_at is not None and _aware(t.due_at) < now and t.lifecycle_status not in TERMINAL_STATUSES
         ]
 
     def _no_update_tasks(self, project_id: uuid.UUID, tasks: list[Task], now: datetime) -> list[NoUpdateTaskOut]:
@@ -149,7 +157,7 @@ class ProjectVisibilityService:
 
         results = []
         for task in candidates:
-            last_activity_at = last_update_by_task.get(task.id, task.created_at)
+            last_activity_at = _aware(last_update_by_task.get(task.id, task.created_at))
             hours_since = (now - last_activity_at).total_seconds() / 3600
             if hours_since > task.update_sla_hours:
                 results.append(
@@ -183,5 +191,5 @@ class ProjectVisibilityService:
                 due_at=t.due_at,
             )
             for t in gate_tasks
-            if t.id not in decided_task_ids and t.due_at <= risk_horizon
+            if t.id not in decided_task_ids and _aware(t.due_at) <= risk_horizon
         ]
