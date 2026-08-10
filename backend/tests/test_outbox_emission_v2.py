@@ -158,6 +158,12 @@ class OutboxEmissionApiTests(unittest.TestCase):
             role=UserRole.supervisor, active=True,
         ))
 
+    def act_as_internal(self) -> None:
+        self.act_as(User(
+            id=INTERNAL_ID, name="Internal", email="internal@example.com",
+            role=UserRole.internal_employee, active=True,
+        ))
+
     # ---- seeding -------------------------------------------------------
 
     def _seed(self):
@@ -310,10 +316,32 @@ class OutboxEmissionApiTests(unittest.TestCase):
         return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/approve", json=body)
 
     def drive_to_submitted(self, project_id: str, task_id):
+        """Drives a task to `submitted` as the Supervisor.
+
+        An approval-gate task is the exception: it has no Supervisor/PM
+        self-execute fallback, so an Internal Employee must be delegated
+        before work can start, and from then on only that delegate may
+        move it to `in_progress`/`submitted` or log its progress (see
+        `TaskLifecycleService._require_role_for_transition` and
+        `TaskProgressService._require_progress_actor`). For a gate this
+        therefore delegates first and drives the executor-owned steps as
+        that Internal Employee.
+        """
+        with self.Session() as session:
+            is_approval_gate = session.get(Task, task_id).task_kind == "approval_gate"
+
         self.act_as_supervisor()
-        for target in ("ready", "in_progress"):
-            r = self.transition(project_id, task_id, target)
-            self.assertEqual(r.status_code, 200, r.text)
+        ready = self.transition(project_id, task_id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+
+        if is_approval_gate:
+            self.add_internal_member(project_id)
+            assignment = self.assign_support(project_id, task_id)
+            self.assertEqual(assignment.status_code, 200, assignment.text)
+            self.act_as_internal()
+
+        in_progress = self.transition(project_id, task_id, "in_progress")
+        self.assertEqual(in_progress.status_code, 200, in_progress.text)
         sp = self.submit_progress(project_id, task_id)
         self.assertEqual(sp.status_code, 200, sp.text)
         r = self.transition(project_id, task_id, "submitted")

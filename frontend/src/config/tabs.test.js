@@ -13,3 +13,26 @@ describe("template navigation visibility", () => {
     expect(keysFor(role)).not.toContain("templates");
   });
 });
+
+describe("Phase 3 Portfolio (admin_overview) navigation visibility", () => {
+  // The backend only puts "admin_overview" in module_permissions for
+  // super_admin/admin (see backend/app/routes/dashboard.py), so these
+  // cases mirror that contract rather than handing every role the key.
+  const adminModules = ["projects", "admin_overview", "execution", "communication", "users"];
+
+  it.each(["super_admin", "admin"])("shows Portfolio for %s when the backend grants it", role => {
+    expect(visibleTabs(adminModules, role).map(([key]) => key)).toContain("admin_overview");
+  });
+
+  it("labels the admin_overview tab \"Portfolio\", not \"Dashboard\"", () => {
+    const entry = visibleTabs(adminModules, "admin").find(([key]) => key === "admin_overview");
+    expect(entry?.[1]).toBe("Portfolio");
+  });
+
+  it.each(["project_manager", "supervisor", "internal_employee"])(
+    "hides Portfolio for %s, whose module_permissions never include it",
+    role => {
+      expect(keysFor(role)).not.toContain("admin_overview");
+    },
+  );
+});

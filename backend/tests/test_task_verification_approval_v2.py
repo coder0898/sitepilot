@@ -51,6 +51,7 @@ PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
 SECOND_PM_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+INTERNAL_ID = uuid.UUID("ffffffff-ffff-4fff-8fff-fffffffffff5")
 
 
 class TaskVerificationApprovalApiTests(unittest.TestCase):
@@ -145,6 +146,12 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             role=UserRole.supervisor, active=True,
         ))
 
+    def act_as_internal(self) -> None:
+        self.act_as(User(
+            id=INTERNAL_ID, name="Internal", email="internal@example.com",
+            role=UserRole.internal_employee, active=True,
+        ))
+
     # ---- seeding -------------------------------------------------------
 
     def _seed(self):
@@ -155,7 +162,9 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         integration test. A second PM (SECOND_PM_ID) is also seeded (but
         not given project membership at project-creation time) so tests
         can add them as a project member later for the fallback-verifier
-        scenario.
+        scenario. An Internal Employee (INTERNAL_ID) is seeded for the
+        same reason: T003's approval-gate work cannot start until it is
+        delegated to one (see `drive_to_submitted`).
         """
         with self.Session.begin() as session:
             admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
@@ -172,10 +181,18 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
                 id=SECOND_PM_ID, name="PM Two", email="pm2@example.com",
                 role=UserRole.project_manager, active=True,
             )
-            session.add_all([admin, pm, supervisor, outsider, second_pm])
+            internal = User(
+                id=INTERNAL_ID, name="Internal", email="internal@example.com",
+                role=UserRole.internal_employee, active=True,
+            )
+            session.add_all([admin, pm, supervisor, outsider, second_pm, internal])
             session.flush()
             session.add_all([
                 EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                EmployeeProfile(
+                    user_id=INTERNAL_ID, employee_code="INT-001", designation="Internal Employee",
+                    availability="available",
+                ),
                 EmployeeProfile(
                     user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
                 ),
@@ -280,6 +297,43 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
             body["remarks"] = remarks
         return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/approve", json=body)
 
+    @property
+    def internal_employee_id(self) -> uuid.UUID:
+        with self.Session() as session:
+            return session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == INTERNAL_ID))
+
+    def add_internal_member(self, project_id: str) -> None:
+        """Idempotent - a test may drive more than one approval gate in the
+        same project, and the Internal Employee only needs one active
+        project membership for all of them."""
+        with self.Session() as session:
+            already_member = session.scalar(
+                select(V2ProjectMembership.id).where(
+                    V2ProjectMembership.project_id == uuid.UUID(project_id),
+                    V2ProjectMembership.employee_id == self.internal_employee_id,
+                    V2ProjectMembership.ends_at.is_(None),
+                )
+            )
+        if already_member:
+            return
+        self.act_as_pm()
+        response = self.client.post(
+            f"/api/v2/projects/{project_id}/memberships",
+            json={
+                "employee_id": str(self.internal_employee_id),
+                "project_role": "internal_employee",
+                "reason": "Delegate approval-gate execution.",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def assign_support(self, project_id: str, task_id):
+        self.act_as_pm()
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/tasks/{task_id}/support-assignments",
+            json={"employee_id": str(self.internal_employee_id), "responsibility": "Execute approval gate."},
+        )
+
     def drive_to_submitted(self, project_id: str, task_id, submitted_by="pm"):
         """`submitted_by` controls who logs the progress being verified -
         default "pm" so a test calling `verify` as the Supervisor
@@ -287,18 +341,44 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         rejects a verifier who is also the submitter). Pass "supervisor"
         for tests that specifically need the Supervisor to be free to
         verify their own submission's *absence* of conflict, e.g. a test
-        where the PM is the one verifying as a fallback."""
+        where the PM is the one verifying as a fallback.
+
+        An approval-gate task ignores `submitted_by`: it has no
+        Supervisor/PM self-execute fallback, so an Internal Employee must
+        be delegated before work can start, and from then on only that
+        delegate may move it to `in_progress`/`submitted` or log its
+        progress (see `TaskLifecycleService._require_role_for_transition`
+        and `TaskProgressService._require_progress_actor`). `submitted_by`
+        only selects among the self-execute actors, none of which apply to
+        a gate."""
+        with self.Session() as session:
+            is_approval_gate = session.get(Task, task_id).task_kind == "approval_gate"
+
         self.act_as_supervisor()
-        for target in ("ready", "in_progress"):
-            r = self.transition(project_id, task_id, target)
-            self.assertEqual(r.status_code, 200, r.text)
-        if submitted_by == "pm":
-            self.act_as_pm()
-        elif submitted_by == "admin":
-            self.act_as_admin()
+        ready = self.transition(project_id, task_id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+
+        if is_approval_gate:
+            self.add_internal_member(project_id)
+            assignment = self.assign_support(project_id, task_id)
+            self.assertEqual(assignment.status_code, 200, assignment.text)
+            self.act_as_internal()
+        else:
+            self.act_as_supervisor()
+
+        in_progress = self.transition(project_id, task_id, "in_progress")
+        self.assertEqual(in_progress.status_code, 200, in_progress.text)
+
+        if not is_approval_gate:
+            if submitted_by == "pm":
+                self.act_as_pm()
+            elif submitted_by == "admin":
+                self.act_as_admin()
         sp = self.submit_progress(project_id, task_id)
         self.assertEqual(sp.status_code, 200, sp.text)
-        self.act_as_supervisor()
+
+        if not is_approval_gate:
+            self.act_as_supervisor()
         r = self.transition(project_id, task_id, "submitted")
         self.assertEqual(r.status_code, 200, r.text)
 
