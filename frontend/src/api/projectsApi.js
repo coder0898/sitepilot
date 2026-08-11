@@ -10,6 +10,12 @@ function query(params = {}) {
 
 export const projectsApi = {
   list: params => api(`/api/v2/projects${query(params)}`),
+  // Both of these are additive read models the list view degrades without:
+  // ProjectsPage treats a rejection as "no data yet" and hides the progress,
+  // phase and attention affordances rather than failing the page. Remove the
+  // fallbacks once the endpoints ship.
+  summaries: () => api("/api/v2/projects/summaries"),
+  attention: () => api("/api/v2/projects/attention"),
   references: () => api("/api/v2/projects/reference-data"),
   publishedTemplates: () => api("/api/v2/projects/published-template-versions"),
   detail: projectId => api(`/api/v2/projects/${projectId}`),

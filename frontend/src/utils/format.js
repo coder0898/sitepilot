@@ -31,6 +31,22 @@ export function formatDateShort(value) {
     : "—";
 }
 
+// Compact relative age for list rows, from an ISO timestamp. Deliberately
+// coarse - "2h ago" is the useful signal, minute precision is noise.
+export function relativeAge(value, now = Date.now()) {
+  if (!value) return null;
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return null;
+  const minutes = Math.floor((now - then) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
 export function statusTone(status) {
   if (status === "completed") return "green";
   if (status === "submitted") return "yellow";

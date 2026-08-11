@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import SessionLocal
-from app.routes import access_requests, admin_visibility_v2, auth, communication, dashboard, execution_tasks_v2, permissions, project_dashboard_v2, project_vendors_v2, projects_v2, reports_v2, templates_v2, users, vendors, dependencies_v2, whatsapp_webhook_v2
+from app.routes import access_requests, admin_visibility_v2, auth, communication, dashboard, execution_tasks_v2, permissions, project_dashboard_v2, project_read_models_v2, project_vendors_v2, projects_v2, reports_v2, templates_v2, users, vendors, dependencies_v2, whatsapp_webhook_v2
 from app.seed import ensure_seed_data
 
 
@@ -36,6 +36,10 @@ def create_app() -> FastAPI:
     app.include_router(vendors.router)
     app.include_router(communication.router)
     app.include_router(permissions.router)
+    # Must precede projects_v2: both are mounted at /api/v2/projects, and
+    # projects_v2's GET /{project_id} would otherwise match /summaries and
+    # /attention first and reject them as invalid UUIDs.
+    app.include_router(project_read_models_v2.router)
     app.include_router(projects_v2.router)
     app.include_router(execution_tasks_v2.router)
     app.include_router(project_dashboard_v2.router)

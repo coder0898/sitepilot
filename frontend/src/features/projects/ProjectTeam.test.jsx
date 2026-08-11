@@ -1,11 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
-import { ProjectDetailModal } from "./components/ProjectDetailModal";
+import { ProjectWorkspace } from "./components/ProjectWorkspace";
 
 vi.mock("../../api/projectsApi", () => ({ projectsApi: {
   detail: vi.fn(), activity: vi.fn(), setMembership: vi.fn(),
   roleChanges: vi.fn(), reassignmentRequired: vi.fn(),
+  dependencies: vi.fn(), externalGates: vi.fn(),
 } }));
 
 const references = {
@@ -21,10 +23,21 @@ const baseProject = {
   setup: { has_project_manager: true, has_site_supervisor: false, has_template: true, has_target_handover_date: false, activation_ready: false },
 };
 
+// ProjectsPage owns the pane in the URL; this mirrors that ownership so the
+// tests still exercise real tab navigation rather than a fixed pane prop.
+function Harness({ user }) {
+  const [pane, setPane] = useState("overview");
+  return <ProjectWorkspace
+    projectId="p1" references={references} templates={[]} user={user}
+    pane={pane} onPaneChange={setPane}
+    onEdit={vi.fn()} onChanged={vi.fn().mockResolvedValue(undefined)} onDeleted={vi.fn()}
+  />;
+}
+
 async function openTeamTab(user) {
-  render(<ProjectDetailModal projectId="p1" references={references} user={user} templates={[]} onClose={vi.fn()} onEdit={vi.fn()} onChanged={vi.fn()} onDeleted={vi.fn()}/>);
+  render(<Harness user={user}/>);
   await screen.findByText("Test project");
-  fireEvent.click(screen.getByRole("button", { name: /team/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^team$/i }));
   await screen.findByText("Add team member");
 }
 
@@ -34,6 +47,8 @@ beforeEach(() => {
   projectsApi.activity.mockResolvedValue([]);
   projectsApi.roleChanges.mockResolvedValue([]);
   projectsApi.reassignmentRequired.mockResolvedValue([]);
+  projectsApi.dependencies.mockResolvedValue({ total: 0, items: [] });
+  projectsApi.externalGates.mockResolvedValue({ total: 0, items: [] });
 });
 
 describe("Add team member", () => {
@@ -75,10 +90,17 @@ describe("Add team member", () => {
   });
 
   it("hides the Add team member section for a role with no assignable options", async () => {
-    render(<ProjectDetailModal projectId="p1" references={references} user={{ role: "internal_employee", id: "u-ie" }} templates={[]} onClose={vi.fn()} onEdit={vi.fn()} onChanged={vi.fn()} onDeleted={vi.fn()}/>);
+    render(<Harness user={{ role: "internal_employee", id: "u-ie" }}/>);
     await screen.findByText("Test project");
-    fireEvent.click(screen.getByRole("button", { name: /team/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^team$/i }));
     await screen.findByText("Memberships");
     expect(screen.queryByText("Add team member")).not.toBeInTheDocument();
+  });
+
+  it("hides the planning panes from a Supervisor, matching the backend's template-role guard", async () => {
+    render(<Harness user={{ role: "supervisor", id: "u-sup" }}/>);
+    await screen.findByText("Test project");
+    expect(screen.queryByRole("button", { name: /template review/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /external gates/i })).not.toBeInTheDocument();
   });
 });

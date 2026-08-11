@@ -44,7 +44,11 @@ describe("External Gates review",()=>{
     await waitFor(()=>expect(templatesApi.listGates.mock.calls.at(-1)[1]).toEqual({page:1,page_size:100,search:"E006",mapping_classification:"broad_text",requires_configuration:true,external_party:"Client",validation_state:"valid"}));
     fireEvent.click(screen.getByRole("button",{name:/clear/i}));
     await waitFor(()=>expect(templatesApi.listGates.mock.calls.at(-1)[1]).toEqual({page:1,page_size:100}));
-  }, 10000);
+    // 30s, not 10s: this renders 32 gate cards and drives five filter
+    // round-trips, and the explicit per-test timeout overrides the global
+    // one. It sat just under 10s on an idle machine and began timing out
+    // purely from worker contention as the suite grew.
+  }, 30000);
 
   it("shows invalid gate warnings and retryable authorization errors", async()=>{
     templatesApi.listGates.mockResolvedValueOnce(gateResponse([{...exactGate,id:"bad",validation_state:"invalid",validation_issues:["cross_version_mapping"]}],1));

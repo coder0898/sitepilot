@@ -2,13 +2,22 @@ import { useEffect, useState } from "react";
 import { dashboardApi } from "../../api/dashboardApi";
 import { AppLayout } from "../../components/layout/AppLayout";
 import { visibleTabs } from "../../config/tabs";
+import { useRoute } from "../../lib/route";
 import { DashboardTab } from "./DashboardTab";
 
 export function Dashboard({ initialUser, onLogout }) {
   const [data, setData] = useState(null);
-  const [tab, setTab] = useState("projects");
+  const [route, setRoute] = useRoute();
+  const tab = route.tab || "projects";
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
+
+  // Switching module tabs drops any project selection the Projects tab was
+  // holding, otherwise ?project= survives into Templates and reappears when
+  // you come back - stale and confusing.
+  function changeTab(next) {
+    setRoute({ tab: next, project: "", pane: "" });
+  }
 
   async function refresh() {
     setLoading(true);
@@ -36,7 +45,9 @@ export function Dashboard({ initialUser, onLogout }) {
 
   useEffect(() => {
     if (data && !tabs.some(([key]) => key === tab)) {
-      setTab(tabs[0]?.[0] || "execution");
+      // replace, not push: an unreachable tab in the URL should not become a
+      // history entry the Back button can return the user to.
+      setRoute({ tab: tabs[0]?.[0] || "execution", project: "", pane: "" }, { replace: true });
     }
   }, [data, tab]);
 
@@ -58,7 +69,7 @@ export function Dashboard({ initialUser, onLogout }) {
       user={user}
       tabs={tabs}
       activeTab={tab}
-      onTabChange={setTab}
+      onTabChange={changeTab}
       onLogout={onLogout}
       onRefresh={refresh}
       notice={notice}
