@@ -25,10 +25,11 @@ from app.project_models import (
     V2ProjectMembership,
     V2ProjectTask,
     V2ProjectTaskDependency,
+    V2ProjectExternalGateTask,
 )
 from app.routes.project_vendors_v2 import router as project_vendors_router
 from app.routes.projects_v2 import router as projects_router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 from app.vendor_models import (
     ProjectVendor,
     TaskVendorAssignment,
@@ -92,6 +93,9 @@ class VendorAcknowledgementApiTests(unittest.TestCase):
             TaskVendorAssignment.__table__,
             VendorAcknowledgement.__table__,
             OutboxEvent.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2ProjectExternalGateTask.__table__,
         ):
             table.create(self.engine)
 

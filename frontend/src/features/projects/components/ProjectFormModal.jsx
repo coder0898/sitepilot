@@ -1,5 +1,18 @@
 ﻿import { CalendarDays, ClipboardList, MapPin, UsersRound } from "lucide-react";
+import { useState } from "react";
 import { Alert, Button, Field, FormGrid, FormSection, Input, Modal, Select, Textarea } from "../../../components/ui";
+
+// Mirrors derive_target_handover_date in backend/app/routes/projects_v2.py.
+// Day 1 of the schedule is the start date itself, so a 45-day template
+// starting 11 Aug hands over on 24 Sep - start + 44, not start + 45. The
+// server recomputes this on save; what is rendered here is only a preview.
+export function derivedHandoverDate(startDate, template) {
+  if (!startDate || !template?.duration_days) return null;
+  const handover = new Date(`${startDate}T00:00:00`);
+  if (Number.isNaN(handover.getTime())) return null;
+  handover.setDate(handover.getDate() + template.duration_days - 1);
+  return handover;
+}
 
 function userOptions(items, placeholder) {
   return <><option value="">{placeholder}</option>{items.map(item => <option key={item.user_id} value={item.user_id}>{item.name} - {item.designation}</option>)}</>;
@@ -36,12 +49,30 @@ function setFieldErrors(form, errors) {
 
 export function ProjectFormModal({ project = null, references, templates = [], templatesLoading = false, templatesError = "", onClose, onSubmit, saving, apiError = "" }) {
   const editing = Boolean(project);
+  // The rest of the form stays uncontrolled and is read via FormData on
+  // submit. These two are tracked because the handover preview has to
+  // recompute as either one changes.
+  const [startDate, setStartDate] = useState(project?.start_date || "");
+  const [templateVersionId, setTemplateVersionId] = useState(project?.template_version_id || "");
+
+  const selectedTemplate = templates.find(item => item.version_id === templateVersionId) || null;
+  const handover = derivedHandoverDate(startDate, selectedTemplate);
+  const handoverLabel = handover
+    ? handover.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+    : null;
 
   async function submit(event) {
     event.preventDefault();
     if (saving) return;
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form));
+    // A disabled input is omitted from FormData, and the start date is
+    // disabled once a template is attached - so read it from state, which is
+    // the source of truth for this field in both modes. The template select
+    // is deliberately NOT patched in the same way: when it is disabled the
+    // backend must not receive template_version_id at all, or editing an
+    // active project 409s on "a template can only be attached while draft".
+    values.start_date = startDate;
 
     if (editing) {
       const errors = {};
@@ -57,7 +88,8 @@ export function ProjectFormModal({ project = null, references, templates = [], t
         site_address: values.site_address.trim(),
         description: values.description?.trim() || null,
         start_date: values.start_date,
-        target_handover_date: values.target_handover_date || null,
+        // Handover is never sent: the server derives it from the template
+        // duration and rejects an explicit value outright.
         ...(values.template_version_id ? { template_version_id: values.template_version_id } : {}),
         reason: values.reason.trim(),
       });
@@ -95,8 +127,38 @@ export function ProjectFormModal({ project = null, references, templates = [], t
 
         <FormSection title="Planned start" description={editing ? "Update the planned dates with an audit reason." : "This is the proposed Day 1 date for the future project schedule."} icon={CalendarDays}>
           <FormGrid>
-            <Field label="Proposed start date" htmlFor="project-start-date"><Input id="project-start-date" type="date" name="start_date" required defaultValue={project?.start_date || ""} aria-describedby="start-date-error"/><small id="start-date-error" data-field-error="start_date" className="font-medium text-rose-600"/></Field>
-            {editing && <Field label="Target handover date" htmlFor="project-target-date"><Input id="project-target-date" type="date" name="target_handover_date" defaultValue={project?.target_handover_date || ""}/></Field>}
+            <Field label="Proposed start date" htmlFor="project-start-date">
+              <Input
+                id="project-start-date"
+                type="date"
+                name="start_date"
+                required
+                value={startDate}
+                onChange={event => setStartDate(event.target.value)}
+                disabled={editing && Boolean(project?.template_version_id)}
+                aria-describedby="start-date-help start-date-error"
+              />
+              {editing && project?.template_version_id
+                ? <small id="start-date-help" className="text-xs text-slate-500">Locked: the start date cannot move once a template is attached.</small>
+                : null}
+              <small id="start-date-error" data-field-error="start_date" className="font-medium text-rose-600"/>
+            </Field>
+            {/* Derived, never entered - the server computes the same value
+                from the template duration and rejects a supplied one. */}
+            <Field label="Target handover date" htmlFor="project-target-date">
+              <output
+                id="project-target-date"
+                aria-live="polite"
+                className="flex min-h-12 items-center rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-bold text-slate-700"
+              >
+                {handoverLabel || "Select a start date and template"}
+              </output>
+              <small className="text-xs text-slate-500">
+                {selectedTemplate
+                  ? `Calculated automatically — day ${selectedTemplate.duration_days} of ${selectedTemplate.template_name}, counting the start date as day 1.`
+                  : "Calculated automatically from the start date and the template's duration."}
+              </small>
+            </Field>
           </FormGrid>
         </FormSection>
 
@@ -106,7 +168,8 @@ export function ProjectFormModal({ project = null, references, templates = [], t
               id="project-template-version"
               name="template_version_id"
               required={!editing || !project?.template_version_id}
-              defaultValue={project?.template_version_id || ""}
+              value={templateVersionId}
+              onChange={event => setTemplateVersionId(event.target.value)}
               disabled={templatesLoading || Boolean(editing && project?.template_version_id)}
               aria-describedby="template-help template-error"
             >

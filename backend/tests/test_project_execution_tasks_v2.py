@@ -23,9 +23,10 @@ from app.project_models import (
     V2ProjectMembership,
     V2ProjectTask,
     V2ProjectTaskDependency,
+    V2ProjectExternalGateTask,
 )
 from app.routes.projects_v2 import router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
 
 @compiles(JSONB, "sqlite")
@@ -74,6 +75,9 @@ class ProjectExecutionTasksApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2ProjectExternalGateTask.__table__,
         ):
             table.create(self.engine)
 
@@ -188,13 +192,16 @@ class ProjectExecutionTasksApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("not been activated", response.json()["detail"])
 
-    def test_activation_without_generated_tasks_is_now_rejected(self):
-        """U1: activation now locks a real baseline snapshot and rejects
-        activation when there are zero included tasks to snapshot, so a
-        project that never had generate-tasks run cannot activate at all
-        (superseding the old placeholder behaviour of an empty task list)."""
+    def test_activation_without_included_tasks_is_rejected(self):
+        """U1: activation locks a real baseline snapshot and rejects a project
+        with zero included tasks to snapshot. Creation now generates the
+        snapshot automatically, so the reachable form of this state is every
+        task excluded during review rather than never generating them."""
         project = self.create_draft()
-        # No generate-tasks call before activation.
+        with self.Session.begin() as session:
+            for task in session.scalars(select(V2ProjectTask).where(V2ProjectTask.project_id == uuid.UUID(project["id"]))):
+                task.included = False
+                task.decision_state = "excluded"
         response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
         self.assertEqual(response.status_code, 409, response.text)
 

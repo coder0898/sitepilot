@@ -23,9 +23,10 @@ from app.project_models import (
     V2ProjectMembership,
     V2ProjectTask,
     V2ProjectTaskDependency,
+    V2ProjectExternalGateTask,
 )
 from app.routes.projects_v2 import router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
 
 @compiles(JSONB, "sqlite")
@@ -77,6 +78,9 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2ProjectExternalGateTask.__table__,
         ):
             table.create(self.engine)
 
@@ -172,7 +176,12 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             self.assertTrue(events[0].after_json["template_version_locked"])
 
     def test_activate_rejects_project_missing_target_handover_date(self):
-        project = self.create_draft(target_handover_date=None)
+        # Creation now derives the handover date from the template duration,
+        # so this state can no longer be requested - it is cleared directly to
+        # keep the activation guard covered for rows that predate that change.
+        project = self.create_draft()
+        with self.Session.begin() as session:
+            session.get(V2Project, uuid.UUID(project["id"])).target_handover_date = None
         response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt activation."})
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("target handover date", response.json()["detail"])
@@ -370,6 +379,67 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
                 json={"confirmation": project["code"], "reason": "Attempt."},
             )
             self.assertEqual(response.status_code, 403, (role, response.text))
+
+
+    # ---- Derived target handover date ----------------------------------
+    # Computed from the attached template's duration rather than entered.
+    # Day 1 is the start date itself, so the fixture's 45-day template
+    # starting 2026-08-01 hands over on 2026-09-14.
+
+    def test_create_derives_the_handover_date_from_the_template_duration(self):
+        project = self.create_draft()
+        self.assertEqual(project["target_handover_date"], "2026-09-14")
+
+    def test_create_ignores_a_client_supplied_handover_date(self):
+        project = self.create_draft(target_handover_date="2027-01-01")
+        self.assertEqual(project["target_handover_date"], "2026-09-14")
+
+    def test_create_shifts_the_handover_date_with_the_start_date(self):
+        project = self.create_draft(proposed_start_date="2026-09-01")
+        # 2026-09-01 + 44 days.
+        self.assertEqual(project["target_handover_date"], "2026-10-15")
+
+    def test_update_refuses_to_set_the_handover_date_directly(self):
+        project = self.create_draft()
+        response = self.client.patch(
+            f"/api/v2/projects/{project['id']}",
+            json={"target_handover_date": "2027-01-01", "reason": "Push the date out."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("derived from the template duration", response.json()["detail"])
+
+    def test_update_refuses_to_clear_the_handover_date(self):
+        project = self.create_draft()
+        response = self.client.patch(
+            f"/api/v2/projects/{project['id']}",
+            json={"clear_target_handover_date": True, "reason": "Remove the date."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+
+    def test_update_heals_a_draft_that_has_no_handover_date(self):
+        project = self.create_draft()
+        with self.Session.begin() as session:
+            session.get(V2Project, uuid.UUID(project["id"])).target_handover_date = None
+
+        response = self.client.patch(
+            f"/api/v2/projects/{project['id']}",
+            json={"client_name": "Renamed Client", "reason": "Routine details edit."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["target_handover_date"], "2026-09-14")
+
+    def test_a_healed_draft_can_then_be_activated(self):
+        project = self.create_draft()
+        with self.Session.begin() as session:
+            session.get(V2Project, uuid.UUID(project["id"])).target_handover_date = None
+        self.client.patch(
+            f"/api/v2/projects/{project['id']}",
+            json={"client_name": "Renamed Client", "reason": "Routine details edit."},
+        )
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/activate", json={"reason": "Setup complete, ready to start."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
 
 
 if __name__ == "__main__":

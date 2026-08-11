@@ -10,7 +10,10 @@ from app.template_models import V2TemplateTaskDependency, V2TemplateVersion
 class ProjectDependencyGenerationService:
     def __init__(self, db: Session): self.db = db
 
-    def generate(self, project: V2Project, actor: User) -> dict:
+    def generate(self, project: V2Project, actor: User, *, commit: bool = True) -> dict:
+        """`commit=False` lets project creation fold this into its own
+        transaction, so a project never exists with tasks but no dependencies.
+        Callers that pass False own the rollback."""
         if project.status != "draft": raise HTTPException(409, "Dependencies can only be generated while the project is draft.")
         if not project.template_version_id: raise HTTPException(422, "Attach a published template before generating dependencies.")
         version = self.db.get(V2TemplateVersion, project.template_version_id)
@@ -36,9 +39,12 @@ class ProjectDependencyGenerationService:
         try:
             self.db.add_all(generated); self.db.flush()
             self.db.add(V2AuditEvent(actor_user_id=actor.id, action="PROJECT_DEPENDENCIES_GENERATED", entity_type="project", entity_id=project.id, project_id=project.id, source="portal", reason="Generated draft project dependencies from the selected published template.", before_json={"generated_dependency_count":0}, after_json={"generated_dependency_count":len(generated),"excluded_warning_count":sum(1 for row in generated if row.excluded_task_warning)}))
-            self.db.commit()
+            if commit:
+                self.db.commit()
         except Exception:
-            self.db.rollback(); raise
+            if commit:
+                self.db.rollback()
+            raise
         return {"project_id": project.id, "status": project.status, "generated_dependency_count": len(generated), "created_dependency_count": len(generated), "excluded_warning_count": sum(1 for row in generated if row.excluded_task_warning), "no_op": False}
 
     def list(self, project: V2Project) -> dict:

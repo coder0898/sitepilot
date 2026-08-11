@@ -23,9 +23,10 @@ from app.project_models import (
     V2ProjectMembership,
     V2ProjectTask,
     V2ProjectTaskDependency,
+    V2ProjectExternalGateTask,
 )
 from app.routes.projects_v2 import router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
 
 @compiles(JSONB, "sqlite")
@@ -77,6 +78,9 @@ class ProjectBaselineLockApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2ProjectExternalGateTask.__table__,
         ):
             table.create(self.engine)
 
@@ -269,7 +273,13 @@ class ProjectBaselineLockApiTests(unittest.TestCase):
 
     def test_zero_included_tasks_rejects_activation(self):
         project = self.create_draft()
-        # No generate-tasks call: nothing to lock.
+        # Creation now generates the snapshot, so exclude every task instead
+        # of skipping generation - the guard under test is "nothing included
+        # to lock", which is still reachable through review decisions.
+        with self.Session.begin() as session:
+            for task in session.scalars(select(V2ProjectTask).where(V2ProjectTask.project_id == uuid.UUID(project["id"]))):
+                task.included = False
+                task.decision_state = "excluded"
         response = self.activate(project["id"])
         self.assertEqual(response.status_code, 409, response.text)
         with self.Session() as session:

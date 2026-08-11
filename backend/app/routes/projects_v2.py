@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -52,6 +52,18 @@ def clean_required(value: str | None, label: str) -> str:
 def clean_optional(value: str | None) -> str | None:
     cleaned = (value or "").strip()
     return cleaned or None
+
+
+def derive_target_handover_date(start_date: date, template_version: V2TemplateVersion) -> date:
+    """Day 1 of the schedule is the start date itself, so a 45-day template
+    starting on 11 Aug hands over on 24 Sep - start + 44, not start + 45.
+
+    This is the only place a handover date is produced. It cannot drift:
+    `update_project` refuses to move `start_date` once a template is
+    attached, and refuses to replace the template version at all, so the
+    two inputs are frozen from creation onward.
+    """
+    return start_date + timedelta(days=template_version.duration_days - 1)
 
 
 def project_snapshot(project: V2Project) -> dict:
@@ -293,12 +305,18 @@ def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles
     name = clean_required(payload.name, "Project name")
     client_name = clean_required(payload.client_name, "Client")
     site_address = clean_required(payload.site_address, "Location")
-    if payload.target_handover_date and payload.target_handover_date < payload.start_date:
-        raise HTTPException(422, "Target handover date cannot be before the proposed start date.")
 
     template_version = db.get(V2TemplateVersion, payload.template_version_id)
     if not template_version or template_version.status != "published":
         raise HTTPException(422, "Select a published template version.")
+
+    # Always derived from the template's own duration, never taken from the
+    # client. `payload.target_handover_date` is retained on the schema only
+    # so older callers do not break on extra="forbid"; a supplied value is
+    # deliberately ignored rather than silently trusted, because a handover
+    # that disagrees with the schedule it is measured against is worse than
+    # no handover at all.
+    target_handover_date = derive_target_handover_date(payload.start_date, template_version)
 
     def resolve_accountable_user(user_or_employee_id: uuid.UUID, expected_role: UserRole, label: str) -> tuple[User, EmployeeProfile]:
         # The accepted Phase 3 contract uses user IDs. Retain compatibility with
@@ -337,7 +355,7 @@ def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles
         site_address=site_address,
         description=clean_optional(payload.description),
         start_date=payload.start_date,
-        target_handover_date=payload.target_handover_date,
+        target_handover_date=target_handover_date,
         template_version_id=template_version.id,
         status="draft",
         created_by=actor.id,
@@ -363,17 +381,29 @@ def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles
             ),
         ])
         db.flush()
+        # Tasks, dependencies and gates are a deterministic copy of the
+        # selected template - there is no decision between creating the
+        # project and generating them, so they run here rather than as three
+        # manual steps. All four writes share one transaction: a project can
+        # never exist with a half-built snapshot. Order matters - dependencies
+        # and gates both remap onto the generated task rows, and gates need
+        # the PM membership flushed above to set accountable_pm_user_id.
+        task_result = generate_task_snapshot(db, project, actor, commit=False)
+        dependency_result = ProjectDependencyGenerationService(db).generate(project, actor, commit=False)
+        gate_result = ProjectGateGenerationService(db).generate(project.id, actor, commit=False)
         add_audit(
             db,
             actor,
             project,
             "PROJECT_CREATED",
-            "Draft project created from published template reference; tasks not generated.",
+            "Draft project created from published template reference; task snapshot generated automatically.",
             after={
                 **project_snapshot(project),
                 "project_manager_user_id": str(_pm_user.id),
                 "supervisor_user_id": str(_supervisor_user.id),
-                "generated_task_count": 0,
+                "generated_task_count": task_result["generated_task_count"],
+                "generated_dependency_count": dependency_result["generated_dependency_count"],
+                "generated_gate_count": gate_result["generated_gate_count"],
             },
         )
         db.commit()
@@ -388,20 +418,17 @@ def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles
     return project_json(db, project, True)
 
 
-@router.post("/{project_id}/generate-tasks")
-def generate_project_tasks(
-    project_id: uuid.UUID,
-    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)),
-    db: Session = Depends(get_db),
-):
-    """Generate the immutable template-derived task snapshot for a draft project.
+def generate_task_snapshot(db: Session, project: V2Project, actor: User, *, commit: bool = True) -> dict:
+    """Copy the selected published template's tasks into this project.
 
-    This chunk intentionally creates task rows only. It does not calculate
-    baseline dates, dependencies, gates, assignments, or activation state.
+    Pure copy, no decisions: the template version and start date are fixed at
+    creation and cannot change afterwards, so this produces the same rows
+    however often it runs. Re-running is a no-op.
+
+    `commit=False` lets `create_project` fold generation into the same
+    transaction that creates the project, so a project can never exist with a
+    half-built snapshot. The standalone route keeps `commit=True`.
     """
-    project = db.get(V2Project, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found.")
     if project.status != "draft":
         raise HTTPException(409, "Tasks can only be generated while the project is draft.")
     if not project.template_version_id:
@@ -482,9 +509,11 @@ def generate_project_tasks(
                 "last_task_code": generated[-1].original_code,
             },
         )
-        db.commit()
+        if commit:
+            db.commit()
     except Exception:
-        db.rollback()
+        if commit:
+            db.rollback()
         raise
 
     return {
@@ -495,6 +524,21 @@ def generate_project_tasks(
         "created_task_count": len(generated),
         "no_op": False,
     }
+
+
+@router.post("/{project_id}/generate-tasks")
+def generate_project_tasks(
+    project_id: uuid.UUID,
+    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)),
+    db: Session = Depends(get_db),
+):
+    """Manual fallback. Creation now generates the snapshot automatically, so
+    this only matters for drafts that predate that, or if generation was
+    somehow skipped."""
+    project = db.get(V2Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found.")
+    return generate_task_snapshot(db, project, actor)
 
 
 
@@ -669,12 +713,23 @@ def update_project(project_id: uuid.UUID, payload: ProjectUpdateIn, actor: User 
         if project.template_version_id and payload.start_date != project.start_date:
             raise HTTPException(409, "Start date cannot change after a template is applied. Use schedule revision later.")
         project.start_date = payload.start_date
+    # Target handover is derived from the template's duration, not entered.
+    # Clearing it would leave a project that can never be activated and no
+    # way to restore the value, so say so rather than accept and re-derive.
     if payload.clear_target_handover_date:
-        if project.status != "draft":
-            raise HTTPException(409, "Target handover can only be cleared while the project is draft.")
-        project.target_handover_date = None
-    elif payload.target_handover_date is not None:
+        raise HTTPException(409, "Target handover is derived from the template duration and cannot be cleared.")
+    if payload.target_handover_date is not None and project.template_version_id:
+        raise HTTPException(409, "Target handover is derived from the template duration and cannot be set directly.")
+    if payload.target_handover_date is not None:
         project.target_handover_date = payload.target_handover_date
+    # Heals drafts created before the date became derived, and any project
+    # whose start date just moved while no template was attached. Without
+    # this they would sit permanently un-activatable now that no client can
+    # supply the value by hand.
+    if project.template_version_id and not project.target_handover_date:
+        template_version = db.get(V2TemplateVersion, project.template_version_id)
+        if template_version:
+            project.target_handover_date = derive_target_handover_date(project.start_date, template_version)
     if project.target_handover_date and project.target_handover_date < project.start_date:
         raise HTTPException(422, "Target handover date cannot be before the start date.")
     add_audit(db, actor, project, "PROJECT_DETAILS_UPDATED", payload.reason.strip(), before, project_snapshot(project))

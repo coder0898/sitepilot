@@ -15,11 +15,11 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectExternalGateTask, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
 from app.routes.project_vendors_v2 import router as project_vendors_router
 from app.routes.project_vendors_v2 import vendors_router
 from app.routes.projects_v2 import router as projects_router
-from app.template_models import V2Template, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 from app.vendor_models import ProjectVendor, V2CapabilityCategory, V2Vendor, V2VendorCapability
 
 
@@ -55,6 +55,10 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -68,6 +72,14 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
             V2CapabilityCategory.__table__,
             V2VendorCapability.__table__,
             ProjectVendor.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2TemplateTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
+            V2ProjectExternalGateTask.__table__,
+            V2ProjectTaskDependency.__table__,
+            V2TemplateTask.__table__,
+            V2ProjectTask.__table__,
         ):
             table.create(self.engine)
 
@@ -143,6 +155,15 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
                 created_by=ADMIN_ID, published_by=ADMIN_ID, published_at=datetime.now(timezone.utc),
             )
             session.add(published)
+            session.flush()
+            # Creating a project now generates its task snapshot, and a
+            # template with no tasks is rejected outright - this fixture only
+            # needs a project to hang vendor mappings off, so one task is enough.
+            session.add(V2TemplateTask(
+                template_version_id=published.id, code="T001", sequence_no=1, title="Seed task",
+                schedule_classification="execution", planned_start_day=1, planned_end_day=1,
+                applicability="mandatory", evidence_required=False, duration_days=1,
+            ))
             session.flush()
             self.published_version_id = published.id
 

@@ -27,7 +27,7 @@ from app.project_models import (
     V2ProjectTaskDependency,
 )
 from app.routes.projects_v2 import router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
 
 @compiles(JSONB, "sqlite")
@@ -88,6 +88,9 @@ class SupervisorReadOnlyViewApiTests(unittest.TestCase):
             BaselineTask.__table__,
             Task.__table__,
             TaskDependency.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2TemplateTaskDependency.__table__,
         ):
             table.create(self.engine)
 

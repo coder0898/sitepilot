@@ -15,9 +15,9 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectExternalGateTask, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
 from app.routes.projects_v2 import router
-from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 
 
 @compiles(JSONB, "sqlite")
@@ -41,6 +41,10 @@ class DraftProjectCreateApiTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad-text check constraint uses
+            # Postgres's btrim(); SQLite has no such builtin, so register
+            # an equivalent for this test harness only.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         # Create only the production tables touched by this capability.
         for table in (
@@ -52,6 +56,13 @@ class DraftProjectCreateApiTests(unittest.TestCase):
             V2Project.__table__,
             V2ProjectMembership.__table__,
             V2AuditEvent.__table__,
+            V2TemplateExternalGate.__table__,
+            V2TemplateExternalGateTask.__table__,
+            V2TemplateTaskDependency.__table__,
+            V2ProjectExternalGate.__table__,
+            V2ProjectExternalGateTask.__table__,
+            V2ProjectTaskDependency.__table__,
+            V2ProjectTask.__table__,
         ):
             table.create(self.engine)
 
@@ -177,7 +188,10 @@ class DraftProjectCreateApiTests(unittest.TestCase):
             response = self.client.get("/api/v2/projects/published-template-versions")
             self.assertEqual(response.status_code, 403, (role, response.text))
 
-    def test_valid_create_is_draft_persists_references_creates_no_tasks_and_audits_once(self):
+    def test_valid_create_is_draft_persists_references_and_generates_the_snapshot(self):
+        """Creation generates the task snapshot, dependencies and gates in the
+        same transaction - the three steps that used to be manual buttons. The
+        project still lands in draft; only activation changes that."""
         response = self.client.post("/api/v2/projects", json=self.payload())
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
@@ -189,12 +203,33 @@ class DraftProjectCreateApiTests(unittest.TestCase):
         with self.Session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(V2Project)), 1)
             self.assertEqual(session.scalar(select(func.count()).select_from(V2ProjectMembership)), 2)
-            self.assertEqual(session.scalar(select(func.count()).select_from(V2AuditEvent)), 1)
             self.assertEqual(session.scalar(select(func.count()).select_from(V2TemplateTask)), 1)
-            audit = session.scalar(select(V2AuditEvent))
-            self.assertEqual(audit.action, "PROJECT_CREATED")
+            # The template's single task is copied into this project.
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2ProjectTask)), 1)
+
+            audit = session.scalar(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_CREATED"))
             self.assertEqual(audit.actor_user_id, ADMIN_ID)
-            self.assertEqual(audit.after_json["generated_task_count"], 0)
+            self.assertEqual(audit.after_json["generated_task_count"], 1)
+            self.assertEqual(audit.after_json["generated_dependency_count"], 0)
+            self.assertEqual(audit.after_json["generated_gate_count"], 0)
+            # Generation is audited separately from creation.
+            actions = set(session.scalars(select(V2AuditEvent.action)))
+            self.assertIn("PROJECT_TASKS_GENERATED", actions)
+
+    def test_create_is_atomic_when_the_template_has_no_tasks(self):
+        """A template with no tasks is rejected outright rather than leaving a
+        project that can never be activated."""
+        with self.Session.begin() as session:
+            for task in session.scalars(select(V2TemplateTask)):
+                session.delete(task)
+
+        response = self.client.post("/api/v2/projects", json=self.payload())
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("contains no tasks", response.json()["detail"])
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2Project)), 0)
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2ProjectMembership)), 0)
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2AuditEvent)), 0)
 
     def test_inactive_or_wrong_role_accountable_users_are_rejected_without_writes(self):
         cases = []
@@ -275,7 +310,9 @@ class DraftProjectCreateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(response.json()["template_version_id"], str(self.published_version_id))
         with self.Session() as session:
-            audit = session.scalar(select(V2AuditEvent))
+            # Creation also audits the generated snapshot, so scope to the
+            # creation event rather than taking whichever row comes back first.
+            audit = session.scalar(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_CREATED"))
             self.assertEqual(audit.after_json["project_manager_user_id"], str(PM_ID))
             self.assertEqual(audit.after_json["supervisor_user_id"], str(SUPERVISOR_ID))
 

@@ -38,7 +38,9 @@ class ProjectGateGenerationService:
         if not row: raise HTTPException(422, "Assign an active Project Manager before generating external gates.")
         return row
 
-    def generate(self, project_id: uuid.UUID, actor: User) -> dict:
+    def generate(self, project_id: uuid.UUID, actor: User, *, commit: bool = True) -> dict:
+        """`commit=False` lets project creation fold this into its own
+        transaction. Callers that pass False own the rollback."""
         project = self._project(project_id)
         pm = self._pm(project.id)
         template_gates = list(self.db.scalars(
@@ -101,9 +103,12 @@ class ProjectGateGenerationService:
             self.db.add(V2AuditEvent(actor_user_id=actor.id, action="PROJECT_GATES_GENERATED", entity_type="project_external_gate_set",
                 entity_id=project.id, project_id=project.id, source="portal", reason="Generated draft project external gates from the selected published template.",
                 before_json={"generated_gate_count": 0}, after_json={"generated_gate_count": len(created), "exact_mapping_count": exact_count, "accountable_pm_user_id": str(pm.id)}))
-            self.db.commit()
+            if commit:
+                self.db.commit()
         except Exception:
-            self.db.rollback(); raise
+            if commit:
+                self.db.rollback()
+            raise
         return {"project_id": project.id, "status": project.status, "generated_gate_count": len(created), "created_gate_count": len(created), "exact_mapping_count": exact_count, "no_op": False}
 
     def list(self, project_id: uuid.UUID, actor: User) -> dict:
