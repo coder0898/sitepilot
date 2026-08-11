@@ -62,6 +62,12 @@ class ProjectDeleteIn(BaseModel):
     reason: str = Field(min_length=4)
 
 
+class ProjectRestoreIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=4)
+
+
 class ProjectActivateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

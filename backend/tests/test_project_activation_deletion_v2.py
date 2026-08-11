@@ -381,6 +381,72 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 403, (role, response.text))
 
 
+    # ---- Restore from archive ------------------------------------------
+
+    def archive(self, project):
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/status",
+            json={"status": "archived", "reason": "Archived by mistake."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_archived_draft_restores_to_draft(self):
+        project = self.create_draft()
+        self.archive(project)
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/restore", json={"reason": "Archived in error."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "draft")
+
+    def test_archived_active_project_restores_to_on_hold_not_active(self):
+        """Undoing an archive must not silently resume execution."""
+        project = self.create_draft()
+        self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Setup complete, ready to start."})
+        self.archive(project)
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/restore", json={"reason": "Archived in error."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "on_hold")
+
+    def test_restore_writes_an_audit_entry_recording_the_target(self):
+        project = self.create_draft()
+        self.archive(project)
+        self.client.post(f"/api/v2/projects/{project['id']}/restore", json={"reason": "Archived in error."})
+        with self.Session() as session:
+            events = session.scalars(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_RESTORED")).all()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].before_json["status"], "archived")
+            self.assertEqual(events[0].after_json["restored_to"], "draft")
+            self.assertEqual(events[0].reason, "Archived in error.")
+
+    def test_restore_rejects_a_project_that_is_not_archived(self):
+        project = self.create_draft()
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/restore", json={"reason": "Not archived."},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+
+    def test_only_admin_can_restore(self):
+        project = self.create_draft()
+        self.archive(project)
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.super_admin):
+            self.app.dependency_overrides[current_user] = lambda role=role: User(
+                id=ADMIN_ID, name=role.value, email=f"{role.value}@example.com", role=role, active=True,
+            )
+            response = self.client.post(
+                f"/api/v2/projects/{project['id']}/restore", json={"reason": "Attempt restore."},
+            )
+            self.assertEqual(response.status_code, 403, (role, response.text))
+
+    def test_a_restored_draft_can_be_archived_again(self):
+        project = self.create_draft()
+        self.archive(project)
+        self.client.post(f"/api/v2/projects/{project['id']}/restore", json={"reason": "Archived in error."})
+        self.assertEqual(self.archive(project)["status"], "archived")
+
     # ---- Derived target handover date ----------------------------------
     # Computed from the attached template's duration rather than entered.
     # Day 1 is the start date itself, so the fixture's 45-day template

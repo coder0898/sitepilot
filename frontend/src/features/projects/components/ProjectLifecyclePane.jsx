@@ -17,11 +17,28 @@ const TRANSITIONS = {
 export function ProjectLifecyclePane({ project, user, onChanged, onDeleted }) {
   const transitions = TRANSITIONS[user.role]?.[project.status] || [];
   const canDelete = user.role === "admin" && project.status === "draft" && !project.template_version_id && project.memberships.length === 0;
+  const isArchived = project.status === "archived";
+  const canRestore = isArchived && user.role === "admin";
   const [target, setTarget] = useState(transitions[0] || "");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  async function restore(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await projectsApi.restore(project.id, reason);
+      setReason("");
+      await onChanged();
+    } catch (caught) {
+      setError(caught.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function changeStatus(event) {
     event.preventDefault();
@@ -53,9 +70,9 @@ export function ProjectLifecyclePane({ project, user, onChanged, onDeleted }) {
   // Explain the actual blocker. Saying "Admin only" to an Admin looking at
   // an archived project is both wrong and a dead end - archived is terminal
   // in change_status, which is a state problem, not a permission one.
-  if (!transitions.length && !canDelete) {
-    const message = project.status === "archived"
-      ? "This project is archived and cannot be moved to another state."
+  if (!transitions.length && !canDelete && !canRestore) {
+    const message = isArchived
+      ? "This project is archived. Only an Admin can restore it."
       : project.status === "completed"
         ? "This project is complete. Only an Admin can archive it from here."
         : "Your role cannot change this project's lifecycle state. Activating, archiving and deleting a project are Admin-only actions.";
@@ -75,6 +92,20 @@ export function ProjectLifecyclePane({ project, user, onChanged, onDeleted }) {
       </div>
 
       {error && <Alert tone="danger" className="mt-4">{error}</Alert>}
+
+      {canRestore && <form onSubmit={restore} className="mt-4 grid gap-3">
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">
+          This project is archived. Restoring returns it to the state it held before archiving — a project
+          that was active comes back <strong className="font-black">on hold</strong>, so work is never
+          silently resumed.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <Field label="Reason for restoring">
+            <Input value={reason} onChange={event => setReason(event.target.value)} minLength={4} required placeholder="Why is this project being restored?"/>
+          </Field>
+          <Button type="submit" loading={busy} disabled={reason.trim().length < 4}>Restore project</Button>
+        </div>
+      </form>}
 
       {transitions.length > 0 && <form onSubmit={changeStatus} className="mt-4 grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)_auto] sm:items-end">
         <Field label="Move project to">

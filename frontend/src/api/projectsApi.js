@@ -52,5 +52,7 @@ export const projectsApi = {
   rejectRoleChange: (projectId, changeId, reason) => api(`/api/v2/projects/${projectId}/role-changes/${changeId}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
   reassignmentRequired: projectId => api(`/api/v2/projects/${projectId}/role-changes/reassignment-required`),
   setStatus: (projectId, status, reason) => api(`/api/v2/projects/${projectId}/status`, { method: "POST", body: JSON.stringify({ status, reason }) }),
+  // Archived is terminal in setStatus; this is the only way back out of it.
+  restore: (projectId, reason) => api(`/api/v2/projects/${projectId}/restore`, { method: "POST", body: JSON.stringify({ reason }) }),
   remove: (projectId, payload) => api(`/api/v2/projects/${projectId}`, { method: "DELETE", body: JSON.stringify(payload) }),
 };

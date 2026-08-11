@@ -13,7 +13,7 @@ from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import ProjectRoleChange, V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
 from app.template_models import V2Template, V2TemplateTask, V2TemplateVersion
-from app.schemas.projects import ProjectActivateIn, ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectRoleChangeRejectIn, ProjectRoleChangeRequestIn, ProjectStatusIn, ProjectUpdateIn
+from app.schemas.projects import ProjectActivateIn, ProjectCreateIn, ProjectDeleteIn, ProjectMembershipEndIn, ProjectMembershipIn, ProjectRestoreIn, ProjectRoleChangeRejectIn, ProjectRoleChangeRequestIn, ProjectStatusIn, ProjectUpdateIn
 from app.schemas.project_template_review import ProjectTemplateReviewSummaryOut, ProjectTemplateReviewTaskPage
 from app.schemas.project_task_applicability import ProjectTaskApplicabilityDecisionIn, ProjectTaskApplicabilityDecisionOut, ProjectTaskApplicabilityHistoryItem
 from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectManualTaskCreateOut
@@ -951,6 +951,63 @@ def activate_project(project_id: uuid.UUID, payload: ProjectActivateIn, actor: U
         db.rollback()
         raise
 
+    db.refresh(project)
+    return project_json(db, project, True)
+
+
+def restore_target_status(db: Session, project: V2Project) -> str:
+    """The status a project returns to when its archive is undone.
+
+    Read from the audit trail rather than guessed: the archive transition
+    recorded the previous status in `before_json`. An `active` project comes
+    back as `on_hold`, never straight to `active` - undoing an archive must
+    not silently restart execution, SLA timers or no-update tracking. Admin
+    or the accountable PM can then resume it deliberately.
+    """
+    events = db.scalars(
+        select(V2AuditEvent)
+        .where(V2AuditEvent.project_id == project.id)
+        .order_by(V2AuditEvent.occurred_at.desc(), V2AuditEvent.id.desc())
+        .limit(100)
+    ).all()
+
+    previous = None
+    for event in events:
+        if (event.after_json or {}).get("status") == "archived":
+            previous = (event.before_json or {}).get("status")
+            break
+
+    if previous in {"draft", "on_hold", "completed"}:
+        return previous
+    if previous == "active":
+        return "on_hold"
+    # No archive event on record (archived before auditing, or trimmed).
+    return "on_hold" if project.activated_at else "draft"
+
+
+@router.post("/{project_id}/restore")
+def restore_project(project_id: uuid.UUID, payload: ProjectRestoreIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Undo an archive. Archived is otherwise terminal in `change_status`,
+    which left an accidentally archived project unrecoverable through the
+    portal - this is the only route out of it."""
+    project = get_project(db, project_id, actor)
+    if actor.role != UserRole.admin:
+        raise HTTPException(403, "Only Admin can restore an archived project.")
+    if project.status != "archived":
+        raise HTTPException(409, "Only an archived project can be restored.")
+
+    target = restore_target_status(db, project)
+    before = project_snapshot(project)
+    project.status = target
+    try:
+        add_audit(
+            db, actor, project, "PROJECT_RESTORED", payload.reason.strip(),
+            before, {**project_snapshot(project), "restored_to": target},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(project)
     return project_json(db, project, True)
 
