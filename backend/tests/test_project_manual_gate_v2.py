@@ -66,5 +66,15 @@ class ManualGateTests(unittest.TestCase):
     def test_active_project_rejected(self):
         with self.Session.begin() as s: s.get(V2Project,self.project_id).status='active'
         self.assertEqual(self.client.post(f'/api/v2/projects/{self.project_id}/gates',json=self.payload()).status_code,409)
+    def test_only_admin_can_add_a_manual_approval(self):
+        """Adding an approval follows the same authority as deciding whether
+        one applies: Admin. The gate still records the PM as accountable for
+        chasing it - owning the follow-up is not the same as adding it."""
+        self.actor=User(id=PM,name='PM',email='p@x',role=UserRole.project_manager,active=True)
+        r=self.client.post(f'/api/v2/projects/{self.project_id}/gates',json=self.payload())
+        self.assertEqual(r.status_code,403,r.text)
+        self.assertIn('Only Admin',r.json()['detail'])
+        with self.Session() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(V2ProjectExternalGate)),0)
 
 if __name__=='__main__': unittest.main()

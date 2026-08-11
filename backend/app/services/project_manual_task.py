@@ -26,24 +26,11 @@ class ProjectManualTaskService:
         )
         if not project:
             raise HTTPException(404, "Project not found.")
-        if actor.role == UserRole.admin:
-            pass
-        elif actor.role == UserRole.project_manager:
-            assigned = self.db.scalar(
-                select(V2ProjectMembership.id)
-                .join(EmployeeProfile, EmployeeProfile.id == V2ProjectMembership.employee_id)
-                .where(
-                    V2ProjectMembership.project_id == project_id,
-                    V2ProjectMembership.project_role == "project_manager",
-                    V2ProjectMembership.ends_at.is_(None),
-                    EmployeeProfile.user_id == actor.id,
-                )
-                .limit(1)
-            )
-            if not assigned:
-                raise HTTPException(403, "Only Admin or the assigned Project Manager can add project tasks.")
-        else:
-            raise HTTPException(403, "Only Admin or the assigned Project Manager can add project tasks.")
+        # Adding a task changes what is in scope, so it sits with the same
+        # authority that decides applicability: Admin. The assigned PM keeps
+        # read access to the task list, they just cannot extend it.
+        if actor.role != UserRole.admin:
+            raise HTTPException(403, "Only Admin can add project tasks.")
         if project.status != "draft":
             raise HTTPException(409, "Project-specific tasks can only be added while the project is Draft.")
         if not project.template_version_id:

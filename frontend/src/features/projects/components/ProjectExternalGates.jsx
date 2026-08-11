@@ -16,7 +16,8 @@ export function ProjectExternalGates({ project, user }) {
   const [showManual, setShowManual] = useState(false);
   const requestRef = useRef(false);
   const canGenerate = ["admin", "super_admin"].includes(user.role) && project.status === "draft";
-  const canDecide = ["admin", "project_manager"].includes(user.role) && project.status === "draft";
+  // Admin decides whether an approval applies; the assigned PM reads it.
+  const canDecide = user.role === "admin" && project.status === "draft";
   const canAddManual = canDecide;
 
   async function load() {

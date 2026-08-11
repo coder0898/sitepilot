@@ -67,7 +67,11 @@ def generate_dependencies(project_id: uuid.UUID, db: Session = Depends(get_db), 
 @router.post("/{project_id}/dependencies")
 def create_manual_dependency(project_id:uuid.UUID, payload:ManualDependencyIn, db:Session=Depends(get_db), user:User=Depends(current_user)):
     assert_project(db, project_id)
-    if not can_edit(user): raise HTTPException(403,"Not allowed.")
+    # Adding a dependency changes the shape of the schedule, so it sits with
+    # the same authority that decides task and gate applicability: Admin. The
+    # assigned PM keeps read access to the dependency list.
+    if user.role != UserRole.admin:
+        raise HTTPException(403, "Only Admin can add a manual dependency.")
     if payload.predecessor_project_task_id == payload.successor_project_task_id:
         raise HTTPException(422,"Self dependency not allowed.")
     tasks=list(db.scalars(select(V2ProjectTask).where(V2ProjectTask.id.in_([payload.predecessor_project_task_id,payload.successor_project_task_id]))).all())

@@ -13,7 +13,7 @@ function formatEventTime(value) {
   return Number.isNaN(date.getTime()) ? "Time unavailable" : date.toLocaleString();
 }
 
-export function TaskApplicabilityControls({ projectId, task, onDecided }) {
+export function TaskApplicabilityControls({ projectId, task, onDecided, canDecide = true }) {
   const [decision, setDecision] = useState(null);
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -71,10 +71,14 @@ export function TaskApplicabilityControls({ projectId, task, onDecided }) {
   }
 
   return <>
+    {/* Scope decisions are Admin's. Everyone else who can reach this screen
+        keeps History, so they can see what was decided and why. */}
     <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:justify-end" aria-label={`Applicability controls for ${task.code}`}>
-      <Button size="sm" variant="secondary" disabled={isIncluded} onClick={() => openDecision("included")}><Check size={14}/> Include</Button>
-      <Button size="sm" variant="danger" disabled={!isIncluded} onClick={() => openDecision("excluded")}><X size={14}/> Exclude</Button>
-      <Button size="sm" variant="ghost" className="col-span-2" onClick={openHistory}><History size={14}/> History</Button>
+      {canDecide && <>
+        <Button size="sm" variant="secondary" disabled={isIncluded} onClick={() => openDecision("included")}><Check size={14}/> Include</Button>
+        <Button size="sm" variant="danger" disabled={!isIncluded} onClick={() => openDecision("excluded")}><X size={14}/> Exclude</Button>
+      </>}
+      <Button size="sm" variant="ghost" className={canDecide ? "col-span-2" : ""} onClick={openHistory}><History size={14}/> History</Button>
     </div>
 
     {decision && <Modal title={decision === "excluded" ? "Exclude conditional task" : "Re-include conditional task"} subtitle={`${task.code} - ${task.title}`} onClose={() => { if (!submitting) setDecision(null); }} className="sm:max-w-xl">

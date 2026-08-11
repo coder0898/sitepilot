@@ -227,12 +227,18 @@ class ProjectTaskApplicabilityApiTests(unittest.TestCase):
             self.assertEqual(source_version.content_hash, "applicability-test")
             self.assertEqual(source_version.status, "published")
 
-    def test_assigned_pm_allowed_and_other_roles_denied(self):
-        self.actor = self.users["pm"]
-        self.assertEqual(self.decide(self.conditional_id, "excluded", "PM decision").status_code, 200)
+    def test_assigned_pm_can_read_decisions_but_not_make_them(self):
+        """Scope decisions are Admin's. The assigned PM keeps read access so
+        they can see what was excluded from their project and why."""
         history_url = f"/api/v2/projects/{self.project_id}/tasks/{self.conditional_id}/applicability-decisions"
+        self.actor = self.users["pm"]
+        response = self.decide(self.conditional_id, "excluded", "PM decision")
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("Only Admin", response.json()["detail"])
         self.assertEqual(self.client.get(history_url).status_code, 200)
 
+    def test_unrelated_roles_can_neither_read_nor_decide(self):
+        history_url = f"/api/v2/projects/{self.project_id}/tasks/{self.conditional_id}/applicability-decisions"
         for key in ("other_pm", "supervisor", "super_admin"):
             with self.subTest(role=key):
                 self.actor = self.users[key]

@@ -12,6 +12,7 @@ from app.auth import current_user
 from app.database import get_db
 from app.models import User, UserRole
 from app.project_models import V2AuditEvent,V2Project,V2ProjectTask,V2ProjectTaskDependency
+from app.routes.dependencies_v2 import router as dependencies_router
 from app.routes.projects_v2 import router
 from app.template_models import V2Template,V2TemplateVersion,V2TemplateTask,V2TemplateTaskDependency
 
@@ -26,11 +27,15 @@ class DependencyGenerationTests(unittest.TestCase):
     def attach(conn,_): conn.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
     for table in [User.__table__,V2Template.__table__,V2TemplateVersion.__table__,V2TemplateTask.__table__,V2TemplateTaskDependency.__table__,V2Project.__table__,V2ProjectTask.__table__,V2ProjectTaskDependency.__table__,V2AuditEvent.__table__]: table.create(self.engine)
     self.Session=sessionmaker(bind=self.engine,expire_on_commit=False); self._seed()
-    app=FastAPI(); app.include_router(router)
+    app=FastAPI()
+    # Same order as app.main: projects_v2 owns the generate/list routes,
+    # dependencies_v2 owns the manual-creation POST.
+    app.include_router(router); app.include_router(dependencies_router)
     def db_override():
       with self.Session() as s: yield s
     app.dependency_overrides[get_db]=db_override
-    app.dependency_overrides[current_user]=lambda: User(id=ADMIN,name='Admin',email='a@test',role=UserRole.admin,active=True)
+    self.actor=User(id=ADMIN,name='Admin',email='a@test',role=UserRole.admin,active=True)
+    app.dependency_overrides[current_user]=lambda: self.actor
     self.client=TestClient(app)
   def tearDown(self): self.client.close(); self.engine.dispose()
   def _seed(self):
@@ -83,6 +88,24 @@ class DependencyGenerationTests(unittest.TestCase):
     try:
       with self.assertRaises(RuntimeError): self.post()
     finally: cls.commit=original
+    with self.Session() as s: self.assertEqual(s.scalar(select(func.count()).select_from(V2ProjectTaskDependency)),0)
+
+  # ---- manual dependency authority ----------------------------------
+  def _manual_payload(self):
+    with self.Session() as s:
+      first,second=list(s.scalars(select(V2ProjectTask).where(V2ProjectTask.included.is_(True)).order_by(V2ProjectTask.template_sequence).limit(2)))
+    return {'predecessor_project_task_id':str(first.id),'successor_project_task_id':str(second.id),'dependency_type':'finish_to_start','reason':'Site-specific ordering.'}
+  def test_admin_can_add_a_manual_dependency(self):
+    r=self.client.post(f'/api/v2/projects/{self.project_id}/dependencies',json=self._manual_payload())
+    self.assertEqual(r.status_code,200,r.text)
+  def test_project_manager_cannot_add_a_manual_dependency(self):
+    """Reshaping the schedule follows the same authority as task and gate
+    applicability: Admin. The PM keeps read access to the dependency list."""
+    payload=self._manual_payload()
+    self.actor=User(id=uuid.uuid4(),name='PM',email='pm@test',role=UserRole.project_manager,active=True)
+    r=self.client.post(f'/api/v2/projects/{self.project_id}/dependencies',json=payload)
+    self.assertEqual(r.status_code,403,r.text)
+    self.assertIn('Only Admin',r.json()['detail'])
     with self.Session() as s: self.assertEqual(s.scalar(select(func.count()).select_from(V2ProjectTaskDependency)),0)
 
 if __name__=='__main__': unittest.main()

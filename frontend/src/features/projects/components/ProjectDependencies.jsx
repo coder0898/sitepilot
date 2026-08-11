@@ -16,6 +16,9 @@ export function ProjectDependencies({ project, user }) {
   const tasks = project.tasks || project.project_tasks || [];
   const submitRef = useRef(false);
   const canGenerate = ["admin", "super_admin"].includes(user.role) && project.status === "draft";
+  // Adding a dependency reshapes the schedule, so it follows the same
+  // authority as applicability decisions: Admin only.
+  const canAddManual = user.role === "admin" && project.status === "draft";
 
   async function load() {
     setLoading(true); setError("");
@@ -35,7 +38,7 @@ export function ProjectDependencies({ project, user }) {
 
   return <div className="grid gap-4">
     <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-700"><GitBranch size={18}/></span><div><h3 className="font-black text-slate-950">Project dependencies</h3><p className="mt-1 text-xs leading-5 text-slate-500">Project-owned relationships remapped to generated project task IDs.</p></div></div><div className="flex flex-wrap gap-2">{canGenerate && <Button onClick={() => setShowCreateModal(true)}><Plus size={16}/> Create Manual Dependency</Button>}<Pill tone="blue">{data.total} dependencies</Pill>{data.excluded_warning_count > 0 && <Pill tone="orange">{data.excluded_warning_count} warnings</Pill>}</div></div>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-700"><GitBranch size={18}/></span><div><h3 className="font-black text-slate-950">Project dependencies</h3><p className="mt-1 text-xs leading-5 text-slate-500">Project-owned relationships remapped to generated project task IDs.</p></div></div><div className="flex flex-wrap gap-2">{canAddManual && <Button onClick={() => setShowCreateModal(true)}><Plus size={16}/> Create Manual Dependency</Button>}<Pill tone="blue">{data.total} dependencies</Pill>{data.excluded_warning_count > 0 && <Pill tone="orange">{data.excluded_warning_count} warnings</Pill>}</div></div>
     </section>
     {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-700">{error}<Button variant="secondary" className="ml-3" onClick={load}><RotateCcw size={15}/> Retry</Button></div>}
     {loading ? <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-bold text-slate-500">Loading dependencies...</div> : data.total === 0 ? <>

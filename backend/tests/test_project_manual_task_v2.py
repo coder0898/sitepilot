@@ -313,9 +313,13 @@ class ProjectManualTaskApiTests(unittest.TestCase):
                 0,
             )
 
-    def test_assigned_pm_allowed_other_roles_denied_and_active_project_locked(self):
+    def test_only_admin_can_add_tasks_and_active_project_is_locked(self):
+        """Adding a task changes project scope, so it follows the same
+        authority as applicability decisions: Admin only."""
         self.actor = self.users["pm"]
-        self.assertEqual(self.create_task().status_code, 201)
+        denied = self.create_task()
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertIn("Only Admin", denied.json()["detail"])
 
         self.actor = self.users["other_pm"]
         self.assertEqual(self.create_task(title="Other PM task").status_code, 403)

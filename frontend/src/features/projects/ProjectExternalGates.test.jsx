@@ -44,6 +44,15 @@ describe("Project external gate applicability", () => {
     await waitFor(() => expect(projectsApi.externalGates).toHaveBeenCalledTimes(2));
   });
 
+  it("gives the assigned PM a read-only view: applicability belongs to Admin", async () => {
+    render(<ProjectExternalGates project={project} user={{ role: "project_manager" }}/>);
+    await screen.findByText("2 gates");
+    expect(screen.queryByRole("button", { name: /add manual approval/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /applicable/i })).not.toBeInTheDocument();
+    // History stays, so the PM can see which approvals were ruled out and why.
+    expect(screen.getAllByRole("button", { name: /history/i }).length).toBeGreaterThan(0);
+  });
+
   it("renders append-only decision history", async () => {
     projectsApi.gateApplicabilityHistory.mockResolvedValue([{ id: "d1", decision: "not_applicable", reason: "Not required", actor_name: "Admin", decided_at: "2026-07-29T10:00:00Z" }]);
     render(<ProjectExternalGates project={project} user={{ role: "project_manager" }}/>);
@@ -70,7 +79,7 @@ describe("Project external gate applicability", () => {
   });
 
   it("requires an affected task for a blocking manual approval and uses mobile actions", async () => {
-    render(<ProjectExternalGates project={project} user={{ role: "project_manager" }}/>);
+    render(<ProjectExternalGates project={project} user={{ role: "admin" }}/>);
     await screen.findByText("2 gates");
     fireEvent.click(screen.getByRole("button", { name: /add manual approval/i }));
     await screen.findByText(/project-only approval/i);

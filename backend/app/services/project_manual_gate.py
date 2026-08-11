@@ -29,24 +29,11 @@ class ProjectManualGateService:
         project = self.db.scalar(select(V2Project).where(V2Project.id == project_id).with_for_update())
         if not project:
             raise HTTPException(404, "Project not found.")
-        if actor.role == UserRole.admin:
-            pass
-        elif actor.role == UserRole.project_manager:
-            assigned = self.db.scalar(
-                select(V2ProjectMembership.id)
-                .join(EmployeeProfile, EmployeeProfile.id == V2ProjectMembership.employee_id)
-                .where(
-                    V2ProjectMembership.project_id == project_id,
-                    V2ProjectMembership.project_role == "project_manager",
-                    V2ProjectMembership.ends_at.is_(None),
-                    EmployeeProfile.user_id == actor.id,
-                )
-                .limit(1)
-            )
-            if not assigned:
-                raise HTTPException(403, "Only Admin or the assigned Project Manager can add a manual approval.")
-        else:
-            raise HTTPException(403, "Only Admin or the assigned Project Manager can add a manual approval.")
+        # Same authority as deciding gate applicability: Admin. The gate still
+        # records the project's PM as accountable for chasing it (below) - they
+        # own the follow-up, not the decision to add it.
+        if actor.role != UserRole.admin:
+            raise HTTPException(403, "Only Admin can add a manual approval.")
         if project.status != "draft":
             raise HTTPException(409, "Manual approvals can only be added while the project is Draft.")
         pm = self.db.scalar(

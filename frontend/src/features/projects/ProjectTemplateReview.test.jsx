@@ -3,7 +3,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
 import { ProjectTemplateReview } from "./components/ProjectTemplateReview";
-import { ProjectDetailModal } from "./components/ProjectDetailModal";
 
 vi.mock("../../api/projectsApi", () => ({ projectsApi: {
   templateReviewTasks: vi.fn(), templateReviewSummary: vi.fn(), taskApplicabilityHistory: vi.fn(), detail: vi.fn(), activity: vi.fn(),
@@ -135,15 +134,34 @@ describe("Project template review", () => {
     expect(projectsApi.templateReviewTasks).not.toHaveBeenCalled();
   });
 
-  it("uses responsive task rows and hides Template Review navigation from field-only roles", async () => {
+  // Hiding the Template Review pane from field-only roles now lives with the
+  // workspace's own pane list - see ProjectTeam.test.jsx.
+  it("uses responsive task rows", async () => {
     render(<ProjectTemplateReview projectId="p1" user={{ role: "project_manager" }} debounceMs={0}/>);
     expect((await screen.findAllByTestId("review-task"))[0]).toHaveClass("lg:grid-cols-[76px_minmax(0,1fr)_104px_100px_104px_minmax(220px,auto)]");
-    cleanup();
-    projectsApi.detail.mockResolvedValue({ id: "p1", code: "P1", name: "Project", client_name: "Client", site_address: "Site", start_date: "2026-08-01", target_handover_date: null, template_version_id: "v1", status: "draft", memberships: [], setup: { has_project_manager: true, has_site_supervisor: true, has_template: true, has_target_handover_date: false, activation_ready: false } });
-    projectsApi.activity.mockResolvedValue([]);
-    render(<ProjectDetailModal projectId="p1" references={{ project_managers: [], supervisors: [], internal_employees: [] }} user={{ role: "supervisor", id: "s1" }} templates={[]} onClose={vi.fn()} onEdit={vi.fn()} onChanged={vi.fn()} onDeleted={vi.fn()}/>);
-    await screen.findByText("Project");
-    expect(screen.queryByRole("button", { name: /template review/i })).not.toBeInTheDocument();
+  });
+
+  it("gives the assigned PM a read-only view: scope decisions belong to Admin", async () => {
+    const includedConditional = { ...tasks[2], included: true, decision_state: "included" };
+    projectsApi.templateReviewTasks.mockResolvedValue(page([includedConditional]));
+    render(<ProjectTemplateReview projectId="p1" user={{ role: "project_manager" }} projectStatus="draft" debounceMs={0}/>);
+
+    const row = (await screen.findAllByTestId("review-task"))[0];
+    expect(within(row).queryByRole("button", { name: "Include" })).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "Exclude" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add manual task/i })).not.toBeInTheDocument();
+    // They can still see the list and why anything was excluded.
+    expect(within(row).getByRole("button", { name: /history/i })).toBeInTheDocument();
+  });
+
+  it("keeps the decision controls for an Admin", async () => {
+    const includedConditional = { ...tasks[2], included: true, decision_state: "included" };
+    projectsApi.templateReviewTasks.mockResolvedValue(page([includedConditional]));
+    render(<ProjectTemplateReview projectId="p1" user={{ role: "admin" }} projectStatus="draft" debounceMs={0}/>);
+
+    const row = (await screen.findAllByTestId("review-task"))[0];
+    expect(within(row).getByRole("button", { name: "Exclude" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add manual task/i })).toBeInTheDocument();
   });
 
   it("excludes a conditional task with a required reason and refreshes counts without clearing filters", async () => {
@@ -166,7 +184,7 @@ describe("Project template review", () => {
     projectsApi.taskApplicabilityHistory.mockResolvedValue([{ id: "a1", project_id: "p1", task_id: "t9", actor_user_id: "pm1", actor_name: "Project Manager", reason: "Required after site review.", previous_decision_state: "excluded", decision_state: "included", included: true, decided_at: "2026-07-29T10:00:00Z" }]);
     projectsApi.decideTaskApplicability.mockResolvedValue({ task_id: "t9", decision_state: "included", included: true });
     projectsApi.templateReviewTasks.mockResolvedValue(page([tasks[2]]));
-    render(<ProjectTemplateReview projectId="p1" user={{ role: "project_manager" }} debounceMs={0}/>);
+    render(<ProjectTemplateReview projectId="p1" user={{ role: "admin" }} debounceMs={0}/>);
     let row = (await screen.findAllByTestId("review-task"))[0];
     fireEvent.click(within(row).getByRole("button", { name: "Include" }));
     fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: "Required after site review." } });
@@ -219,7 +237,7 @@ describe("Project template review", () => {
   it("shows duplicate/backend errors and prevents duplicate manual-task submission", async () => {
     let rejectRequest;
     projectsApi.createManualTask.mockReturnValue(new Promise((_, reject) => { rejectRequest = reject; }));
-    render(<ProjectTemplateReview projectId="p1" user={{ role: "project_manager" }} projectStatus="draft" debounceMs={0}/>);
+    render(<ProjectTemplateReview projectId="p1" user={{ role: "admin" }} projectStatus="draft" debounceMs={0}/>);
     await screen.findByText("Generated project tasks");
     fireEvent.click(screen.getByRole("button", { name: /add manual task/i }));
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Manual task" } });

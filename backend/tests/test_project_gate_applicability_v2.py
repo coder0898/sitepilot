@@ -220,9 +220,13 @@ class ProjectGateApplicabilityTests(unittest.TestCase):
             self.assertEqual(session.scalar(select(func.count()).select_from(V2ProjectExternalGateApplicabilityDecision)), 2)
             self.assertEqual(session.scalar(select(func.count()).select_from(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_GATE_APPLICABILITY_DECIDED")), 2)
 
-    def test_assigned_pm_allowed_and_other_roles_denied(self):
+    def test_no_role_other_than_admin_can_decide_gate_applicability(self):
+        """Whether an external approval applies is Admin's call. The assigned
+        PM still reads the gate list; they just cannot decide it."""
         self.actor = self.users["pm"]
-        self.assertEqual(self.decide("applicable", "PM confirmed").status_code, 200)
+        response = self.decide("applicable", "PM confirmed")
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("Only Admin", response.json()["detail"])
         users_extra = {
             "super_admin": User(id=uuid.uuid4(), name="Super Admin", email="sa@test", role=UserRole.super_admin, active=True),
             "internal": User(id=uuid.uuid4(), name="Internal", email="int@test", role=UserRole.internal_employee, active=True),

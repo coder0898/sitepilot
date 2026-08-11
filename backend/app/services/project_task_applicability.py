@@ -40,8 +40,18 @@ class ProjectTaskApplicabilityService:
                 return project
         raise HTTPException(
             403,
-            "Only Admin or the assigned Project Manager can manage conditional task applicability.",
+            "Only Admin or the assigned Project Manager can view conditional task applicability.",
         )
+
+    def _require_decider(self, project_id: uuid.UUID, actor: User) -> V2Project:
+        """Scope decisions are Admin's to make. The assigned PM keeps read
+        access through `_require_access` - they see what was decided and why,
+        they just cannot change it. Deciding what is in scope for a project is
+        a controlled call, made centrally."""
+        project = self._require_access(project_id, actor)
+        if actor.role != UserRole.admin:
+            raise HTTPException(403, "Only Admin can decide conditional task applicability.")
+        return project
 
     def history(
         self,
@@ -89,7 +99,7 @@ class ProjectTaskApplicabilityService:
         actor: User,
         payload: ProjectTaskApplicabilityDecisionIn,
     ) -> ProjectTaskApplicabilityDecisionOut:
-        project = self._require_access(project_id, actor)
+        project = self._require_decider(project_id, actor)
         task = self.db.scalar(
             select(V2ProjectTask)
             .where(V2ProjectTask.id == task_id, V2ProjectTask.project_id == project.id)

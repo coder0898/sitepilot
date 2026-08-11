@@ -46,7 +46,16 @@ class ProjectGateApplicabilityService:
             )
             if assigned:
                 return project
-        raise HTTPException(403, "Only Admin or the assigned Project Manager can decide gate applicability.")
+        raise HTTPException(403, "Only Admin or the assigned Project Manager can view gate applicability.")
+
+    def _require_decider(self, project_id: uuid.UUID, actor: User) -> V2Project:
+        """Whether an external approval applies to a project is Admin's call.
+        The assigned PM keeps read access through `_require_access` so they can
+        see which approvals are blocking their site and why."""
+        project = self._require_access(project_id, actor)
+        if actor.role != UserRole.admin:
+            raise HTTPException(403, "Only Admin can decide gate applicability.")
+        return project
 
     def _get_gate(self, project_id: uuid.UUID, gate_id: uuid.UUID, *, lock: bool = False) -> V2ProjectExternalGate:
         statement = select(V2ProjectExternalGate).where(
@@ -67,7 +76,7 @@ class ProjectGateApplicabilityService:
         actor: User,
         payload: ProjectGateApplicabilityDecisionIn,
     ) -> ProjectGateApplicabilityDecisionOut:
-        project = self._require_access(project_id, actor)
+        project = self._require_decider(project_id, actor)
         gate = self._get_gate(project.id, gate_id, lock=True)
         if payload.decision == "not_applicable" and not payload.reason:
             raise HTTPException(422, "A reason is required when marking a gate Not Applicable.")
