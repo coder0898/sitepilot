@@ -17,11 +17,20 @@ AttentionGroup = Literal["Needs a decision", "Running late", "Setup incomplete"]
 AttentionSeverity = Literal["decision", "warning", "critical"]
 
 
+PhaseStatus = Literal["not_started", "in_progress", "completed"]
+
+
 class PhaseProgressOut(BaseModel):
     phase: str
     total: int
     completed: int
+    in_progress: int
+    not_started: int
     pct: int
+    # Derived, not stored. Drives which phases the Overview panel surfaces:
+    # a project past its opening phases should show the work in flight, not
+    # the first five phases in schedule order.
+    status: PhaseStatus
 
 
 class ProjectSummaryOut(BaseModel):

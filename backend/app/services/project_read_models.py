@@ -23,7 +23,7 @@ from app.execution_models import Task
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.schemas.project_read_models import AttentionItemOut, PhaseProgressOut, ProjectSummaryOut
-from app.services.project_visibility import ProjectVisibilityService
+from app.services.project_visibility import ACTIVE_STATUSES, ProjectVisibilityService
 
 UNPHASED_LABEL = "Unphased"
 
@@ -92,6 +92,8 @@ class ProjectReadModelService:
                 Task.phase,
                 func.count(Task.id),
                 func.sum(case((Task.lifecycle_status == "completed", 1), else_=0)),
+                func.sum(case((Task.lifecycle_status.in_(ACTIVE_STATUSES), 1), else_=0)),
+                func.sum(case((Task.lifecycle_status == "cancelled", 1), else_=0)),
                 func.min(Task.template_sequence),
             )
             .where(Task.project_id.in_(project_ids))
@@ -100,14 +102,27 @@ class ProjectReadModelService:
         ).all()
 
         phases: dict[uuid.UUID, list[PhaseProgressOut]] = {}
-        for project_id, phase, total, completed, _sequence in rows:
-            completed = int(completed or 0)
+        for project_id, phase, counted, completed, active, cancelled, _sequence in rows:
+            completed, active = int(completed or 0), int(active or 0)
+            # Cancelled work is out of scope, not outstanding - leaving it in
+            # the denominator would pin the phase below 100% forever.
+            total = int(counted) - int(cancelled or 0)
+            not_started = max(total - completed - active, 0)
+            if total and completed == total:
+                status = "completed"
+            elif active or completed:
+                status = "in_progress"
+            else:
+                status = "not_started"
             phases.setdefault(project_id, []).append(
                 PhaseProgressOut(
                     phase=phase or UNPHASED_LABEL,
-                    total=int(total),
+                    total=total,
                     completed=completed,
-                    pct=_pct(completed, int(total)),
+                    in_progress=active,
+                    not_started=not_started,
+                    pct=_pct(completed, total),
+                    status=status,
                 )
             )
         return phases

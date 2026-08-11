@@ -1,5 +1,34 @@
 import { CircleAlert, Lock, MapPin } from "lucide-react";
+import { useState } from "react";
 import { Pill } from "../../../components/ui";
+import { PhaseOverviewDrawer } from "./PhaseOverviewDrawer";
+
+export const VISIBLE_PHASE_COUNT = 5;
+
+/**
+ * Pick the few phases worth showing on Overview.
+ *
+ * Chosen by what is happening, not by schedule order: a 45-day template has
+ * 36 phases, and the first five stop meaning anything the moment a project is
+ * past its opening weeks - they would all read 100% while the actual work sat
+ * out of sight. Priority is work in flight, then what is up next, then the
+ * most recently finished so a nearly-complete project still shows something.
+ *
+ * Selection is by relevance; display stays in schedule order, because a list
+ * that jumps around is harder to read than one that does not.
+ */
+export function selectRelevantPhases(phases = [], limit = VISIBLE_PHASE_COUNT) {
+  if (!phases.length) return [];
+  const order = new Map(phases.map((phase, index) => [phase.phase, index]));
+  const byStatus = status => phases.filter(phase => phase.status === status);
+
+  const picked = [...byStatus("in_progress"), ...byStatus("not_started")].slice(0, limit);
+  if (picked.length < limit) {
+    const completed = byStatus("completed");
+    picked.push(...completed.slice(Math.max(completed.length - (limit - picked.length), 0)));
+  }
+  return picked.sort((a, b) => order.get(a.phase) - order.get(b.phase));
+}
 
 const longDate = value => (value
   ? new Date(`${value}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
@@ -22,8 +51,11 @@ function ProgressRing({ pct }) {
 
 function PhaseBars({ phases }) {
   return <div className="grid min-w-0 flex-1 gap-1.5">
-    {phases.map(phase => <div key={phase.phase} className="grid grid-cols-[7.5rem_minmax(0,1fr)_2.4rem] items-center gap-2 text-xs sm:grid-cols-[9rem_minmax(0,1fr)_2.6rem]">
+    {phases.map(phase => <div key={phase.phase} className="grid grid-cols-[7.5rem_2.5rem_minmax(0,1fr)_2.4rem] items-center gap-2 text-xs sm:grid-cols-[9rem_2.75rem_minmax(0,1fr)_2.6rem]">
       <span className="truncate font-medium text-slate-600">{phase.phase}</span>
+      {/* Counts lead: "0 / 8" tells you more about what is outstanding than
+          "0%" does, especially where a phase holds one or two tasks. */}
+      <span className="font-mono text-[11px] tabular-nums text-slate-500">{phase.completed}/{phase.total}</span>
       <span className="h-1.5 overflow-hidden rounded-full bg-slate-100">
         <span className="block h-full rounded-full" style={{ width: `${phase.pct}%`, background: phase.pct === 100 ? "#059669" : "#2563eb" }}/>
       </span>
@@ -41,8 +73,11 @@ function Tile({ label, value, tone }) {
 }
 
 export function ProjectOverviewPane({ project, summary, attention = [], onOpenPane }) {
+  const [phasesOpen, setPhasesOpen] = useState(false);
   const handover = longDate(project.target_handover_date);
-  const phases = summary?.phases?.length ? summary.phases : null;
+  const allPhases = summary?.phases || [];
+  const phases = allPhases.length ? selectRelevantPhases(allPhases) : null;
+  const hiddenPhaseCount = Math.max(allPhases.length - (phases?.length || 0), 0);
 
   return <div className="grid gap-3">
     {attention.length > 0 && <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
@@ -64,7 +99,14 @@ export function ProjectOverviewPane({ project, summary, attention = [], onOpenPa
         <ProgressRing pct={summary.progress_pct ?? 0}/>
         {phases ? <PhaseBars phases={phases}/> : <p className="text-xs text-slate-400">Phase breakdown is not available for this project.</p>}
       </div>
+      {hiddenPhaseCount > 0 && <button
+        type="button"
+        onClick={() => setPhasesOpen(true)}
+        className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-blue-700 transition hover:bg-slate-100"
+      >View all {allPhases.length} phases →</button>}
     </section>}
+
+    {phasesOpen && <PhaseOverviewDrawer project={project} summary={summary} onClose={() => setPhasesOpen(false)}/>}
 
     {summary && <dl className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <Tile label="Pending approvals" value={summary.pending_approvals ?? 0} tone="brand"/>

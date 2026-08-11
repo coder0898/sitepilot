@@ -162,6 +162,49 @@ class ProjectReadModelTests(unittest.TestCase):
             [("Planning & Approvals", 100), ("Civil Work", 50)],
         )
 
+    def test_phase_carries_the_status_and_counts_the_overview_selects_on(self):
+        """The Overview panel shows a handful of phases chosen by what is in
+        flight, not by schedule order, so each phase has to say whether it is
+        started and how much is outstanding."""
+        project_id = self.add_project()
+        self.add_task(project_id, "T001", 1, "Pre-Activation", "completed")
+        self.add_task(project_id, "T002", 2, "Pre-Activation", "in_progress")
+        self.add_task(project_id, "T003", 3, "Pre-Activation", "planned")
+        self.add_task(project_id, "T004", 4, "Mobilisation", "planned")
+        self.add_task(project_id, "T005", 5, "Dismantling", "completed")
+
+        phases = {row["phase"]: row for row in self.client.get("/api/v2/projects/summaries").json()[0]["phases"]}
+
+        self.assertEqual(
+            (phases["Pre-Activation"]["completed"], phases["Pre-Activation"]["in_progress"], phases["Pre-Activation"]["not_started"]),
+            (1, 1, 1),
+        )
+        self.assertEqual(phases["Pre-Activation"]["status"], "in_progress")
+        self.assertEqual(phases["Mobilisation"]["status"], "not_started")
+        self.assertEqual(phases["Dismantling"]["status"], "completed")
+
+    def test_a_phase_with_only_completed_work_is_not_reported_as_in_progress(self):
+        project_id = self.add_project()
+        self.add_task(project_id, "T001", 1, "Civil Work", "completed")
+        self.add_task(project_id, "T002", 2, "Civil Work", "planned")
+
+        phase = self.client.get("/api/v2/projects/summaries").json()[0]["phases"][0]
+        # Started but unfinished still counts as in progress: it is where the
+        # front line of the project is, which is what the panel surfaces.
+        self.assertEqual(phase["status"], "in_progress")
+        self.assertEqual(phase["pct"], 50)
+
+    def test_cancelled_tasks_leave_the_phase_denominator(self):
+        """Otherwise a phase with cancelled work can never reach 100%."""
+        project_id = self.add_project()
+        self.add_task(project_id, "T001", 1, "Civil Work", "completed")
+        self.add_task(project_id, "T002", 2, "Civil Work", "cancelled")
+
+        phase = self.client.get("/api/v2/projects/summaries").json()[0]["phases"][0]
+        self.assertEqual((phase["total"], phase["completed"], phase["not_started"]), (1, 1, 0))
+        self.assertEqual(phase["pct"], 100)
+        self.assertEqual(phase["status"], "completed")
+
     def test_summary_labels_unphased_tasks_rather_than_dropping_them(self):
         project_id = self.add_project()
         self.add_task(project_id, "T001", 1, None, "completed")
