@@ -59,8 +59,10 @@ from app.schemas.project_gates import (
     ExecutionGateStatusHistoryItem,
     ExecutionGateStatusIn,
 )
+from app.schemas.task_readiness import ProjectTaskReadinessOut
 from app.services.project_gate_status import ProjectGateStatusService
 from app.services.task_approval import TaskApprovalService
+from app.services.task_readiness import TaskReadinessService
 from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
 from app.services.task_delay import TaskDelayService
@@ -574,3 +576,16 @@ def list_execution_gate_status_history(
     """Readable by any project member. The rejection reason is what a site
     team needs, so it is not gated behind the authority to record one."""
     return ProjectGateStatusService(db).list_history(project_id, gate_id, actor)
+
+
+@router.get("/{project_id}/task-readiness", response_model=ProjectTaskReadinessOut)
+def get_project_task_readiness(
+    project_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """U7. Advisory only - this reports what *could* start, it never moves
+    anything. A literal second path segment cannot be swallowed by the
+    `/{project_id}` catch-all that forced `project_read_models_v2` to be
+    registered ahead of `projects_v2`, so no `main.py` change is needed."""
+    return TaskReadinessService(db).summarize(project_id, actor)
