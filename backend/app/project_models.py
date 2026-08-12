@@ -107,7 +107,7 @@ class V2ProjectExternalGate(Base):
         UniqueConstraint("project_id", "original_code", name="uq_v2_project_external_gates_project_code"),
         CheckConstraint("template_sequence > 0", name="ck_v2_project_external_gates_sequence_positive"),
         CheckConstraint("mapping_classification in ('exact', 'broad_text', 'unmapped')", name="ck_v2_project_external_gates_mapping"),
-        CheckConstraint("status = 'pending_review'", name="ck_v2_project_external_gates_status"),
+        CheckConstraint("status in ('not_required', 'pending_review', 'submitted', 'approved', 'rejected')", name="ck_v2_project_external_gates_status"),
         CheckConstraint("source_type in ('template', 'project_manual')", name="ck_v2_project_external_gates_source"),
         CheckConstraint("(source_type = 'template' and template_version_id is not null and template_gate_id is not null) or (source_type = 'project_manual' and template_version_id is null and template_gate_id is null)", name="ck_v2_project_external_gates_source_reference"),
         CheckConstraint("(mapping_classification = 'broad_text' and nullif(btrim(broad_mapping_text), '') is not null) or (mapping_classification <> 'broad_text' and broad_mapping_text is null)", name="ck_v2_project_external_gates_broad_text"),
@@ -131,6 +131,8 @@ class V2ProjectExternalGate(Base):
     broad_mapping_text: Mapped[str | None] = mapped_column(Text)
     requires_configuration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status_recorded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    status_recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applicability_state: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
     source_type: Mapped[str] = mapped_column(Text, nullable=False, default="template")
     accountable_pm_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
