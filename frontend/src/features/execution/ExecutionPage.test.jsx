@@ -8,8 +8,10 @@ vi.mock("../../api/projectsApi", () => ({ projectsApi: {
   list: vi.fn(), executionTasks: vi.fn(), dependencies: vi.fn(), externalGates: vi.fn(), detail: vi.fn(),
 } }));
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
-  list: vi.fn(), detail: vi.fn(),
+  list: vi.fn(), detail: vi.fn(), readiness: vi.fn(), executionGates: vi.fn(), recordGateStatus: vi.fn(),
 } }));
+
+const emptyReadiness = { project_id: "p1", total: 0, startable_count: 0, items: [], unresolved_gates: [] };
 
 const activeProjects = [{ id: "p1", name: "Sample Fitout Project", code: "P1", status: "active" }];
 const assignedTask = {
@@ -22,6 +24,8 @@ const assignedTask = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  taskExecutionApi.readiness.mockResolvedValue(emptyReadiness);
+  taskExecutionApi.executionGates.mockResolvedValue([]);
   projectsApi.list.mockResolvedValue(activeProjects);
   projectsApi.executionTasks.mockResolvedValue({
     project_id: "p1", project_name: "Sample Fitout Project", total_tasks: 42, included_task_count: 40, excluded_task_count: 2, tasks: [],
@@ -38,6 +42,17 @@ describe("ExecutionPage - Internal Employee scoping", () => {
     expect(projectsApi.executionTasks).not.toHaveBeenCalled();
     expect(projectsApi.dependencies).not.toHaveBeenCalled();
     expect(projectsApi.externalGates).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch or render readiness for an Internal Employee", async () => {
+    // Readiness reasons name tasks, approvals and external parties across
+    // the whole project - the same whole-project shape the fetches above
+    // are withheld for. The server scopes it too; this keeps the client
+    // from asking for what it should not show.
+    render(<ExecutionPage user={{ role: "internal_employee", id: "u-ie" }}/>);
+    expect(await screen.findByText("Freeze approved architectural layout")).toBeInTheDocument();
+    expect(taskExecutionApi.readiness).not.toHaveBeenCalled();
+    expect(screen.queryByText("What can start now")).not.toBeInTheDocument();
   });
 
   it("shows the project name from the project list, not from the (skipped) whole-project fetch", async () => {
