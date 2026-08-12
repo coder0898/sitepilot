@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { CalendarCheck, ClipboardList, FolderKanban, GitBranch, Layers, ListChecks, Search, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
+import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
+import { ExecutionGateStatusControl, ExecutionGateStatusPill } from "./components/ExecutionGateActions";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
+import { TaskReadinessPanel } from "./components/TaskReadinessPanel";
 
 // U2 (Task Execution Engine, Phase 1): the "Tasks" tab is now the live
 // TaskExecutionBoard - status transitions, evidence, verification/approval,
@@ -18,6 +21,9 @@ export function ExecutionPage({ user }) {
   const [view, setView] = useState(null);
   const [dependencies, setDependencies] = useState({ items: [], total: 0, excluded_warning_count: 0 });
   const [externalGates, setExternalGates] = useState([]);
+  const [executionGates, setExecutionGates] = useState([]);
+  const [readiness, setReadiness] = useState(null);
+  const [readinessError, setReadinessError] = useState("");
   const [activeTab, setActiveTab] = useState("tasks");
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -42,6 +48,8 @@ export function ExecutionPage({ user }) {
       setView(null);
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
       setExternalGates([]);
+      setExecutionGates([]);
+      setReadiness(null);
       return;
     }
     let active = true;
@@ -55,6 +63,12 @@ export function ExecutionPage({ user }) {
       setView(null);
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
       setExternalGates([]);
+      setExecutionGates([]);
+      // Readiness reasons name tasks and approvals across the whole
+      // project, so this role follows the same early return as the other
+      // project-wide fetches above rather than being handed a view of work
+      // that was never delegated to them.
+      setReadiness(null);
       setDetailLoading(false);
       return () => { active = false; };
     }
@@ -73,8 +87,28 @@ export function ExecutionPage({ user }) {
         setError(err.message || "Unable to load this project's task baseline.");
       })
       .finally(() => { if (active) setDetailLoading(false); });
+
+    // Readiness and execution gates load beside the baseline but fail
+    // independently of it - a readiness outage must not blank the board.
+    loadExecutionState(projectId, active);
     return () => { active = false; };
   }, [projectId, user.role]);
+
+  function loadExecutionState(id, active = true) {
+    setReadinessError("");
+    return Promise.all([taskExecutionApi.readiness(id), taskExecutionApi.executionGates(id)])
+      .then(([readinessResponse, gatesResponse]) => {
+        if (!active) return;
+        setReadiness(readinessResponse);
+        setExecutionGates(gatesResponse || []);
+      })
+      .catch(err => {
+        if (!active) return;
+        setReadiness(null);
+        setExecutionGates([]);
+        setReadinessError(err.message || "Readiness could not be worked out for this project.");
+      });
+  }
 
   const selectedProject = projects.find(project => project.id === projectId);
 
@@ -140,6 +174,8 @@ export function ExecutionPage({ user }) {
             </label>
           </div>
 
+          {user.role !== "internal_employee" && <TaskReadinessPanel readiness={readiness} error={readinessError}/>}
+
           <TaskExecutionBoard projectId={projectId} user={user} search={search}/>
           </>}
 
@@ -163,16 +199,21 @@ export function ExecutionPage({ user }) {
 
           {activeTab === "approvals" && <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <h3 className="m-0 font-serif text-lg text-slate-950">External approvals</h3>
-            <p className="mt-1 text-sm text-slate-500">Read-only view of project external gate records.</p>
+            <p className="mt-1 text-sm text-slate-500">
+              The scope decisions below were made at planning time. Once a project is active, the approval
+              itself is recorded against its execution record - that is the status readiness reads.
+            </p>
             {externalGates.length ? (
               <div className="mt-4 grid gap-3">
-                {externalGates.map(gate => (
+                {externalGates.map(gate => {
+                  const executionGate = executionGates.find(row => row.original_code === gate.code);
+                  return (
                   <article key={gate.id} className="rounded-2xl border border-slate-200 bg-white p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           {gate.code && <span className="text-xs font-black text-blue-700">{gate.code}</span>}
-                          <Pill tone="orange">{String(gate.status || "pending_review").replaceAll("_", " ")}</Pill>
+                          <ExecutionGateStatusPill status={executionGate?.status || gate.status}/>
                           <Pill tone={gate.applicability_state === "applicable" ? "green" : "orange"}>
                             {String(gate.applicability_state || "pending_review").replaceAll("_", " ")}
                           </Pill>
@@ -188,8 +229,12 @@ export function ExecutionPage({ user }) {
                       <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">PM owner</span><strong className="mt-1 block text-slate-700">{gate.accountable_pm_name || "Not assigned"}</strong></div>
                       <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">Mapping</span><strong className="mt-1 block text-slate-700">{gate.exact_task_count ? `${gate.exact_task_count} task links` : gate.broad_mapping_text || "Configuration required"}</strong>{gate.blocking && <small className="mt-1 block font-bold text-rose-600">Blocking</small>}</div>
                     </div>
+                    {executionGate && <ExecutionGateStatusControl
+                      projectId={projectId} gate={executionGate} user={user}
+                      onRecorded={() => loadExecutionState(projectId)}/>}
                   </article>
-                ))}
+                  );
+                })}
               </div>
             ) : <p className="mt-3 text-sm text-slate-500">No external approvals available for this project.</p>}
           </div>}        </>

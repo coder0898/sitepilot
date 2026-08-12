@@ -5,6 +5,14 @@ import { api, fetchBinary } from "./client";
 // live under a separate backend router.
 export const taskExecutionApi = {
   list: projectId => api(`/api/v2/projects/${projectId}/tasks`),
+  // U7: advisory readiness. Reports what could start and what is holding
+  // the rest up; it never moves anything.
+  readiness: projectId => api(`/api/v2/projects/${projectId}/task-readiness`),
+  // U2/U3: the execution-layer gates, the ones that actually get approved.
+  // projectsApi.externalGates is the planning-layer counterpart.
+  executionGates: projectId => api(`/api/v2/projects/${projectId}/execution-gates`),
+  recordGateStatus: (projectId, gateId, payload) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/status`, { method: "POST", body: JSON.stringify(payload) }),
+  gateStatusHistory: (projectId, gateId) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/status-history`),
   detail: (projectId, taskId) => api(`/api/v2/projects/${projectId}/tasks/${taskId}`),
   transitionStatus: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/status`, { method: "POST", body: JSON.stringify(payload) }),
   submitProgress: (projectId, taskId, formData) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/progress`, { method: "POST", body: formData }),

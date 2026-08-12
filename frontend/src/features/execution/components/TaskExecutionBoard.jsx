@@ -32,6 +32,17 @@ const STATUS_TONE = {
 
 const EXECUTOR_TARGETS = ["in_progress", "submitted"];
 
+// U9. UX only - `task_lifecycle.py` decides whether a reason is actually
+// required. This just avoids asking the user to guess after a 422.
+export function isEarlyStart(task) {
+  if (!task?.planned_start_at || task.actual_start_at) return false;
+  return Date.now() < new Date(task.planned_start_at).getTime();
+}
+
+function formatPlannedStart(task) {
+  return new Date(task.planned_start_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 function canCancel(user) {
   return ["project_manager", "admin", "super_admin"].includes(user?.role);
 }
@@ -163,10 +174,27 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
   }
 
   async function transition(targetStatus) {
+    // U9: starting before the planned start date is allowed, but not
+    // silently. The server refuses a reasonless early start with a 422;
+    // asking here means the user is not told off after the fact.
+    let reason;
+    if (targetStatus === "in_progress" && isEarlyStart(detail)) {
+      reason = window.prompt(
+        `This task is not planned to start until ${formatPlannedStart(detail)}. Why is it starting early?`,
+      );
+      if (reason === null) return;
+      if (!reason.trim()) {
+        setError("An early start needs a reason.");
+        return;
+      }
+    }
     setTransitioning(targetStatus);
     setError("");
     try {
-      await taskExecutionApi.transitionStatus(projectId, task.id, { target_status: targetStatus });
+      await taskExecutionApi.transitionStatus(projectId, task.id, {
+        target_status: targetStatus,
+        ...(reason ? { reason: reason.trim() } : {}),
+      });
       await refreshAll();
     } catch (caught) {
       setError(caught?.message || "This transition could not be completed.");
