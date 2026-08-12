@@ -12,6 +12,7 @@ transition.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -52,6 +53,26 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "completed": set(),
     "cancelled": set(),
 }
+
+
+def _record_actual_dates(task: Task, target_status: str) -> None:
+    """45-day POC U5: observe when work really started and finished.
+
+    Adds no condition to any transition and can refuse nothing - it only
+    stamps a date on a move the state machine has already permitted.
+
+    `actual_start_at` is written once and never overwritten, so a task that
+    is rejected and resumed keeps the date it actually started rather than
+    the date it restarted. `cancelled` writes nothing: a cancelled task did
+    not finish, it stopped, and giving it a finish date would make it look
+    like delivered work to everything downstream.
+    """
+    now = datetime.now(timezone.utc)
+    if target_status == "in_progress" and task.actual_start_at is None:
+        task.actual_start_at = now
+    elif target_status == "completed":
+        task.actual_finish_at = now
+
 
 # Targets whose decision record (TaskVerification/TaskApprovalDecision) is
 # owned by U4's TaskVerificationService/TaskApprovalService - a direct call
@@ -255,6 +276,11 @@ class TaskLifecycleService:
                 continue
             before_status = successor.lifecycle_status
             successor.lifecycle_status = "completed"
+            # This path bypasses transition() deliberately, so it needs the
+            # actual-date write too - otherwise an auto-completed milestone
+            # is silently dateless and reports no delay for the wrong
+            # reason.
+            _record_actual_dates(successor, "completed")
             self.db.add(V2AuditEvent(
                 actor_user_id=actor.id,
                 action="TASK_STATUS_CHANGED",
@@ -424,6 +450,7 @@ class TaskLifecycleService:
 
         before_status = current_status
         task.lifecycle_status = target_status
+        _record_actual_dates(task, target_status)
         clean_reason = (reason or "").strip() or f"Task moved from {before_status} to {target_status}."
         self.db.add(V2AuditEvent(
             actor_user_id=actor.id,
