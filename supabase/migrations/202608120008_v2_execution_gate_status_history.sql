@@ -1,6 +1,14 @@
 -- 45-day scheduling POC integration, U2: readable history for every
 -- external approval outcome.
 --
+-- NUMBERED 0008, NOT 0002, ON PURPOSE. This table has a foreign key to
+-- siteops_v2.execution_gates, which 202608120003 creates. Migrations apply
+-- in filename order, so numbering this by its unit number (U2) rather than
+-- by its dependency put it ahead of the table it points at and the whole
+-- run stopped here. The ORM-metadata test harness cannot catch that -
+-- SQLAlchemy sorts CREATE TABLE by foreign key, so the tests build these
+-- in the right order no matter what the files are called.
+--
 -- Keyed on the execution gate row (U3's execution_gates), not the
 -- planning-layer gate. Status after activation is only ever written on the
 -- execution row - readiness reads execution rows and would never see an
