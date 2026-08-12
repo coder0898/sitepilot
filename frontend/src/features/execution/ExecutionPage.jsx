@@ -4,6 +4,7 @@ import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
 import { ExecutionGateStatusControl, ExecutionGateStatusPill } from "./components/ExecutionGateActions";
+import { ExecutionGateDelegationPanel } from "./components/ExecutionGateDelegationPanel";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
 import { ScheduleTimeline } from "./components/ScheduleTimeline";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
@@ -24,6 +25,7 @@ export function ExecutionPage({ user }) {
   const [externalGates, setExternalGates] = useState([]);
   const [executionGates, setExecutionGates] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [internalEmployees, setInternalEmployees] = useState([]);
   const [readiness, setReadiness] = useState(null);
   const [readinessError, setReadinessError] = useState("");
   const [activeTab, setActiveTab] = useState("tasks");
@@ -100,18 +102,27 @@ export function ExecutionPage({ user }) {
 
   function loadExecutionState(id, active = true) {
     setReadinessError("");
-    return Promise.all([taskExecutionApi.readiness(id), taskExecutionApi.executionGates(id), taskExecutionApi.list(id)])
-      .then(([readinessResponse, gatesResponse, taskRows]) => {
+    return Promise.all([
+      taskExecutionApi.readiness(id), taskExecutionApi.executionGates(id),
+      taskExecutionApi.list(id), projectsApi.detail(id),
+    ])
+      .then(([readinessResponse, gatesResponse, taskRows, detail]) => {
         if (!active) return;
         setReadiness(readinessResponse);
         setExecutionGates(gatesResponse || []);
         setTasks(taskRows || []);
+        // The delegate picker needs the project's Internal Employees, and
+        // the project detail already carries its active memberships.
+        setInternalEmployees(
+          (detail?.memberships || []).filter(member => member.project_role === "internal_employee"),
+        );
       })
       .catch(err => {
         if (!active) return;
         setReadiness(null);
         setExecutionGates([]);
         setTasks([]);
+        setInternalEmployees([]);
         setReadinessError(err.message || "Readiness could not be worked out for this project.");
       });
   }
@@ -240,9 +251,15 @@ export function ExecutionPage({ user }) {
                       <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">PM owner</span><strong className="mt-1 block text-slate-700">{gate.accountable_pm_name || "Not assigned"}</strong></div>
                       <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">Mapping</span><strong className="mt-1 block text-slate-700">{gate.exact_task_count ? `${gate.exact_task_count} task links` : gate.broad_mapping_text || "Configuration required"}</strong>{gate.blocking && <small className="mt-1 block font-bold text-rose-600">Blocking</small>}</div>
                     </div>
-                    {executionGate && <ExecutionGateStatusControl
-                      projectId={projectId} gate={executionGate} user={user}
-                      onRecorded={() => loadExecutionState(projectId)}/>}
+                    {executionGate && <>
+                      <ExecutionGateDelegationPanel
+                        projectId={projectId} gate={executionGate} user={user}
+                        internalEmployees={internalEmployees}
+                        onChanged={() => loadExecutionState(projectId)}/>
+                      <ExecutionGateStatusControl
+                        projectId={projectId} gate={executionGate} user={user}
+                        onRecorded={() => loadExecutionState(projectId)}/>
+                    </>}
                   </article>
                   );
                 })}
