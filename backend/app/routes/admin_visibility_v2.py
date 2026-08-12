@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.database import get_db
+from app.execution_models import GATE_NON_BLOCKING_STATUSES, ExecutionGate
 from app.models import User, UserRole
 from app.project_models import V2AuditEvent, V2Project
 from app.services.project_visibility import ProjectVisibilityService
@@ -43,6 +44,13 @@ class ProjectOverviewOut(BaseModel):
     delayed_count: int
     overdue_count: int
     no_update_count: int
+    # 45-day POC U11. Added, never replacing - every field above is
+    # unchanged so the shipped rollup screen keeps working.
+    handover_at_risk: bool = False
+    handover_at_risk_count: int = 0
+    max_delay_days: int = 0
+    gates_blocking_outstanding: int = 0
+    gates_rejected: int = 0
 
 
 @router.get("/projects-overview", response_model=list[ProjectOverviewOut])
@@ -52,6 +60,14 @@ def projects_overview(
     projects = list(db.scalars(select(V2Project).order_by(V2Project.name.asc())).all())
     service = ProjectVisibilityService(db)
 
+    # One query for every project's gates rather than one per project - the
+    # per-project summarize() call above is already the expensive part of
+    # this route and does not need company.
+    gate_rows = db.scalars(select(ExecutionGate)).all()
+    gates_by_project: dict[uuid.UUID, list[ExecutionGate]] = {}
+    for gate in gate_rows:
+        gates_by_project.setdefault(gate.project_id, []).append(gate)
+
     return [
         ProjectOverviewOut(
             id=project.id, code=project.code, name=project.name, status=project.status,
@@ -59,6 +75,16 @@ def projects_overview(
             active_count=summary.active_count, completed_count=summary.completed_count,
             blocked_count=len(summary.blocked_tasks), delayed_count=len(summary.delayed_tasks),
             overdue_count=len(summary.overdue_tasks), no_update_count=len(summary.no_update_tasks),
+            handover_at_risk=summary.handover_at_risk,
+            handover_at_risk_count=len(summary.handover_at_risk_tasks),
+            max_delay_days=max((row.delay_days for row in summary.computed_delays), default=0),
+            gates_blocking_outstanding=sum(
+                1 for gate in gates_by_project.get(project.id, [])
+                if gate.blocking and gate.status not in GATE_NON_BLOCKING_STATUSES
+            ),
+            gates_rejected=sum(
+                1 for gate in gates_by_project.get(project.id, []) if gate.status == "rejected"
+            ),
         )
         for project in projects
         for summary in [service.summarize(project.id, actor)]

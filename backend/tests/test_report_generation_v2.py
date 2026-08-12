@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +15,9 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
+    ExecutionExcludedDependency,
+    ExecutionGate,
+    ExecutionGateTask,
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
@@ -74,6 +77,9 @@ class ReportGenerationTests(unittest.TestCase):
             V2Project.__table__,
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
+            ExecutionGate.__table__,
+            ExecutionGateTask.__table__,
+            ExecutionExcludedDependency.__table__,
             V2ProjectTaskDependency.__table__,
             ProjectRoleChange.__table__,
             V2AuditEvent.__table__,
@@ -158,6 +164,51 @@ class ReportGenerationTests(unittest.TestCase):
         self.assertEqual(body["version_no"], 1)
         self.assertEqual(body["payload_json"]["summary"]["total_count"], 1)
         self.assertNotIn("milestone_progress", body["payload_json"])
+
+    # ---- 45-day POC U11: planned versus actual ---------------------------
+
+    def test_a_report_carries_planned_and_actual_dates_per_task(self):
+        with self.Session.begin() as session:
+            task = session.scalars(select(Task).where(Task.original_code == "T001")).one()
+            task.planned_start_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+            task.due_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+            task.actual_start_at = datetime(2026, 8, 3, tzinfo=timezone.utc)
+
+        payload = self.generate("daily").json()["payload_json"]
+        rows = {row["original_code"]: row for row in payload["planned_versus_actual"]}
+        self.assertEqual(rows["T001"]["planned_start_at"][:10], "2026-08-01")
+        self.assertEqual(rows["T001"]["target_finish_at"][:10], "2026-08-09")
+        self.assertEqual(rows["T001"]["actual_start_at"][:10], "2026-08-03")
+        self.assertIsNone(rows["T001"]["actual_finish_at"], "an unfinished task has no finish date, and that is the answer")
+
+    def test_a_report_carries_computed_delay_from_the_same_service_the_dashboard_uses(self):
+        with self.Session.begin() as session:
+            session.scalars(select(Task).where(Task.original_code == "T001")).one().due_at = datetime(
+                2026, 8, 9, tzinfo=timezone.utc)
+
+        summary = self.generate("daily").json()["payload_json"]["summary"]
+        delays = {row["original_code"]: row for row in summary["computed_delays"]}
+        self.assertIn("T001", delays)
+        self.assertGreater(delays["T001"]["delay_days"], 0, "a 2026-08-09 target is long past")
+        self.assertIn("handover_at_risk", summary)
+
+    def test_a_historical_delay_event_stays_readable_and_is_never_summed_into_computed_delay(self):
+        with self.Session.begin() as session:
+            task = session.scalars(select(Task).where(Task.original_code == "T001")).one()
+            task.due_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+            session.add(TaskDelayEvent(
+                task_id=task.id, project_id=self.project_id, responsibility_type="client",
+                reason="Client decision pending.", impact_days=7, recorded_by=ADMIN_ID,
+            ))
+
+        payload = self.generate("daily").json()["payload_json"]
+        historical = payload["historical_delay_events"]
+        self.assertEqual(len(historical), 1)
+        self.assertEqual(historical[0]["impact_days"], 7, "recorded history reads back exactly as recorded")
+
+        computed = {row["original_code"]: row for row in payload["summary"]["computed_delays"]}
+        self.assertNotEqual(computed["T001"]["delay_days"], 7)
+        self.assertNotIn(7, [computed["T001"]["delay_days"] - 7], "the two are never added together")
 
     def test_weekly_report_includes_data_not_in_daily(self):
         response = self.generate("weekly")

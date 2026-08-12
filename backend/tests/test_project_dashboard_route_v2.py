@@ -6,7 +6,7 @@ from datetime import date
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +15,9 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
+    ExecutionExcludedDependency,
+    ExecutionGate,
+    ExecutionGateTask,
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
@@ -74,6 +77,9 @@ class ProjectDashboardRouteTests(unittest.TestCase):
             V2Project.__table__,
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
+            ExecutionGate.__table__,
+            ExecutionGateTask.__table__,
+            ExecutionExcludedDependency.__table__,
             V2ProjectTaskDependency.__table__,
             ProjectRoleChange.__table__,
             V2AuditEvent.__table__,
@@ -191,6 +197,56 @@ class ProjectDashboardRouteTests(unittest.TestCase):
         response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["vendor_risks"], [])
+
+    # ---- 45-day POC U11: gate status on the dashboard ---------------------
+
+    def _add_gate(self, code, status, blocking=True):
+        with self.Session.begin() as session:
+            baseline_id = session.scalars(select(Task).where(Task.id == self.task_id)).one().baseline_id
+            session.add(ExecutionGate(
+                project_id=self.project_id, baseline_id=baseline_id, original_code=code,
+                approval_name=f"{code} approval", external_party="Landlord", status=status,
+                blocking=blocking, accountable_pm_user_id=PM_ID,
+            ))
+
+    def test_the_dashboard_reports_gate_status_counts(self):
+        self._add_gate("E001", "approved")
+        self._add_gate("E002", "pending_review")
+        self._add_gate("E003", "not_required")
+        response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")
+        self.assertEqual(response.status_code, 200, response.text)
+        gate_status = response.json()["gate_status"]
+        self.assertEqual(gate_status["counts"]["approved"], 1)
+        self.assertEqual(gate_status["counts"]["pending_review"], 1)
+        self.assertEqual(gate_status["counts"]["not_required"], 1)
+        # Only pending_review is still holding work back: approved and
+        # not_required are the two statuses that stop a gate blocking.
+        self.assertEqual(gate_status["blocking_outstanding"], 1)
+
+    def test_the_dashboard_names_a_rejected_gate_rather_than_counting_it(self):
+        self._add_gate("E001", "rejected")
+        response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")
+        rejected = response.json()["gate_status"]["rejected"]
+        self.assertEqual([row["original_code"] for row in rejected], ["E001"])
+        self.assertEqual(rejected[0]["approval_name"], "E001 approval")
+
+    def test_a_project_with_no_gates_reports_zeroes_rather_than_failing(self):
+        response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["gate_status"]["blocking_outstanding"], 0)
+        self.assertEqual(response.json()["gate_status"]["rejected"], [])
+
+    def test_every_field_the_dashboard_returned_before_is_still_returned(self):
+        """R48: the shape only ever grows."""
+        response = self.client.get(f"/api/v2/projects/{self.project_id}/dashboard")
+        body = response.json()
+        self.assertIn("summary", body)
+        self.assertIn("vendor_risks", body)
+        for previously_present in ("status_counts", "planned_count", "active_count", "completed_count",
+                                   "cancelled_count", "total_count", "blocked_tasks", "delayed_tasks",
+                                   "overdue_tasks", "no_update_tasks", "pending_verifications",
+                                   "pending_approvals", "approval_gates_at_risk", "reassignment_required"):
+            self.assertIn(previously_present, body["summary"])
 
     def test_non_member_non_admin_cannot_retrieve_dashboard(self):
         self.act_as_outsider()

@@ -5,14 +5,15 @@ report-type-specific extras, then frozen into `ReportSnapshot.payload_json`
 at generation time - see the plan's Key Technical Decision that a report
 never silently changes after the fact.
 
-Known gap, deliberately not solved here: R6 asks for "schedule movement
-(from Phase 1's `task_schedule_revisions`)" but no such table (or any
-task-reschedule mutation that would populate it) exists anywhere in Phase
-1's actual implementation - only in this plan's own Context section. Adding
-a new reschedule-mutation subsystem is out of this unit's scope (its Files
-list only introduces `report_snapshots` and the report service/routes), so
-`schedule_revisions` is always `[]` here, with this comment as the marker
-for the follow-up that will need to land the real mutation and revisit this.
+`schedule_revisions` is always `[]`, and that is a decision rather than an
+oversight. R6 asks for "schedule movement", which needs a task-reschedule
+subsystem: an Admin able to move a target finish date, with the audit trail
+that implies. No such subsystem exists, and the 45-day scheduling work
+deliberately deferred building one - a reschedule changes what computed
+delay is measured against, and delay should be observed against fixed dates
+for at least one project cycle before anyone gets a control that moves
+them. The actor and audit shape are already settled; only the building is
+outstanding. Whoever lands it revisits this key.
 """
 
 from __future__ import annotations
@@ -25,12 +26,67 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.execution_models import SupportAssignmentChange, Task, TaskSupportAssignment
+from app.execution_models import SupportAssignmentChange, Task, TaskDelayEvent, TaskSupportAssignment
 from app.models import User
 from app.project_models import ProjectRoleChange, V2Project
 from app.report_models import REPORT_TYPES, ReportSnapshot
 from app.routes.projects_v2 import get_project
 from app.services.project_visibility import ProjectVisibilityService
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _planned_versus_actual(db: Session, project_id: uuid.UUID) -> list[dict]:
+    """45-day POC U11: what each task was scheduled to do against what it did.
+
+    Nulls where a task has not started or has not finished are the honest
+    answer, not a gap - most of a project is unstarted for most of its life.
+    """
+    tasks = db.scalars(
+        select(Task).where(Task.project_id == project_id).order_by(Task.template_sequence.asc())
+    ).all()
+    return [
+        {
+            "task_id": str(task.id),
+            "original_code": task.original_code,
+            "title": task.title,
+            "lifecycle_status": task.lifecycle_status,
+            "planned_start_at": _iso(task.planned_start_at),
+            "target_finish_at": _iso(task.due_at),
+            "actual_start_at": _iso(task.actual_start_at),
+            "actual_finish_at": _iso(task.actual_finish_at),
+            "early_start_reason": task.early_start_reason,
+        }
+        for task in tasks
+    ]
+
+
+def _historical_delay_events(db: Session, project_id: uuid.UUID) -> list[dict]:
+    """Delay events as recorded, including the hand-entered `impact_days`
+    from before delay was measured.
+
+    Read-only history. These day counts are never added to computed delay
+    and never reinterpreted as one - two different things that happen to be
+    counted in days.
+    """
+    rows = db.scalars(
+        select(TaskDelayEvent)
+        .where(TaskDelayEvent.project_id == project_id)
+        .order_by(TaskDelayEvent.created_at.asc())
+    ).all()
+    return [
+        {
+            "id": str(row.id),
+            "task_id": str(row.task_id),
+            "responsibility_type": row.responsibility_type,
+            "reason": row.reason,
+            "impact_days": row.impact_days,
+            "recorded_at": _iso(row.created_at),
+        }
+        for row in rows
+    ]
 
 
 def _pending_role_changes(db: Session, project_id: uuid.UUID) -> list[dict]:
@@ -119,10 +175,15 @@ class ReportGenerationService:
         payload = {
             "summary": summary.model_dump(mode="json"),
             "role_and_support_changes_required": _pending_role_changes(self.db, project_id),
+            # Computed delay and at-risk handover already arrive inside
+            # `summary` - reports build everything from the same service, so
+            # there is no second place for those numbers to drift.
+            "planned_versus_actual": _planned_versus_actual(self.db, project_id),
+            "historical_delay_events": _historical_delay_events(self.db, project_id),
         }
         if report_type == "weekly":
             payload["milestone_progress"] = _milestone_progress(self.db, project_id)
-            payload["schedule_revisions"] = []  # see module docstring - Phase 1 gap, not this unit's scope
+            payload["schedule_revisions"] = []  # deferred by decision - see the module docstring
             payload["ownership_changes"] = _ownership_changes_in_window(self.db, project_id, period_start, period_end)
             payload["management_decisions_required"] = {
                 "pending_approvals": [t.model_dump(mode="json") for t in summary.pending_approvals],
