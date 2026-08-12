@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user
 from app.database import get_db
+from app.execution_models import EXECUTION_GATE_STATUSES, GATE_NON_BLOCKING_STATUSES, ExecutionGate
 from app.models import User
 from app.project_models import V2_SCHEMA
 from app.schemas.project_visibility import ProjectVisibilitySummary
@@ -90,9 +91,43 @@ def _vendor_risk_events(db: Session, project_id: uuid.UUID) -> list[VendorRiskEv
     ]
 
 
+class GateStatusSummaryOut(BaseModel):
+    """45-day POC U11: where this project's external approvals stand.
+
+    Rejected gates are named rather than counted - a rejection is the one
+    gate state somebody has to go and do something about."""
+
+    counts: dict[str, int]
+    blocking_outstanding: int
+    rejected: list[dict]
+
+
+def _gate_status_summary(db: Session, project_id: uuid.UUID) -> GateStatusSummaryOut:
+    gates = db.scalars(
+        select(ExecutionGate).where(ExecutionGate.project_id == project_id).order_by(ExecutionGate.original_code.asc())
+    ).all()
+    counts = {status: 0 for status in EXECUTION_GATE_STATUSES}
+    for gate in gates:
+        counts[gate.status] = counts.get(gate.status, 0) + 1
+    return GateStatusSummaryOut(
+        counts=counts,
+        blocking_outstanding=sum(
+            1 for gate in gates if gate.blocking and gate.status not in GATE_NON_BLOCKING_STATUSES
+        ),
+        rejected=[
+            {
+                "id": str(gate.id), "original_code": gate.original_code,
+                "approval_name": gate.approval_name, "external_party": gate.external_party,
+            }
+            for gate in gates if gate.status == "rejected"
+        ],
+    )
+
+
 class ProjectDashboardOut(BaseModel):
     summary: ProjectVisibilitySummary
     vendor_risks: list[VendorRiskEventOut]
+    gate_status: GateStatusSummaryOut | None = None
 
 
 @router.get("/{project_id}/dashboard", response_model=ProjectDashboardOut)
@@ -101,4 +136,7 @@ def project_dashboard(
 ):
     summary = ProjectVisibilityService(db).summarize(project_id, actor)
     vendor_risks = _vendor_risk_events(db, project_id)
-    return ProjectDashboardOut(summary=summary, vendor_risks=vendor_risks)
+    return ProjectDashboardOut(
+        summary=summary, vendor_risks=vendor_risks,
+        gate_status=_gate_status_summary(db, project_id),
+    )

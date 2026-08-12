@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +15,9 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
+    ExecutionExcludedDependency,
+    ExecutionGate,
+    ExecutionGateTask,
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
@@ -70,6 +73,9 @@ class AdminVisibilityRollupTests(unittest.TestCase):
             V2Project.__table__,
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
+            ExecutionGate.__table__,
+            ExecutionGateTask.__table__,
+            ExecutionExcludedDependency.__table__,
             V2ProjectTaskDependency.__table__,
             ProjectRoleChange.__table__,
             V2AuditEvent.__table__,
@@ -141,6 +147,60 @@ class AdminVisibilityRollupTests(unittest.TestCase):
         self.assertEqual(len(body), 2)
         self.assertEqual({row["code"] for row in body}, {"PRJ-1", "PRJ-2"})
         self.assertEqual(next(row for row in body if row["code"] == "PRJ-1")["total_count"], 1)
+
+    # ---- 45-day POC U11: at-risk handover and gates in the rollup ---------
+
+    def test_the_rollup_surfaces_at_risk_handover_per_project(self):
+        at_risk = self.add_project("PRJ-1", "Project 1")
+        self.add_project("PRJ-2", "Project 2")
+        with self.Session.begin() as session:
+            project = session.get(V2Project, at_risk)
+            project.target_handover_date = date(2026, 9, 14)
+            # Already past its target finish, so the project carries real
+            # delay...
+            late = session.scalars(select(Task).where(Task.project_id == at_risk)).one()
+            late.due_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+            # ...and this one is scheduled to finish after handover, which
+            # is what actually puts the handover at risk. Stated as a fixed
+            # future date rather than relying on where "now" happens to sit.
+            session.add(Task(
+                id=uuid.uuid4(), project_id=at_risk, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
+                original_code="T002", template_sequence=2, title="Task T002",
+                schedule_classification="execution", applicability="mandatory", lifecycle_status="planned",
+                due_at=datetime(2026, 12, 1, tzinfo=timezone.utc),
+            ))
+
+        body = {row["code"]: row for row in self.client.get("/api/v2/admin/projects-overview").json()}
+        self.assertTrue(body["PRJ-1"]["handover_at_risk"])
+        self.assertEqual(body["PRJ-1"]["handover_at_risk_count"], 1)
+        self.assertGreater(body["PRJ-1"]["max_delay_days"], 0)
+        # PRJ-2 has no handover date at all, so it cannot be at risk.
+        self.assertFalse(body["PRJ-2"]["handover_at_risk"])
+        self.assertEqual(body["PRJ-2"]["max_delay_days"], 0)
+
+    def test_the_rollup_counts_outstanding_and_rejected_gates_per_project(self):
+        project_id = self.add_project("PRJ-1", "Project 1")
+        self.add_project("PRJ-2", "Project 2")
+        with self.Session.begin() as session:
+            for code, status in (("E001", "rejected"), ("E002", "pending_review"), ("E003", "approved")):
+                session.add(ExecutionGate(
+                    project_id=project_id, baseline_id=uuid.uuid4(), original_code=code,
+                    approval_name=f"{code} approval", status=status, blocking=True,
+                    accountable_pm_user_id=ADMIN_ID,
+                ))
+
+        body = {row["code"]: row for row in self.client.get("/api/v2/admin/projects-overview").json()}
+        self.assertEqual(body["PRJ-1"]["gates_rejected"], 1)
+        self.assertEqual(body["PRJ-1"]["gates_blocking_outstanding"], 2, "rejected and pending both still block")
+        self.assertEqual(body["PRJ-2"]["gates_rejected"], 0)
+
+    def test_every_field_the_rollup_returned_before_is_still_returned(self):
+        self.add_project("PRJ-1", "Project 1")
+        row = self.client.get("/api/v2/admin/projects-overview").json()[0]
+        for previously_present in ("id", "code", "name", "status", "total_count", "planned_count",
+                                   "active_count", "completed_count", "blocked_count", "delayed_count",
+                                   "overdue_count", "no_update_count"):
+            self.assertIn(previously_present, row)
 
     def test_admin_retrieves_cross_project_activity(self):
         project_a = self.add_project("PRJ-1", "Project 1")
