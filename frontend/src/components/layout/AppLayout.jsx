@@ -36,20 +36,23 @@ function MobileNavigation({ tabs, activeTab, onTabChange }) {
   </nav>;
 }
 
+function SidebarIconButton({ label, onClick, children }) {
+  return <IconButton variant="ghost" className="!text-slate-300 hover:!bg-white/10 hover:!text-white" aria-label={label} onClick={onClick}>{children}</IconButton>;
+}
+
 export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, onRefresh, notice, onClearNotice, children }) {
   const activeLabel = tabs.find(([key]) => key === activeTab)?.[1] || "Workspace";
   return <div className="min-h-dvh min-w-0 bg-[radial-gradient(circle_at_10%_0%,rgba(219,234,254,.9),transparent_28%),linear-gradient(145deg,#f8fafc_0%,#eef4fb_56%,#f8fafc_100%)] text-slate-950 lg:grid lg:grid-cols-[272px_minmax(0,1fr)]">
     <aside className="sticky top-0 hidden h-dvh min-w-0 min-h-0 flex-col gap-5 overflow-hidden bg-[#071a33] p-5 text-white lg:flex">
       <div className="flex shrink-0 items-center gap-3 px-1"><div className="grid size-12 place-items-center rounded-2xl bg-blue-600 text-xl font-black shadow-[0_14px_30px_rgba(37,99,235,.3)]">45</div><div><strong className="block text-xl tracking-tight">SiteOps</strong><span className="text-xs font-medium text-blue-200">Execution intelligence</span></div></div>
-      <div className="shrink-0 rounded-2xl border border-white/10 bg-white/[.06] p-4"><span className="text-xs font-semibold text-blue-200">{roles[user.role]}</span><strong className="mt-1 block truncate text-sm">{user.name}</strong></div>
+      <div className="flex shrink-0 items-center gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-4"><div className="min-w-0 flex-1"><span className="text-xs font-semibold text-blue-200">{roles[user.role]}</span><strong className="mt-1 block truncate text-sm">{user.name}</strong></div><SidebarIconButton label="Refresh workspace" onClick={onRefresh}><RefreshCw size={18}/></SidebarIconButton></div>
       <DesktopNav tabs={tabs} activeTab={activeTab} onTabChange={onTabChange}/>
-      <div className="shrink-0 border-t border-white/10 pt-4"><div className="flex min-w-0 items-center gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-blue-600 font-black">{initials(user.name)}</div><div className="min-w-0 flex-1"><strong className="block truncate text-sm">{user.name}</strong><span className="block truncate text-xs text-slate-400">{user.email}</span></div><IconButton variant="ghost" className="!text-slate-300 hover:!bg-white/10 hover:!text-white" aria-label="Logout" onClick={onLogout}><LogOut size={18}/></IconButton></div></div>
+      <div className="shrink-0 border-t border-white/10 pt-4"><div className="flex min-w-0 items-center gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-blue-600 font-black">{initials(user.name)}</div><div className="min-w-0 flex-1"><strong className="block truncate text-sm">{user.name}</strong><span className="block truncate text-xs text-slate-400">{user.email}</span></div><SidebarIconButton label="Logout" onClick={onLogout}><LogOut size={18}/></SidebarIconButton></div></div>
     </aside>
 
     <div className="min-w-0">
       <header className="sticky top-0 z-30 flex min-h-[70px] items-center gap-3 border-b border-slate-200/80 bg-white/90 px-4 backdrop-blur-xl lg:hidden"><div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-600 font-black text-white">45</div><div className="min-w-0 flex-1"><span className="block text-[10px] font-black uppercase tracking-[.18em] text-blue-700">SiteOps</span><strong className="block truncate text-base">{activeLabel}</strong></div><IconButton variant="secondary" aria-label="Refresh workspace" onClick={onRefresh}><RefreshCw size={18}/></IconButton><IconButton variant="ghost" aria-label="Logout" onClick={onLogout}><LogOut size={18}/></IconButton></header>
       <main className={`min-w-0 max-w-full overflow-x-hidden px-3 pb-28 pt-3 sm:px-5 sm:pt-5 lg:p-8 lg:pb-8 tab-${activeTab}`}>
-        <header className="mb-6 hidden items-end justify-between gap-6 rounded-[28px] border border-white/80 bg-white/85 px-7 py-6 shadow-[0_22px_70px_rgba(15,45,86,.08)] backdrop-blur lg:flex"><div><p className="text-[10px] font-black uppercase tracking-[.22em] text-blue-700">45-day interior fit-out control</p><h1 className="mt-2 text-[clamp(36px,4vw,58px)] font-black tracking-[-.055em] text-slate-950">{activeLabel}</h1><span className="mt-1 block text-sm text-slate-500">{tabHelp(activeTab)}</span></div><div className="flex items-center gap-2"><span className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black text-slate-600">{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span><IconButton variant="secondary" aria-label="Refresh workspace" onClick={onRefresh}><RefreshCw size={18}/></IconButton></div></header>
         {notice && <Alert className="mb-4" onDismiss={onClearNotice}>{notice}</Alert>}
         {children}
       </main>
