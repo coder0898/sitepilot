@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { CalendarCheck, ClipboardList, FolderKanban, GitBranch, Layers, ListChecks, Search, ShieldCheck } from "lucide-react";
+import { CalendarCheck, CalendarRange, ClipboardList, FolderKanban, GitBranch, Layers, ListChecks, Search, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
 import { ExecutionGateStatusControl, ExecutionGateStatusPill } from "./components/ExecutionGateActions";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
+import { ScheduleTimeline } from "./components/ScheduleTimeline";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
 import { TaskReadinessPanel } from "./components/TaskReadinessPanel";
 
@@ -22,6 +23,7 @@ export function ExecutionPage({ user }) {
   const [dependencies, setDependencies] = useState({ items: [], total: 0, excluded_warning_count: 0 });
   const [externalGates, setExternalGates] = useState([]);
   const [executionGates, setExecutionGates] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [readiness, setReadiness] = useState(null);
   const [readinessError, setReadinessError] = useState("");
   const [activeTab, setActiveTab] = useState("tasks");
@@ -49,6 +51,7 @@ export function ExecutionPage({ user }) {
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
       setExternalGates([]);
       setExecutionGates([]);
+      setTasks([]);
       setReadiness(null);
       return;
     }
@@ -64,6 +67,7 @@ export function ExecutionPage({ user }) {
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
       setExternalGates([]);
       setExecutionGates([]);
+      setTasks([]);
       // Readiness reasons name tasks and approvals across the whole
       // project, so this role follows the same early return as the other
       // project-wide fetches above rather than being handed a view of work
@@ -96,16 +100,18 @@ export function ExecutionPage({ user }) {
 
   function loadExecutionState(id, active = true) {
     setReadinessError("");
-    return Promise.all([taskExecutionApi.readiness(id), taskExecutionApi.executionGates(id)])
-      .then(([readinessResponse, gatesResponse]) => {
+    return Promise.all([taskExecutionApi.readiness(id), taskExecutionApi.executionGates(id), taskExecutionApi.list(id)])
+      .then(([readinessResponse, gatesResponse, taskRows]) => {
         if (!active) return;
         setReadiness(readinessResponse);
         setExecutionGates(gatesResponse || []);
+        setTasks(taskRows || []);
       })
       .catch(err => {
         if (!active) return;
         setReadiness(null);
         setExecutionGates([]);
+        setTasks([]);
         setReadinessError(err.message || "Readiness could not be worked out for this project.");
       });
   }
@@ -156,6 +162,7 @@ export function ExecutionPage({ user }) {
             <div className="flex flex-wrap gap-2">
               {[
                 ["tasks", "Tasks", ClipboardList],
+                ["timeline", "Timeline", CalendarRange],
                 ["dependencies", "Dependencies", GitBranch],
                 ["approvals", "External Approvals", ShieldCheck],
               ].map(([key, label, Icon]) => (
@@ -178,6 +185,10 @@ export function ExecutionPage({ user }) {
 
           <TaskExecutionBoard projectId={projectId} user={user} search={search}/>
           </>}
+
+          {activeTab === "timeline" && (
+            <ScheduleTimeline tasks={tasks} startDate={selectedProject?.start_date}/>
+          )}
 
           {activeTab === "dependencies" && <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <h3 className="m-0 font-serif text-lg text-slate-950">Task dependencies</h3>
