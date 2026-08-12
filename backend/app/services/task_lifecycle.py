@@ -87,6 +87,24 @@ def predecessor_satisfied(predecessor: Task, verified_task_ids: frozenset[uuid.U
     return False
 
 
+def _is_early_start(task: Task) -> bool:
+    """Whether starting this task now is ahead of its planned start date.
+
+    A task with no planned start date is never early - that is the
+    pre-activation case, seven tasks per 45-day project, and demanding a
+    reason for work that was never scheduled would be nonsense. A task
+    already started is not starting again, so its first start is the only
+    one this can apply to.
+    """
+    if task.planned_start_at is None or task.actual_start_at is not None:
+        return False
+    planned = task.planned_start_at
+    if planned.tzinfo is None:
+        # SQLite drops tzinfo on read where Postgres round-trips it aware.
+        planned = planned.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) < planned
+
+
 def _record_actual_dates(task: Task, target_status: str) -> None:
     """45-day POC U5: observe when work really started and finished.
 
@@ -425,6 +443,18 @@ class TaskLifecycleService:
         elif not _via_decision_service:
             self._require_role_for_transition(project, task, target_status, actor)
 
+        if target_status == "in_progress" and _is_early_start(task):
+            # 45-day POC U9. The ONE place this plan narrows what the portal
+            # permits: a start that succeeded before now needs a reason.
+            # Deliberate and R22-authorised - it releases nothing new, adds
+            # no transition, removes none, and is satisfied by supplying a
+            # reason. Starting early is allowed; doing it silently is not.
+            if not (reason or "").strip():
+                raise HTTPException(
+                    422,
+                    "This task is starting before its planned start date. Give a reason for the early start.",
+                )
+
         if target_status in {"ready", "in_progress"}:
             # BR-004: work cannot start/proceed without an accountable
             # active Supervisor on the project.
@@ -485,8 +515,11 @@ class TaskLifecycleService:
                 )
 
         before_status = current_status
+        early_start = target_status == "in_progress" and _is_early_start(task)
         task.lifecycle_status = target_status
         _record_actual_dates(task, target_status)
+        if early_start:
+            task.early_start_reason = (reason or "").strip()
         clean_reason = (reason or "").strip() or f"Task moved from {before_status} to {target_status}."
         self.db.add(V2AuditEvent(
             actor_user_id=actor.id,

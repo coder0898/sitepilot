@@ -260,6 +260,7 @@ class TaskListItemOut(BaseModel):
     target_finish_at: datetime | None
     actual_start_at: datetime | None
     actual_finish_at: datetime | None
+    early_start_reason: str | None
     phase: str | None
     category: str | None
     evidence_required: bool
@@ -345,6 +346,7 @@ class TaskDetailOut(BaseModel):
     target_finish_at: datetime | None
     actual_start_at: datetime | None
     actual_finish_at: datetime | None
+    early_start_reason: str | None
     phase: str | None
     category: str | None
     evidence_required: bool
