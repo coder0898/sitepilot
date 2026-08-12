@@ -9,9 +9,9 @@ instant.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskRefOut(BaseModel):
@@ -23,6 +23,24 @@ class TaskRefOut(BaseModel):
 
 class OverdueTaskOut(TaskRefOut):
     due_at: datetime
+
+
+class ComputedDelayOut(TaskRefOut):
+    """45-day POC U10: delay as a measurement, not an entry.
+
+    `delay_days` is the completion reference minus the target finish -
+    actual finish where the task has one, otherwise now - floored at zero.
+    Getting those operands the other way round yields zero for every late
+    task and silently neutralises the at-risk flag built on the same
+    number, so the order matters more than it looks.
+    """
+
+    target_finish_at: datetime
+    actual_finish_at: datetime | None
+    delay_days: int
+    projected_finish_at: datetime
+    """Target finish plus the delay accrued so far - what the task is now
+    on course to finish by."""
 
 
 class NoUpdateTaskOut(TaskRefOut):
@@ -62,3 +80,13 @@ class ProjectVisibilitySummary(BaseModel):
     approval_gates_at_risk: list[ApprovalGateAtRiskOut]
 
     reassignment_required: list[ReassignmentRequiredOut]
+
+    # 45-day POC U10. Added, never replacing - every field above is
+    # unchanged so already-shipped screens keep working (R48).
+    computed_delays: list[ComputedDelayOut] = Field(default_factory=list)
+    handover_at_risk: bool = False
+    handover_at_risk_tasks: list[ComputedDelayOut] = Field(default_factory=list)
+    """The tasks whose projected finish passes the project's handover date -
+    named, not counted, so the answer to "why is this at risk?" needs no
+    second lookup."""
+    target_handover_date: date | None = None

@@ -530,7 +530,7 @@ class TaskDelayEvent(Base):
             "responsibility_type in ('vendor', 'client', 'approval', 'design', 'site_readiness', 'internal', 'other')",
             name="ck_v2_task_delay_events_responsibility_type",
         ),
-        CheckConstraint("impact_days > 0", name="ck_v2_task_delay_events_impact_days_positive"),
+        CheckConstraint("impact_days is null or impact_days > 0", name="ck_v2_task_delay_events_impact_days_positive"),
         CheckConstraint(
             "(responsibility_type = 'vendor' and responsible_vendor_id is not null) "
             "or (responsibility_type <> 'vendor' and responsible_vendor_id is null)",
@@ -547,7 +547,11 @@ class TaskDelayEvent(Base):
     responsibility_type: Mapped[str] = mapped_column(Text, nullable=False)
     responsible_vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    impact_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    impact_days: Mapped[int | None] = mapped_column(Integer)
+    """45-day POC U10: no longer written. Delay is computed from the gap
+    between target finish and actual finish, so a human day count is an
+    opinion competing with a measurement. Existing rows keep their value
+    and stay readable; it is never summed with computed delay."""
     recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

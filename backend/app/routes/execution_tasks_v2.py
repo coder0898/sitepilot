@@ -483,7 +483,6 @@ def create_task_delay(
         project_id, task_id, actor,
         responsibility_type=payload.responsibility_type,
         reason=payload.reason,
-        impact_days=payload.impact_days,
         responsible_vendor_id=payload.responsible_vendor_id,
     )
 
