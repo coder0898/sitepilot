@@ -77,6 +77,52 @@ class ExecutionGateOut(BaseModel):
     blocking: bool
     mapping_classification: str | None
     accountable_pm_user_id: uuid.UUID
+    active_delegate_user_ids: list[uuid.UUID] = Field(default_factory=list)
+    """U13: who is currently chasing this approval. Present so the client can
+    offer the submit control to a delegate without guessing - the server
+    guard stays authoritative either way."""
+
+
+class ExecutionGateDelegationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    employee_id: uuid.UUID
+    instruction: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("instruction")
+    @classmethod
+    def normalize_instruction(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("Say what this person is being asked to chase.")
+        return cleaned
+
+
+class ExecutionGateDelegationEndIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("A reason is required to end a delegation.")
+        return cleaned
+
+
+class ExecutionGateDelegationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    execution_gate_id: uuid.UUID
+    project_id: uuid.UUID
+    employee_id: uuid.UUID
+    instruction: str
+    status: str
+    starts_at: datetime
+    ends_at: datetime | None
+    assigned_by: uuid.UUID
+    ended_by: uuid.UUID | None
+    end_reason: str | None
 
 
 class ExecutionGateStatusHistoryItem(BaseModel):

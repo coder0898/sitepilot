@@ -6,29 +6,30 @@ import { ExecutionGateStatusControl, canRecordGateOutcome } from "./components/E
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: { recordGateStatus: vi.fn() } }));
 
 const PM_ID = "pm-1";
-const gate = { id: "g1", original_code: "E001", status: "pending_review", accountable_pm_user_id: PM_ID };
+const DELEGATE_ID = "emp-1";
+const gate = { id: "g1", original_code: "E001", status: "pending_review", accountable_pm_user_id: PM_ID, active_delegate_user_ids: [] };
+const delegatedGate = { ...gate, active_delegate_user_ids: [DELEGATE_ID] };
 const accountablePm = { id: PM_ID, role: "project_manager" };
 const otherPm = { id: "pm-2", role: "project_manager" };
 const admin = { id: "a1", role: "admin" };
 const superAdmin = { id: "sa1", role: "super_admin" };
 const supervisor = { id: "s1", role: "supervisor" };
+const delegate = { id: DELEGATE_ID, role: "internal_employee" };
 
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe("canRecordGateOutcome", () => {
-  it("lets the accountable PM submit, approve, reject and resubmit", () => {
-    expect(canRecordGateOutcome(accountablePm, gate, "pending_review", "submitted")).toBe(true);
-    expect(canRecordGateOutcome(accountablePm, gate, "submitted", "approved")).toBe(true);
-    expect(canRecordGateOutcome(accountablePm, gate, "submitted", "rejected")).toBe(true);
-    expect(canRecordGateOutcome(accountablePm, gate, "rejected", "submitted")).toBe(true);
+  it("lets a delegate record submission and resubmission", () => {
+    expect(canRecordGateOutcome(delegate, delegatedGate, "pending_review", "submitted")).toBe(true);
+    expect(canRecordGateOutcome(delegate, delegatedGate, "rejected", "submitted")).toBe(true);
   });
 
-  it("keeps not_required away from the accountable PM in both directions", () => {
-    // Mirrors GATE_ADMIN_ONLY_TRANSITIONS. Reaching not_required stops the
-    // gate blocking, which releases every task it holds - a readiness
-    // bypass wearing the name of paperwork.
-    expect(canRecordGateOutcome(accountablePm, gate, "pending_review", "not_required")).toBe(false);
-    expect(canRecordGateOutcome(accountablePm, gate, "not_required", "pending_review")).toBe(false);
+  it("keeps approval and rejection away from the delegate", () => {
+    // "I lodged it" is theirs to state; "the landlord approved" is not.
+    expect(canRecordGateOutcome(delegate, delegatedGate, "submitted", "approved")).toBe(false);
+    expect(canRecordGateOutcome(delegate, delegatedGate, "submitted", "rejected")).toBe(false);
+    expect(canRecordGateOutcome(delegate, delegatedGate, "approved", "submitted")).toBe(false);
+    expect(canRecordGateOutcome(delegate, delegatedGate, "pending_review", "not_required")).toBe(false);
   });
 
   it("admits Admin and Super Admin to every transition", () => {
@@ -38,15 +39,24 @@ describe("canRecordGateOutcome", () => {
     }
   });
 
-  it("refuses a PM who is not this gate's accountable PM, and a Supervisor", () => {
-    expect(canRecordGateOutcome(otherPm, gate, "submitted", "approved")).toBe(false);
-    expect(canRecordGateOutcome(supervisor, gate, "submitted", "approved")).toBe(false);
+  it("refuses every Project Manager, including this gate's accountable one", () => {
+    // External approvals are Admin's responsibility. The accountable PM is
+    // named on the gate for escalation, not for permission.
+    for (const from_to of [["pending_review", "submitted"], ["submitted", "approved"]]) {
+      expect(canRecordGateOutcome(accountablePm, gate, ...from_to)).toBe(false);
+      expect(canRecordGateOutcome(otherPm, gate, ...from_to)).toBe(false);
+    }
+  });
+
+  it("refuses a Supervisor, and an Internal Employee who is not delegated", () => {
+    expect(canRecordGateOutcome(supervisor, gate, "pending_review", "submitted")).toBe(false);
+    expect(canRecordGateOutcome(delegate, gate, "pending_review", "submitted")).toBe(false);
   });
 });
 
 describe("ExecutionGateStatusControl", () => {
-  it("offers no not_required option to a PM", () => {
-    render(<ExecutionGateStatusControl projectId="p1" gate={gate} user={accountablePm} onRecorded={vi.fn()}/>);
+  it("offers a delegate only the submit option", () => {
+    render(<ExecutionGateStatusControl projectId="p1" gate={delegatedGate} user={delegate} onRecorded={vi.fn()}/>);
     expect(screen.getByRole("option", { name: "Mark submitted" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Mark not required" })).toBeNull();
   });
@@ -56,15 +66,18 @@ describe("ExecutionGateStatusControl", () => {
     expect(screen.getByRole("option", { name: "Mark not required" })).toBeInTheDocument();
   });
 
-  it("renders nothing for an actor with no permitted transition", () => {
-    const { container } = render(<ExecutionGateStatusControl projectId="p1" gate={gate} user={supervisor} onRecorded={vi.fn()}/>);
-    expect(container).toBeEmptyDOMElement();
+  it("renders nothing for a Supervisor, a PM, or an undelegated employee", () => {
+    // `gate` has no active delegates, so the employee is undelegated here.
+    for (const user of [supervisor, accountablePm, otherPm, delegate]) {
+      const { container } = render(<ExecutionGateStatusControl projectId="p1" gate={gate} user={user} onRecorded={vi.fn()}/>);
+      expect(container).toBeEmptyDOMElement();
+    }
   });
 
   it("records an outcome with its reason and refreshes", async () => {
     taskExecutionApi.recordGateStatus.mockResolvedValue({});
     const onRecorded = vi.fn().mockResolvedValue();
-    render(<ExecutionGateStatusControl projectId="p1" gate={{ ...gate, status: "submitted" }} user={accountablePm} onRecorded={onRecorded}/>);
+    render(<ExecutionGateStatusControl projectId="p1" gate={{ ...gate, status: "submitted" }} user={admin} onRecorded={onRecorded}/>);
 
     fireEvent.change(screen.getByLabelText("Record outcome"), { target: { value: "approved" } });
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Landlord signed on site." } });
@@ -78,7 +91,7 @@ describe("ExecutionGateStatusControl", () => {
 
   it("surfaces the server's message when it refuses", async () => {
     taskExecutionApi.recordGateStatus.mockRejectedValue(new Error("Only Admin can mark an approval not required."));
-    render(<ExecutionGateStatusControl projectId="p1" gate={{ ...gate, status: "submitted" }} user={accountablePm} onRecorded={vi.fn()}/>);
+    render(<ExecutionGateStatusControl projectId="p1" gate={{ ...gate, status: "submitted" }} user={admin} onRecorded={vi.fn()}/>);
     fireEvent.change(screen.getByLabelText("Record outcome"), { target: { value: "approved" } });
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Signed." } });
     fireEvent.click(screen.getByRole("button", { name: /record/i }));
@@ -86,7 +99,7 @@ describe("ExecutionGateStatusControl", () => {
   });
 
   it("cannot be submitted without a reason", () => {
-    render(<ExecutionGateStatusControl projectId="p1" gate={{ ...gate, status: "submitted" }} user={accountablePm} onRecorded={vi.fn()}/>);
+    render(<ExecutionGateStatusControl projectId="p1" gate={{ ...gate, status: "submitted" }} user={admin} onRecorded={vi.fn()}/>);
     fireEvent.change(screen.getByLabelText("Record outcome"), { target: { value: "approved" } });
     expect(screen.getByRole("button", { name: /record/i })).toBeDisabled();
   });

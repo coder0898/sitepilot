@@ -25,15 +25,18 @@ const NEXT_STATUSES = {
   not_required: [["pending_review", "Return to review"]],
 };
 
-// Mirrors GATE_ADMIN_ONLY_TRANSITIONS. `not_required` stops a gate
-// blocking, so reaching it releases every task the gate holds - an
-// applicability call, not an approval outcome.
-const ADMIN_ONLY = new Set(["pending_review>not_required", "not_required>pending_review"]);
+// Mirrors GATE_DELEGABLE_TRANSITIONS in backend/app/execution_models.py.
+//
+// External approvals are Admin's responsibility, so every consequential move
+// is Admin's. The only exceptions are the two that state a fact about the
+// delegate's own work - "I lodged it" - rather than what an external
+// authority decided.
+const DELEGABLE = new Set(["pending_review>submitted", "rejected>submitted"]);
 
 export function canRecordGateOutcome(user, gate, from, to) {
   if (user.role === "super_admin" || user.role === "admin") return true;
-  if (ADMIN_ONLY.has(`${from}>${to}`)) return false;
-  return user.role === "project_manager" && gate.accountable_pm_user_id === user.id;
+  if (!DELEGABLE.has(`${from}>${to}`)) return false;
+  return (gate.active_delegate_user_ids || []).includes(user.id);
 }
 
 export function ExecutionGateStatusControl({ projectId, gate, user, onRecorded }) {
