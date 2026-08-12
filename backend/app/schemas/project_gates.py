@@ -125,6 +125,18 @@ class ExecutionGateDelegationOut(BaseModel):
     end_reason: str | None
 
 
+class ExecutionGateDocumentOut(BaseModel):
+    id: uuid.UUID
+    execution_gate_id: uuid.UUID
+    document_type: str
+    caption: str | None
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    uploaded_by: uuid.UUID
+    created_at: datetime
+
+
 class ExecutionGateStatusHistoryItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID

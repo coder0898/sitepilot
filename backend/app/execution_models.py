@@ -371,6 +371,46 @@ class ExecutionGateStatusHistory(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+GATE_DOCUMENT_TYPES = ("submission", "outcome", "supporting")
+"""U14/R13: what a gate document evidences.
+
+`submission` is what went to the authority, `outcome` is what came back,
+`supporting` is everything else in the pack. The distinction matters because
+it decides which claim a file backs up - that the gate was submitted, or
+that it was decided."""
+
+
+class ExecutionGateDocument(Base):
+    """U14 (R13): proof of an external approval's submission or outcome.
+
+    The status lifecycle records that the landlord approved; this records the
+    signed letter saying so.
+
+    Bytes live in `FileObject`, the same private store task evidence uses -
+    never under the publicly served uploads directory. A real foreign key to
+    the gate rather than a polymorphic entity reference, the same call
+    `TaskEvidence` made.
+    """
+
+    __tablename__ = "execution_gate_documents"
+    __table_args__ = (
+        UniqueConstraint("execution_gate_id", "file_id", name="uq_v2_execution_gate_documents_gate_file"),
+        CheckConstraint(f"document_type in {GATE_DOCUMENT_TYPES!r}", name="ck_v2_execution_gate_documents_type"),
+        Index("ix_v2_execution_gate_documents_gate", "execution_gate_id"),
+        Index("ix_v2_execution_gate_documents_file", "file_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.execution_gates.id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"), nullable=False)
+    document_type: Mapped[str] = mapped_column(Text, nullable=False)
+    caption: Mapped[str | None] = mapped_column(Text)
+    uploaded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ExecutionGateDelegation(Base):
     """U13: an Internal Employee delegated to chase an external approval.
 
