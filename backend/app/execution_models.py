@@ -282,6 +282,61 @@ class ExecutionGateTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+GATE_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    "pending_review": frozenset({"submitted", "not_required"}),
+    "submitted": frozenset({"approved", "rejected"}),
+    "rejected": frozenset({"submitted"}),
+    "approved": frozenset({"submitted"}),
+    "not_required": frozenset({"pending_review"}),
+}
+"""U2: which gate status moves are possible at all. Separate from *who*
+may make them (see `GATE_ADMIN_ONLY_TRANSITIONS`).
+
+`rejected -> approved` is deliberately absent: a refused approval becomes
+granted only by being resubmitted and then approved, so the history shows
+the second submission rather than a silent reversal. `approved ->
+submitted` exists because an external party can withdraw or supersede an
+approval, and the gate has to be able to say so."""
+
+GATE_ADMIN_ONLY_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("pending_review", "not_required"),
+    ("not_required", "pending_review"),
+})
+"""U2/KTD13: the two moves the accountable PM must not make.
+
+`not_required` is one of the two statuses that stop a gate blocking, so
+setting it releases every task the gate holds - that is an applicability
+decision, which is Admin's call, not an approval outcome. A single flat
+"can this actor record outcomes?" guard would hand every PM a readiness
+bypass with a legitimate-looking name."""
+
+
+class ExecutionGateStatusHistory(Base):
+    """Why a gate is where it is - readable by anyone who can see the gate.
+
+    Separate from `V2ProjectExternalGateApplicabilityDecision`: that records
+    a Draft-time Admin decision about whether an approval applies at all,
+    this records an execution-time outcome owned by the accountable PM.
+    """
+
+    __tablename__ = "execution_gate_status_history"
+    __table_args__ = (
+        CheckConstraint(f"new_status in {EXECUTION_GATE_STATUSES!r}", name="ck_v2_execution_gate_status_history_new_status"),
+        CheckConstraint(f"previous_status in {EXECUTION_GATE_STATUSES!r}", name="ck_v2_execution_gate_status_history_previous_status"),
+        Index("ix_v2_execution_gate_status_history_gate", "execution_gate_id", "recorded_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="CASCADE"), nullable=False)
+    execution_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.execution_gates.id", ondelete="CASCADE"), nullable=False)
+    previous_status: Mapped[str] = mapped_column(Text, nullable=False)
+    new_status: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ExecutionExcludedDependency(Base):
     """A dependency edge dropped at baseline lock because its predecessor
     was excluded from the project's scope.

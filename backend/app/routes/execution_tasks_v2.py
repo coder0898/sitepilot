@@ -54,6 +54,12 @@ from app.schemas.execution_tasks import (
     TaskVerificationOut,
     TaskVerificationSummaryOut,
 )
+from app.schemas.project_gates import (
+    ExecutionGateOut,
+    ExecutionGateStatusHistoryItem,
+    ExecutionGateStatusIn,
+)
+from app.services.project_gate_status import ProjectGateStatusService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
@@ -524,3 +530,47 @@ def download_task_evidence(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+# ---- external approvals (45-day POC U2) ---------------------------------
+#
+# These sit on the execution router, not `projects_v2`, because they act on
+# `execution_gates` - the post-activation rows. The gate endpoints in
+# `projects_v2` act on the planning layer and stay Draft-time.
+
+
+@router.get("/{project_id}/execution-gates", response_model=list[ExecutionGateOut])
+def list_execution_gates(
+    project_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateStatusService(db).list_gates(project_id, actor)
+
+
+@router.post("/{project_id}/execution-gates/{gate_id}/status", response_model=ExecutionGateOut)
+def record_execution_gate_status(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    payload: ExecutionGateStatusIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateStatusService(db).record_status(
+        project_id, gate_id, actor, payload.persisted_status, payload.reason,
+    )
+
+
+@router.get(
+    "/{project_id}/execution-gates/{gate_id}/status-history",
+    response_model=list[ExecutionGateStatusHistoryItem],
+)
+def list_execution_gate_status_history(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Readable by any project member. The rejection reason is what a site
+    team needs, so it is not gated behind the authority to record one."""
+    return ProjectGateStatusService(db).list_history(project_id, gate_id, actor)
