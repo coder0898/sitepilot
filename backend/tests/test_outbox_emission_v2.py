@@ -366,10 +366,10 @@ class OutboxEmissionApiTests(unittest.TestCase):
     def resolve_blocker(self, project_id, task_id, blocker_id):
         return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/blockers/{blocker_id}/resolve")
 
-    def create_delay(self, project_id, task_id, responsibility_type="internal", reason="Crew shortage.", impact_days=2):
+    def create_delay(self, project_id, task_id, responsibility_type="internal", reason="Crew shortage."):
         return self.client.post(
             f"/api/v2/projects/{project_id}/tasks/{task_id}/delays",
-            json={"responsibility_type": responsibility_type, "reason": reason, "impact_days": impact_days},
+            json={"responsibility_type": responsibility_type, "reason": reason},
         )
 
     def add_internal_member(self, project_id: str) -> None:

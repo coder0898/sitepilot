@@ -264,11 +264,10 @@ class TaskBlockersDelaysApiTests(unittest.TestCase):
     def resolve_blocker(self, project_id, task_id, blocker_id):
         return self.client.post(f"/api/v2/projects/{project_id}/tasks/{task_id}/blockers/{blocker_id}/resolve")
 
-    def create_delay(self, project_id, task_id, responsibility_type="internal", reason="Crew shortage.", impact_days=2, responsible_vendor_id=None):
+    def create_delay(self, project_id, task_id, responsibility_type="internal", reason="Crew shortage.", responsible_vendor_id=None):
         payload = {
             "responsibility_type": responsibility_type,
             "reason": reason,
-            "impact_days": impact_days,
         }
         if responsible_vendor_id is not None:
             payload["responsible_vendor_id"] = str(responsible_vendor_id)
@@ -351,12 +350,12 @@ class TaskBlockersDelaysApiTests(unittest.TestCase):
 
         self.act_as_pm()
         response = self.create_delay(
-            project["id"], task.id, responsibility_type="approval", reason="Awaiting client sign-off.", impact_days=3,
+            project["id"], task.id, responsibility_type="approval", reason="Awaiting client sign-off.",
         )
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body["responsibility_type"], "approval")
-        self.assertEqual(body["impact_days"], 3)
+        self.assertIsNone(body["impact_days"], "U10: the day count is no longer written")
         self.assertIsNone(body["responsible_vendor_id"])
 
         with self.Session() as session:

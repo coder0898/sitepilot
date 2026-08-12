@@ -78,7 +78,6 @@ class TaskDelayService:
         actor: User,
         responsibility_type: str,
         reason: str,
-        impact_days: int,
         responsible_vendor_id: uuid.UUID | None = None,
     ) -> TaskDelayEvent:
         project = self._require_access(project_id, actor)
@@ -91,9 +90,6 @@ class TaskDelayService:
         if not clean_reason:
             raise HTTPException(422, "A delay reason is required.")
 
-        if impact_days is None or impact_days <= 0:
-            raise HTTPException(422, "impact_days must be a positive integer.")
-
         if responsibility_type == "vendor" and responsible_vendor_id is None:
             raise HTTPException(422, "responsible_vendor_id is required when responsibility_type is 'vendor'.")
         if responsibility_type != "vendor" and responsible_vendor_id is not None:
@@ -105,7 +101,10 @@ class TaskDelayService:
             responsibility_type=responsibility_type,
             responsible_vendor_id=responsible_vendor_id,
             reason=clean_reason,
-            impact_days=impact_days,
+            # U10: deliberately not set. Delay is measured from the gap
+            # between target finish and actual finish; a human day count
+            # here would be an opinion competing with a measurement, and
+            # R28 says no execution role may influence delay.
             recorded_by=actor.id,
         )
         self.db.add(delay)
@@ -120,7 +119,6 @@ class TaskDelayService:
                 "project_id": str(project.id),
                 "delay_id": str(delay.id),
                 "responsibility_type": responsibility_type,
-                "impact_days": impact_days,
             },
             idempotency_key=f"task:{task.id}:task.delay_recorded:{delay.id}",
         )

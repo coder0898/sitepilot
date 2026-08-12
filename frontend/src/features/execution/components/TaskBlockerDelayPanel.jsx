@@ -77,7 +77,6 @@ function DelayForm({ projectId, task, onDone, onChanged }) {
   const [responsibilityType, setResponsibilityType] = useState("vendor");
   const [vendorId, setVendorId] = useState("");
   const [reason, setReason] = useState("");
-  const [impactDays, setImpactDays] = useState("1");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -96,7 +95,6 @@ function DelayForm({ projectId, task, onDone, onChanged }) {
         responsibility_type: responsibilityType,
         responsible_vendor_id: responsibilityType === "vendor" ? vendorId.trim() : null,
         reason: reason.trim(),
-        impact_days: Number(impactDays),
       });
       await onChanged();
       onDone();
@@ -109,7 +107,6 @@ function DelayForm({ projectId, task, onDone, onChanged }) {
 
   return <form className="mt-2 grid gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:grid-cols-2" onSubmit={submit}>
     <Field label="Responsibility"><Select value={responsibilityType} onChange={event => setResponsibilityType(event.target.value)}>{DELAY_RESPONSIBILITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>
-    <Field label="Impact (days)"><Input type="number" min="1" value={impactDays} onChange={event => setImpactDays(event.target.value)} required/></Field>
     {responsibilityType === "vendor" && <Field label="Vendor ID" className="sm:col-span-2" error={vendorIdInvalid ? "Must be a valid UUID." : null} hint={vendorIdInvalid ? null : "Vendor picker arrives with Phase 2's vendor integration; enter the vendor's V2 record UUID for now."}><Input value={vendorId} onChange={event => setVendorId(event.target.value)} placeholder="e.g. 3fa85f64-5717-4562-b3fc-2c963f66afa6" required/></Field>}
     <Field label="Reason" className="sm:col-span-2"><Textarea value={reason} onChange={event => setReason(event.target.value)} placeholder="What is causing the delay?" required/></Field>
     <div className="flex gap-2 sm:col-span-2">
@@ -151,7 +148,7 @@ export function TaskBlockerDelayPanel({ projectId, task, onChanged }) {
     {task.blockers.length > 0 && <div className="mt-2 grid gap-1.5">{task.blockers.map(blocker => <BlockerRow key={blocker.id} projectId={projectId} task={task} blocker={blocker} onChanged={onChanged}/>)}</div>}
     {openForm === "blocker" && <BlockerForm projectId={projectId} task={task} onChanged={onChanged} onDone={() => setOpenForm(null)}/>}
 
-    {task.delays.length > 0 && <div className="mt-2 grid gap-1.5">{task.delays.map(delay => <div key={delay.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="capitalize text-slate-800">{delay.responsibility_type.replaceAll("_", " ")}</strong><span className="text-xs font-bold text-slate-500">{delay.impact_days} day{delay.impact_days === 1 ? "" : "s"}</span></div><p className="mt-0.5 text-slate-600">{delay.reason}</p></div>)}</div>}
+    {task.delays.length > 0 && <div className="mt-2 grid gap-1.5">{task.delays.map(delay => <div key={delay.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="capitalize text-slate-800">{delay.responsibility_type.replaceAll("_", " ")}</strong>{delay.impact_days != null && <span className="text-xs font-bold text-slate-500" title="Recorded by hand before delay was measured automatically.">{delay.impact_days} day{delay.impact_days === 1 ? "" : "s"} (historical)</span>}</div><p className="mt-0.5 text-slate-600">{delay.reason}</p></div>)}</div>}
     {openForm === "delay" && <DelayForm projectId={projectId} task={task} onChanged={onChanged} onDone={() => setOpenForm(null)}/>}
   </section>;
 }

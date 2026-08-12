@@ -149,7 +149,6 @@ class TaskDelayCreateIn(BaseModel):
     responsibility_type: DelayResponsibilityType
     responsible_vendor_id: uuid.UUID | None = None
     reason: str = Field(min_length=1, max_length=2000)
-    impact_days: int = Field(gt=0)
 
     @field_validator("reason")
     @classmethod
@@ -167,7 +166,9 @@ class TaskDelayOut(BaseModel):
     responsibility_type: str
     responsible_vendor_id: uuid.UUID | None
     reason: str
-    impact_days: int
+    impact_days: int | None
+    """U10: never written any more. Present so historical records stay
+    readable exactly as they were recorded."""
     recorded_by: uuid.UUID
     created_at: datetime
 

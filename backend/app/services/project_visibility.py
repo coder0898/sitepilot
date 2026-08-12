@@ -10,7 +10,7 @@ one project's worth of tasks (a 45-day project), not millions of rows.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -28,6 +28,7 @@ from app.project_models import V2Project
 from app.routes.projects_v2 import get_project
 from app.schemas.project_visibility import (
     ApprovalGateAtRiskOut,
+    ComputedDelayOut,
     NoUpdateTaskOut,
     OverdueTaskOut,
     ProjectVisibilitySummary,
@@ -91,6 +92,9 @@ class ProjectVisibilityService:
         pending_approvals = [t for t in tasks if t.lifecycle_status == "approval_pending"]
         approval_gates_at_risk = self._approval_gates_at_risk(tasks, now)
 
+        computed_delays = self._computed_delays(tasks, now)
+        handover_at_risk_tasks = self._handover_at_risk_tasks(project, computed_delays)
+
         reassignment = ProjectRoleChangeService(self.db).reassignment_required(project.id, actor)
 
         return ProjectVisibilitySummary(
@@ -110,6 +114,10 @@ class ProjectVisibilityService:
             pending_approvals=[_task_ref(t) for t in pending_approvals],
             approval_gates_at_risk=approval_gates_at_risk,
             reassignment_required=[ReassignmentRequiredOut(**row) for row in reassignment],
+            computed_delays=computed_delays,
+            handover_at_risk=bool(handover_at_risk_tasks),
+            handover_at_risk_tasks=handover_at_risk_tasks,
+            target_handover_date=project.target_handover_date,
         )
 
     # ---- derived conditions ---------------------------------------------
@@ -131,6 +139,61 @@ class ProjectVisibilityService:
             ).all()
         )
         return [t for t in tasks if t.id in delayed_task_ids]
+
+    def _computed_delays(self, tasks: list[Task], now: datetime) -> list[ComputedDelayOut]:
+        """45-day POC U10: delay per task, measured rather than entered.
+
+        Two guards decide more than the arithmetic does (KTD14):
+
+        A task with no target finish has no delay. A task in a terminal
+        status with no actual finish also has no delay - not one measured
+        against `now`. Without the second guard every cancelled task, and
+        every task completed before actual dates were recorded, would
+        accrue a day of delay per day forever and pin the project to
+        at-risk permanently. `_overdue_tasks` above already excludes
+        terminal statuses for exactly this reason.
+        """
+        results: list[ComputedDelayOut] = []
+        for task in tasks:
+            if task.due_at is None:
+                continue
+            target_finish = _aware(task.due_at)
+            actual_finish = _aware(task.actual_finish_at) if task.actual_finish_at else None
+            if actual_finish is None and task.lifecycle_status in TERMINAL_STATUSES:
+                continue
+
+            # Completion reference MINUS target finish. The other way round
+            # reports zero for every late task.
+            reference = actual_finish if actual_finish is not None else now
+            delay_days = max(0, (reference - target_finish).days)
+            results.append(ComputedDelayOut(
+                id=task.id, original_code=task.original_code, title=task.title,
+                lifecycle_status=task.lifecycle_status,
+                target_finish_at=target_finish,
+                actual_finish_at=actual_finish,
+                delay_days=delay_days,
+                projected_finish_at=target_finish + timedelta(days=delay_days),
+            ))
+        return results
+
+    def _handover_at_risk_tasks(self, project, computed_delays: list[ComputedDelayOut]) -> list[ComputedDelayOut]:
+        """R32: which unfinished tasks are now projected to land after the
+        project's handover date.
+
+        Only non-terminal work can threaten a handover - a task that has
+        already finished late has done its damage and cannot do more. Two
+        tasks with equal delay are not equally at risk either; what matters
+        is whether the *projection* passes the handover date.
+        """
+        if project.target_handover_date is None:
+            return []
+        handover_end = datetime.combine(
+            project.target_handover_date + timedelta(days=1), time.min, tzinfo=timezone.utc
+        )
+        return [
+            row for row in computed_delays
+            if row.lifecycle_status not in TERMINAL_STATUSES and row.projected_finish_at > handover_end
+        ]
 
     def _overdue_tasks(self, tasks: list[Task], now: datetime) -> list[OverdueTaskOut]:
         return [

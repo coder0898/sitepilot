@@ -82,7 +82,7 @@ describe("TaskBlockerDelayPanel", () => {
     expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "3fa85f64-5717-4562-b3fc-2c963f66afa6" } });
     fireEvent.click(screen.getByRole("button", { name: /log delay/i }));
-    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", reason: "Cement delayed at source.", impact_days: 1 }));
+    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", reason: "Cement delayed at source." }));
     await waitFor(() => expect(screen.queryByLabelText("Reason")).not.toBeInTheDocument());
   });
 
@@ -102,9 +102,17 @@ describe("TaskBlockerDelayPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
     fireEvent.change(screen.getByLabelText("Responsibility"), { target: { value: "client" } });
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Client decision pending." } });
-    fireEvent.change(screen.getByLabelText("Impact (days)"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: /log delay/i }));
-    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "client", responsible_vendor_id: null, reason: "Client decision pending.", impact_days: 3 }));
+    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "client", responsible_vendor_id: null, reason: "Client decision pending." }));
+  });
+
+  it("no longer asks how many days the delay cost", () => {
+    // U10: delay is measured from target finish against actual finish, so a
+    // hand-entered day count would be an opinion competing with it - and one
+    // an execution role could use to move the number.
+    render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
+    expect(screen.queryByLabelText("Impact (days)")).toBeNull();
   });
 
   it("blocker and delay forms are independent - opening one closes the other", () => {
