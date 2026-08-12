@@ -53,6 +53,38 @@ def planned_start_at(start_date: date, planned_start_day: int | None) -> datetim
     return datetime.combine(scheduled, time.min, tzinfo=timezone.utc)
 
 
+def required_by_at(start_date: date, required_by_type: str | None, required_by_value: str | None) -> datetime | None:
+    """R10: turn a gate's authored required-by into a real timestamp.
+
+    Template gates express this either as a relative project day
+    (`project_day`) or an explicit ISO date (`date`), both stored as text.
+    Like a task's target finish this resolves to the exclusive end of the
+    named day - an approval due "by day 5" is not late until day 6 starts.
+
+    Returns None rather than raising when the template gives no required-by
+    or gives one this cannot parse. Gate content is authored outside this
+    codebase, and a malformed value in one of 32 gates must not take an
+    entire project activation down with it.
+    """
+    if not required_by_type or required_by_value is None:
+        return None
+    raw = required_by_value.strip()
+    if not raw:
+        return None
+    if required_by_type == "project_day":
+        try:
+            return target_finish_at(start_date, int(raw))
+        except ValueError:
+            return None
+    if required_by_type == "date":
+        try:
+            explicit = date.fromisoformat(raw)
+        except ValueError:
+            return None
+        return datetime.combine(explicit + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    return None
+
+
 def target_finish_at(start_date: date, planned_end_day: int | None) -> datetime | None:
     """The exclusive end of the planned end day - midnight UTC beginning the
     following day. See the module docstring for why this is not midnight of

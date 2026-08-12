@@ -209,6 +209,114 @@ class TaskDependency(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+EXECUTION_GATE_STATUSES = ("not_required", "pending_review", "submitted", "approved", "rejected")
+"""45-day POC U1/KTD3: the five values a gate status is ever *stored* as.
+`pending` is the API and UI spelling of `pending_review` and is never
+persisted - one state must not have two names in the database."""
+
+GATE_NON_BLOCKING_STATUSES = frozenset({"approved", "not_required"})
+"""The only two statuses that stop a gate holding its tasks back. `pending_review`,
+`submitted` and `rejected` all block identically: a gate under review and a gate
+that was refused are both, from the site's point of view, permission not granted."""
+
+
+class ExecutionGate(Base):
+    """Execution-layer snapshot of an applicable external approval.
+
+    The planning-layer `V2ProjectExternalGate` is a Draft-time record of
+    which approvals a project needs. This is the row that actually gets
+    approved once work starts, and it is the *only* write target for gate
+    status after activation - readiness reads execution rows and would
+    never see a status recorded on the planning row, so an approval
+    written there would release nothing.
+    """
+
+    __tablename__ = "execution_gates"
+    __table_args__ = (
+        # Makes the backfill's re-runnability real rather than intended. A
+        # duplicate gate row is invisible in the UI and would leave a twin
+        # still blocking after a PM approves the first one.
+        UniqueConstraint("project_id", "original_code", name="uq_v2_execution_gates_project_code"),
+        CheckConstraint(f"status in {EXECUTION_GATE_STATUSES!r}", name="ck_v2_execution_gates_status"),
+        Index("ix_v2_execution_gates_project", "project_id"),
+        Index("ix_v2_execution_gates_project_status", "project_id", "status"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    baseline_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_baselines.id", ondelete="RESTRICT"), nullable=False)
+    project_gate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_gates.id", ondelete="RESTRICT"))
+    original_code: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_name: Mapped[str] = mapped_column(Text, nullable=False)
+    external_party: Mapped[str | None] = mapped_column(Text)
+    required_by_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """R10: the template's relative day or explicit date resolved to a real
+    date via `app.services.project_schedule_dates`. Null when the template
+    gave no required-by at all, or gave one this code cannot parse."""
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status_recorded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    status_recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mapping_classification: Mapped[str | None] = mapped_column(Text)
+    """Carried across so readiness can report a `broad_text` or `unmapped`
+    gate as unresolved rather than silently non-blocking (R7)."""
+    accountable_pm_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ExecutionGateTask(Base):
+    """Which execution tasks an approval actually holds back."""
+
+    __tablename__ = "execution_gate_tasks"
+    __table_args__ = (
+        UniqueConstraint("execution_gate_id", "task_id", name="uq_v2_execution_gate_tasks_pair"),
+        Index("ix_v2_execution_gate_tasks_gate", "execution_gate_id"),
+        Index("ix_v2_execution_gate_tasks_task", "task_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.execution_gates.id", ondelete="CASCADE"), nullable=False)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ExecutionExcludedDependency(Base):
+    """A dependency edge dropped at baseline lock because its predecessor
+    was excluded from the project's scope.
+
+    Baseline lock keeps only edges with both endpoints included, so these
+    edges vanish and their successors silently look unblocked. Recording
+    them lets readiness say "this waits on work that was excluded" instead
+    of nothing at all - without creating a `TaskDependency` row, which
+    would change what the transition guard permits. The advisory reason is
+    the deliberate half-step: the edges have not been validated against
+    real site practice yet, and a wrong one that only shows a label costs
+    far less than a wrong one that holds up work.
+    """
+
+    __tablename__ = "execution_excluded_dependencies"
+    __table_args__ = (
+        UniqueConstraint("project_id", "successor_task_id", "excluded_predecessor_code", "dependency_type",
+                         name="uq_v2_execution_excluded_dependencies_edge"),
+        CheckConstraint("dependency_type in ('finish_to_start', 'start_to_start')", name="ck_v2_execution_excluded_dependencies_type"),
+        Index("ix_v2_execution_excluded_dependencies_successor", "successor_task_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    baseline_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_baselines.id", ondelete="RESTRICT"), nullable=False)
+    successor_task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    excluded_predecessor_code: Mapped[str] = mapped_column(Text, nullable=False)
+    excluded_predecessor_title: Mapped[str | None] = mapped_column(Text)
+    dependency_type: Mapped[str] = mapped_column(Text, nullable=False)
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    rule_text: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class TaskProgressUpdate(Base):
     """U3: append-only progress note against an execution-layer task.
 
