@@ -55,6 +55,38 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 }
 
 
+def predecessor_needs_verification_check(predecessor: Task) -> bool:
+    """Whether deciding this predecessor requires knowing if it has an
+    unrejected `verified` decision on record.
+
+    Only standard work sitting at `verified` does. Class A work and
+    approval gates need PM-approved `completed`; a milestone needs
+    `completed`. Isolating the question is what lets the transition guard
+    answer it with one query and the readiness advisor answer it from a
+    bulk-loaded set, without either owning a second copy of the rule.
+    """
+    return (
+        is_work_task_kind(predecessor.task_kind)
+        and predecessor.task_class == "standard"
+        and predecessor.lifecycle_status == "verified"
+    )
+
+
+def predecessor_satisfied(predecessor: Task, verified_task_ids: frozenset[uuid.UUID]) -> bool:
+    """The bulk-safe form of `TaskLifecycleService._predecessor_satisfied`.
+
+    Pure: `verified_task_ids` is the pre-loaded set of task ids whose latest
+    verification decision is `verified`. Calling the service method in a
+    loop instead would issue one query per predecessor, which is exactly
+    the per-task query the readiness engine's bounded-query budget forbids.
+    """
+    if predecessor.lifecycle_status == "completed":
+        return True
+    if predecessor_needs_verification_check(predecessor):
+        return predecessor.id in verified_task_ids
+    return False
+
+
 def _record_actual_dates(task: Task, target_status: str) -> None:
     """45-day POC U5: observe when work really started and finished.
 
@@ -214,8 +246,16 @@ class TaskLifecycleService:
         return latest is not None and latest.decision == "verified"
 
     def _predecessor_satisfied(self, predecessor: Task) -> bool:
-        """Whether a predecessor task satisfies a blocking dependency,
-        per BR-008's exact per-kind rule:
+        """Whether a predecessor task satisfies a blocking dependency.
+
+        The rule itself lives in `predecessor_needs_verification_check` and
+        `predecessor_satisfied` at module level, shared with the readiness
+        advisor (45-day POC U6) so the two cannot drift on Class A or
+        verified-standard work. This method differs from the bulk helper
+        only in how it learns whether a verification exists: one query for
+        the one predecessor in front of it, exactly as before.
+
+        Per BR-008's exact per-kind rule:
 
         - `standard` work: satisfied once Supervisor-verified (a
           `task_verifications` row with decision='verified' and no later
@@ -234,11 +274,7 @@ class TaskLifecycleService:
         """
         if predecessor.lifecycle_status == "completed":
             return True
-        if (
-            is_work_task_kind(predecessor.task_kind)
-            and predecessor.task_class == "standard"
-            and predecessor.lifecycle_status == "verified"
-        ):
+        if predecessor_needs_verification_check(predecessor):
             return self._has_unrejected_verification(predecessor)
         return False
 
