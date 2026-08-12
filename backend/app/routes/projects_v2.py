@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +21,7 @@ from app.services.project_manual_task import ProjectManualTaskService
 from app.services.project_task_applicability import ProjectTaskApplicabilityService
 from app.services.project_template_review import ProjectTemplateReviewService
 from app.services.project_gate_generation import ProjectGateGenerationService
+from app.services.project_schedule_dates import scheduled_date
 from app.schemas.project_gates import ProjectGateGenerateOut, ProjectGateListOut
 from app.schemas.project_gate_applicability import ProjectGateApplicabilityDecisionIn, ProjectGateApplicabilityDecisionOut, ProjectGateApplicabilityHistoryItem
 from app.services.project_gate_applicability import ProjectGateApplicabilityService
@@ -62,8 +63,14 @@ def derive_target_handover_date(start_date: date, template_version: V2TemplateVe
     `update_project` refuses to move `start_date` once a template is
     attached, and refuses to replace the template version at all, so the
     two inputs are frozen from creation onward.
+
+    The day-1-is-the-start-date arithmetic itself now lives in
+    `app.services.project_schedule_dates`, shared with the per-task target
+    finish and planned start dates U4 derives, so a handover date and the
+    target finish of a task planned to end on the final day cannot
+    disagree.
     """
-    return start_date + timedelta(days=template_version.duration_days - 1)
+    return scheduled_date(start_date, template_version.duration_days)
 
 
 def project_snapshot(project: V2Project) -> dict:
