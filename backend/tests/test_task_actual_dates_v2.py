@@ -22,7 +22,8 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
-    BaselineTask, FileObject, OutboxEvent, ProjectBaseline, Task, TaskBlocker, TaskDependency, TaskEvidence,
+    BaselineTask, ExecutionExcludedDependency, ExecutionGate, ExecutionGateTask, FileObject, OutboxEvent,
+    ProjectBaseline, Task, TaskBlocker, TaskDependency, TaskEvidence,
     TaskProgressUpdate, TaskSupportAssignment, TaskVerification,
 )
 from app.models import EmployeeProfile, User, UserRole
@@ -64,7 +65,8 @@ class TaskActualDatesTests(unittest.TestCase):
                       TaskSupportAssignment.__table__, TaskProgressUpdate.__table__, FileObject.__table__,
                       TaskEvidence.__table__, TaskVerification.__table__, V2TemplateExternalGate.__table__,
                       V2TemplateExternalGateTask.__table__, V2ProjectExternalGateTask.__table__,
-                      TaskBlocker.__table__):
+                      TaskBlocker.__table__,
+                      ExecutionGate.__table__, ExecutionGateTask.__table__, ExecutionExcludedDependency.__table__):
             table.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)

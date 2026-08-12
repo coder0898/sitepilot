@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
-from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency
+from app.execution_models import ExecutionExcludedDependency, ExecutionGate, ExecutionGateTask, BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -113,6 +113,9 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             V2TemplateExternalGate.__table__,
             V2TemplateExternalGateTask.__table__,
             V2ProjectExternalGateTask.__table__,
+            ExecutionGate.__table__,
+            ExecutionGateTask.__table__,
+            ExecutionExcludedDependency.__table__,
         ):
             table.create(self.engine)
 

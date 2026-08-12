@@ -15,7 +15,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskBlocker, TaskDependency, TaskSupportAssignment
+from app.execution_models import (
+    BaselineTask, ExecutionExcludedDependency, ExecutionGate, ExecutionGateTask, ProjectBaseline,
+    Task, TaskBlocker, TaskDependency, TaskSupportAssignment,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectExternalGateTask,
@@ -116,7 +119,8 @@ class ScheduleDateInstantiationTests(unittest.TestCase):
                       V2ProjectExternalGate.__table__, V2AuditEvent.__table__, ProjectBaseline.__table__,
                       BaselineTask.__table__, Task.__table__, TaskDependency.__table__, V2TemplateExternalGate.__table__,
                       V2TemplateExternalGateTask.__table__, V2ProjectExternalGateTask.__table__,
-                      TaskBlocker.__table__, TaskSupportAssignment.__table__):
+                      TaskBlocker.__table__, TaskSupportAssignment.__table__,
+                      ExecutionGate.__table__, ExecutionGateTask.__table__, ExecutionExcludedDependency.__table__):
             table.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)

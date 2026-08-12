@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import User
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectTask, V2ProjectTaskDependency
+from app.services.execution_gate_instantiation import instantiate_execution_gates, snapshot_excluded_dependencies
 from app.services.project_schedule_dates import planned_start_at, target_finish_at
 
 
@@ -71,10 +72,28 @@ class ProjectBaselineService:
             .order_by(V2ProjectTaskDependency.template_sequence.asc())
         ).all())
 
-        gate_count = len(list(self.db.scalars(
-            select(V2ProjectExternalGate.id)
+        applicable_gates = list(self.db.scalars(
+            select(V2ProjectExternalGate)
             .where(V2ProjectExternalGate.project_id == project.id, V2ProjectExternalGate.applicability_state == "applicable")
-        ).all()))
+            .order_by(V2ProjectExternalGate.template_sequence.asc(), V2ProjectExternalGate.original_code.asc())
+        ).all())
+        # Unchanged on purpose - gate_count is read elsewhere and counts
+        # applicable planning gates, which is exactly what U3 instantiates.
+        gate_count = len(applicable_gates)
+
+        # Edges baseline lock is about to drop because their predecessor is
+        # excluded from scope. The both-endpoints filter above cannot see
+        # them, so they are queried separately and snapshotted below.
+        included_task_ids = [t.id for t in included_tasks]
+        dropped_dependencies = list(self.db.scalars(
+            select(V2ProjectTaskDependency)
+            .where(
+                V2ProjectTaskDependency.project_id == project.id,
+                V2ProjectTaskDependency.successor_project_task_id.in_(included_task_ids),
+                V2ProjectTaskDependency.predecessor_project_task_id.not_in(included_task_ids),
+            )
+            .order_by(V2ProjectTaskDependency.template_sequence.asc())
+        ).all())
 
         baseline = ProjectBaseline(
             project_id=project.id,
@@ -169,6 +188,22 @@ class ProjectBaselineService:
                 rule_text=dependency.rule_text,
                 created_from_baseline=True,
             ))
+        self.db.flush()
+
+        instantiate_execution_gates(
+            self.db,
+            project=project,
+            baseline=baseline,
+            applicable_gates=applicable_gates,
+            task_by_project_task_id=task_by_project_task_id,
+        )
+        snapshot_excluded_dependencies(
+            self.db,
+            project=project,
+            baseline=baseline,
+            dropped_dependencies=dropped_dependencies,
+            task_by_project_task_id=task_by_project_task_id,
+        )
         self.db.flush()
 
         self.db.add(V2AuditEvent(
