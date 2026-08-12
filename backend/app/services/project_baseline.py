@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import User
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectTask, V2ProjectTaskDependency
+from app.services.project_schedule_dates import planned_start_at, target_finish_at
 
 
 def _content_hash(payload: dict) -> str:
@@ -136,6 +137,12 @@ class ProjectBaselineService:
                 duration_days=baseline_task.duration_days,
                 lifecycle_status="planned",
                 created_from_baseline=True,
+                # U4: the relative day offsets become real dates exactly
+                # once, here, so nothing downstream re-derives them and
+                # drifts by a day. A pre-activation task's null offsets
+                # yield null dates rather than an error.
+                planned_start_at=planned_start_at(project.start_date, baseline_task.planned_start_day),
+                due_at=target_finish_at(project.start_date, baseline_task.planned_end_day),
             )
             self.db.add(execution_task)
             task_by_baseline_task_id[baseline_task.id] = execution_task

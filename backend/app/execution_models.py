@@ -149,10 +149,20 @@ class Task(Base):
     duration_days: Mapped[int | None] = mapped_column(Integer)
     lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="planned")
     created_from_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    planned_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """45-day POC U4: midnight UTC at the start of the planned start day,
+    derived once at activation by `app.services.project_schedule_dates`.
+    Starting work before this is an early start (U9). Nullable - a
+    pre-activation task has no planned day offsets."""
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     """Phase 3 U1: when set, a task not `completed`/`cancelled` past this
     timestamp counts toward the `overdue` derived condition. Nullable -
-    not every task carries a due date."""
+    not every task carries a due date.
+
+    45-day POC U4 is its first writer: it holds the task's target finish,
+    stored as the *exclusive* end of the planned end day (midnight
+    beginning the following day) so `_overdue_tasks` does not fire at
+    00:00 on the day the task is actually due."""
     update_sla_hours: Mapped[int | None] = mapped_column(Integer)
     """Phase 3 U1: when set, a task not `completed`/`cancelled` whose most
     recent `TaskProgressUpdate` (or `created_at`, if none exists) is older

@@ -256,6 +256,8 @@ class TaskListItemOut(BaseModel):
     schedule_classification: str
     planned_start_day: int | None
     planned_end_day: int | None
+    planned_start_at: datetime | None
+    target_finish_at: datetime | None
     phase: str | None
     category: str | None
     evidence_required: bool
@@ -337,6 +339,8 @@ class TaskDetailOut(BaseModel):
     schedule_classification: str
     planned_start_day: int | None
     planned_end_day: int | None
+    planned_start_at: datetime | None
+    target_finish_at: datetime | None
     phase: str | None
     category: str | None
     evidence_required: bool
