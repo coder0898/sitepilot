@@ -149,6 +149,11 @@ class Task(Base):
     duration_days: Mapped[int | None] = mapped_column(Integer)
     lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="planned")
     created_from_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    early_start_reason: Mapped[str | None] = mapped_column(Text)
+    """45-day POC U9: why work started before `planned_start_at`. Required
+    at the moment of an early start, null otherwise. The audit event written
+    by the same transition carries actor and timestamp; this is the
+    displayable copy."""
     actual_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     """45-day POC U5: when work really began, written on the *first*
     transition into `in_progress` and never overwritten - a task rejected
