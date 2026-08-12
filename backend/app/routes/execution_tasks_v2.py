@@ -55,11 +55,15 @@ from app.schemas.execution_tasks import (
     TaskVerificationSummaryOut,
 )
 from app.schemas.project_gates import (
+    ExecutionGateDelegationEndIn,
+    ExecutionGateDelegationIn,
+    ExecutionGateDelegationOut,
     ExecutionGateOut,
     ExecutionGateStatusHistoryItem,
     ExecutionGateStatusIn,
 )
 from app.schemas.task_readiness import ProjectTaskReadinessOut
+from app.services.execution_gate_delegation import ExecutionGateDelegationService
 from app.services.project_gate_status import ProjectGateStatusService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_readiness import TaskReadinessService
@@ -590,3 +594,52 @@ def get_project_task_readiness(
     `/{project_id}` catch-all that forced `project_read_models_v2` to be
     registered ahead of `projects_v2`, so no `main.py` change is needed."""
     return TaskReadinessService(db).summarize(project_id, actor)
+
+
+@router.post(
+    "/{project_id}/execution-gates/{gate_id}/delegations",
+    response_model=ExecutionGateDelegationOut, status_code=201,
+)
+def delegate_execution_gate(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    payload: ExecutionGateDelegationIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """U13. Admin hands the chasing of an external approval to an Internal
+    Employee. The delegate may then record that it was submitted; approving
+    and rejecting stay with Admin."""
+    return ExecutionGateDelegationService(db).delegate(
+        project_id, gate_id, actor, payload.employee_id, payload.instruction,
+    )
+
+
+@router.get(
+    "/{project_id}/execution-gates/{gate_id}/delegations",
+    response_model=list[ExecutionGateDelegationOut],
+)
+def list_execution_gate_delegations(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ExecutionGateDelegationService(db).list_delegations(project_id, gate_id, actor)
+
+
+@router.post(
+    "/{project_id}/execution-gates/{gate_id}/delegations/{delegation_id}/end",
+    response_model=ExecutionGateDelegationOut,
+)
+def end_execution_gate_delegation(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    delegation_id: uuid.UUID,
+    payload: ExecutionGateDelegationEndIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ExecutionGateDelegationService(db).end_delegation(
+        project_id, gate_id, delegation_id, actor, payload.reason,
+    )

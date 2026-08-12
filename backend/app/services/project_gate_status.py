@@ -26,13 +26,16 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import (
     GATE_ADMIN_ONLY_TRANSITIONS,
+    GATE_DELEGABLE_TRANSITIONS,
     GATE_STATUS_TRANSITIONS,
     EXECUTION_GATE_STATUSES,
     ExecutionGate,
+    ExecutionGateDelegation,
     ExecutionGateStatusHistory,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.schemas.project_gates import ExecutionGateOut
 
 _ADMIN_ROLES = {UserRole.super_admin, UserRole.admin}
 
@@ -78,24 +81,35 @@ class ProjectGateStatusService:
         return gate
 
     def _require_recorder(self, gate: ExecutionGate, previous_status: str, new_status: str, actor: User) -> None:
-        is_admin = actor.role in _ADMIN_ROLES
-        if (previous_status, new_status) in GATE_ADMIN_ONLY_TRANSITIONS:
-            if not is_admin:
-                raise HTTPException(
-                    403,
-                    "Only Admin can mark an approval not required or return it to review; "
-                    "it decides whether the approval applies, not whether it has been granted.",
-                )
+        """Authority is per transition, by the nature of the statement being
+        made - not per actor. See GATE_ADMIN_ONLY_TRANSITIONS."""
+        if actor.role in _ADMIN_ROLES:
             return
-        if is_admin:
-            return
-        # Follows `can_edit` in app/routes/projects_v2.py, which admits Super
-        # Admin, rather than the applicability service's `_require_decider`,
-        # which omits it. Narrowed further to *this gate's* accountable PM:
-        # being a PM on the project is not the same as owning this approval.
-        if actor.role == UserRole.project_manager and gate.accountable_pm_user_id == actor.id:
-            return
-        raise HTTPException(403, "Only the accountable Project Manager or an Admin can record this approval's outcome.")
+        if (previous_status, new_status) in GATE_DELEGABLE_TRANSITIONS:
+            if self._is_active_delegate(gate, actor):
+                return
+            raise HTTPException(
+                403,
+                "Only Admin, or an Internal Employee delegated to this approval, can record that it was submitted.",
+            )
+        raise HTTPException(
+            403,
+            "Only Admin can record an external approval's outcome. External approvals are Admin's "
+            "responsibility; the work of chasing one can be delegated, the decision cannot.",
+        )
+
+    def _is_active_delegate(self, gate: ExecutionGate, actor: User) -> bool:
+        return self.db.scalar(
+            select(ExecutionGateDelegation.id)
+            .join(EmployeeProfile, EmployeeProfile.id == ExecutionGateDelegation.employee_id)
+            .where(
+                ExecutionGateDelegation.execution_gate_id == gate.id,
+                ExecutionGateDelegation.status == "active",
+                ExecutionGateDelegation.ends_at.is_(None),
+                EmployeeProfile.user_id == actor.id,
+            )
+            .limit(1)
+        ) is not None
 
     # ---- the write ------------------------------------------------------
 
@@ -165,10 +179,32 @@ class ProjectGateStatusService:
             .order_by(ExecutionGateStatusHistory.recorded_at.asc())
         ).all())
 
-    def list_gates(self, project_id: uuid.UUID, actor: User) -> list[ExecutionGate]:
+    def list_gates(self, project_id: uuid.UUID, actor: User) -> list[ExecutionGateOut]:
         project = self._require_access(project_id, actor)
-        return list(self.db.scalars(
+        gates = list(self.db.scalars(
             select(ExecutionGate)
             .where(ExecutionGate.project_id == project.id)
             .order_by(ExecutionGate.original_code.asc())
         ).all())
+        if not gates:
+            return []
+
+        # One query for every gate's delegates rather than one per gate.
+        delegates_by_gate: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for gate_id, user_id in self.db.execute(
+            select(ExecutionGateDelegation.execution_gate_id, EmployeeProfile.user_id)
+            .join(EmployeeProfile, EmployeeProfile.id == ExecutionGateDelegation.employee_id)
+            .where(
+                ExecutionGateDelegation.execution_gate_id.in_([g.id for g in gates]),
+                ExecutionGateDelegation.status == "active",
+                ExecutionGateDelegation.ends_at.is_(None),
+            )
+        ).all():
+            delegates_by_gate.setdefault(gate_id, []).append(user_id)
+
+        return [
+            ExecutionGateOut.model_validate(gate).model_copy(
+                update={"active_delegate_user_ids": delegates_by_gate.get(gate.id, [])}
+            )
+            for gate in gates
+        ]

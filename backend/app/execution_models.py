@@ -303,17 +303,46 @@ the second submission rather than a silent reversal. `approved ->
 submitted` exists because an external party can withdraw or supersede an
 approval, and the gate has to be able to say so."""
 
+GATE_DELEGABLE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("pending_review", "submitted"),
+    ("rejected", "submitted"),
+})
+"""U13: the only gate moves a delegate may make.
+
+Split by the *nature of the statement*, not by the actor. "I lodged the
+application on Tuesday" is a fact about the delegate's own work, and the
+person who did it is the right person to record it. "The landlord approved"
+is an assertion about what an external authority decided, and that is
+Admin's to make - see `GATE_ADMIN_ONLY_TRANSITIONS`.
+
+Admin may make these too; delegating the legwork does not remove the
+owner's ability to do it."""
+
 GATE_ADMIN_ONLY_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
     ("pending_review", "not_required"),
     ("not_required", "pending_review"),
+    ("submitted", "approved"),
+    ("submitted", "rejected"),
+    ("approved", "submitted"),
 })
-"""U2/KTD13: the two moves the accountable PM must not make.
+"""U13: external approvals are Admin's responsibility, so every consequential
+move is Admin's.
 
-`not_required` is one of the two statuses that stop a gate blocking, so
-setting it releases every task the gate holds - that is an applicability
-decision, which is Admin's call, not an approval outcome. A single flat
-"can this actor record outcomes?" guard would hand every PM a readiness
-bypass with a legitimate-looking name."""
+This matches what the rest of the codebase already does with gates:
+`project_gate_applicability.py` reserves applicability to Admin, and adding
+a manual gate is Admin-only with the note that "owning the follow-up is not
+the same as adding it". Recording an outcome is the same kind of act.
+
+- `approved` / `rejected`: asserting what an external authority decided.
+  Wrong, and a project-wide gate releases or holds ~90 tasks.
+- `approved -> submitted`: withdrawing an approval is as consequential as
+  granting one.
+- the two `not_required` moves: a scope call that stops the gate blocking
+  at all.
+
+The PM is deliberately not an authority here. `ExecutionGate.accountable_pm_user_id`
+remains the PM whose handover the approval blocks - escalation and
+visibility, not permission."""
 
 
 class ExecutionGateStatusHistory(Base):
@@ -340,6 +369,46 @@ class ExecutionGateStatusHistory(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     actor_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ExecutionGateDelegation(Base):
+    """U13: an Internal Employee delegated to chase an external approval.
+
+    Admin owns external approvals - it decides whether one applies, adds
+    manual ones, and records the outcome. Chasing one is legwork, and this
+    is how Admin hands that over without handing over the decision.
+
+    Never alters accountability. `ExecutionGate.accountable_pm_user_id`
+    stays the PM whose handover the approval blocks, for escalation and
+    visibility. A delegate chases; they do not own.
+    """
+
+    __tablename__ = "execution_gate_delegations"
+    __table_args__ = (
+        CheckConstraint("status in ('active', 'ended')", name="ck_v2_execution_gate_delegations_status"),
+        CheckConstraint(
+            "(status = 'active' and ends_at is null) or (status = 'ended' and ends_at is not null)",
+            name="ck_v2_execution_gate_delegations_status_ends_at_pair",
+        ),
+        Index("ix_v2_execution_gate_delegations_gate", "execution_gate_id"),
+        Index("ix_v2_execution_gate_delegations_employee", "employee_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.execution_gates.id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"), nullable=False)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    """What this person is being asked to chase. Required: a delegation
+    with no instruction is a name on a row, not an assignment."""
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    ended_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    end_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ExecutionExcludedDependency(Base):

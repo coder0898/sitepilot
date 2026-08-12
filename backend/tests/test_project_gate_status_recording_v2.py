@@ -22,8 +22,8 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
-    BaselineTask, ExecutionExcludedDependency, ExecutionGate, ExecutionGateStatusHistory,
-    ExecutionGateTask, ProjectBaseline, Task, TaskDependency,
+    BaselineTask, ExecutionExcludedDependency, ExecutionGate, ExecutionGateDelegation,
+    ExecutionGateStatusHistory, ExecutionGateTask, ProjectBaseline, Task, TaskDependency,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
@@ -68,7 +68,7 @@ class GateStatusRecordingTests(unittest.TestCase):
                       V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__,
                       V2ProjectExternalGateTask.__table__, V2ProjectExternalGateApplicabilityDecision.__table__,
                       ExecutionGate.__table__, ExecutionGateTask.__table__, ExecutionExcludedDependency.__table__,
-                      ExecutionGateStatusHistory.__table__):
+                      ExecutionGateStatusHistory.__table__, ExecutionGateDelegation.__table__):
             table.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -174,16 +174,16 @@ class GateStatusRecordingTests(unittest.TestCase):
 
     # ---- the happy path ---------------------------------------------------
 
-    def test_the_accountable_pm_records_an_approval_with_history_and_audit(self):
+    def test_admin_records_an_approval_with_history_and_audit(self):
         self.advance_to("submitted")
-        self.act_as(PM_ID, UserRole.project_manager)
+        self.act_as(ADMIN_ID, UserRole.admin)
         response = self.record("approved", reason="Landlord signed on site.")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["status"], "approved")
 
         gate = self.gate()
         self.assertEqual(gate.status, "approved")
-        self.assertEqual(gate.status_recorded_by_user_id, PM_ID)
+        self.assertEqual(gate.status_recorded_by_user_id, ADMIN_ID)
         self.assertIsNotNone(gate.status_recorded_at)
 
         with self.Session() as session:
@@ -202,7 +202,7 @@ class GateStatusRecordingTests(unittest.TestCase):
         """KTD12. A status recorded on the planning gate would be invisible
         to readiness, so the approval would release nothing."""
         self.advance_to("submitted")
-        self.act_as(PM_ID, UserRole.project_manager)
+        self.act_as(ADMIN_ID, UserRole.admin)
         self.assertEqual(self.record("approved", reason="Signed.").status_code, 200)
         with self.Session() as session:
             planning = session.scalar(select(V2ProjectExternalGate))
@@ -222,10 +222,24 @@ class GateStatusRecordingTests(unittest.TestCase):
 
     # ---- who may record what ----------------------------------------------
 
-    def test_a_pm_who_is_not_this_gates_accountable_pm_is_refused(self):
+    def test_no_project_manager_can_record_an_outcome(self):
+        """External approvals are Admin's responsibility. The accountable PM
+        is named on the gate for escalation and visibility - that is not
+        permission to assert what an external authority decided."""
         self.advance_to("submitted")
+        # The accountable PM is a project member, so they clear the access
+        # guard and are stopped by the authority rule itself.
+        self.act_as(PM_ID, UserRole.project_manager)
+        refused = self.record("approved", reason="Landlord signed.")
+        self.assertEqual(refused.status_code, 403, refused.text)
+        self.assertIn("Only Admin", refused.json()["detail"])
+        self.assertEqual(self.gate().status, "submitted")
+
+        # A PM from another project never reaches that rule - access stops
+        # them first, which is the correct order.
         self.act_as(OTHER_PM_ID, UserRole.project_manager)
-        self.assertEqual(self.record("approved").status_code, 403)
+        self.assertEqual(self.record("approved", reason="Landlord signed.").status_code, 403)
+        self.assertEqual(self.gate().status, "submitted")
 
     def test_an_admin_and_a_super_admin_may_both_record_an_outcome(self):
         """Super Admin is admitted everywhere Admin is - following `can_edit`
@@ -249,7 +263,7 @@ class GateStatusRecordingTests(unittest.TestCase):
                 self.assertEqual(self.record("approved").status_code, 403)
                 self.assertEqual(self.gate().status, "submitted")
 
-    def test_the_accountable_pm_cannot_reach_not_required_in_either_direction(self):
+    def test_nobody_but_admin_can_reach_not_required_in_either_direction(self):
         """The readiness bypass this guard exists to prevent: `not_required`
         stops the gate blocking, so setting it releases every task it holds."""
         self.act_as(PM_ID, UserRole.project_manager)
@@ -276,7 +290,7 @@ class GateStatusRecordingTests(unittest.TestCase):
         """It must be resubmitted first, so the history shows the second
         submission rather than a silent reversal."""
         self.advance_to("rejected")
-        self.act_as(PM_ID, UserRole.project_manager)
+        self.act_as(ADMIN_ID, UserRole.admin)
         refused = self.record("approved", reason="They changed their mind.")
         self.assertEqual(refused.status_code, 422, refused.text)
         self.assertEqual(self.gate().status, "rejected")
@@ -311,7 +325,7 @@ class GateStatusRecordingTests(unittest.TestCase):
         """Covers AE6. The rejection reason is what a site team needs, so it
         is not gated behind the authority to record one."""
         self.advance_to("submitted")
-        self.act_as(PM_ID, UserRole.project_manager)
+        self.act_as(ADMIN_ID, UserRole.admin)
         self.assertEqual(self.record("rejected", reason="Fire strategy drawing missing.").status_code, 200)
 
         self.act_as(SUPERVISOR_ID, UserRole.supervisor)
