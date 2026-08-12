@@ -55,6 +55,7 @@ from app.schemas.execution_tasks import (
     TaskVerificationSummaryOut,
 )
 from app.schemas.project_gates import (
+    ExecutionGateDocumentOut,
     ExecutionGateDelegationEndIn,
     ExecutionGateDelegationIn,
     ExecutionGateDelegationOut,
@@ -64,6 +65,7 @@ from app.schemas.project_gates import (
 )
 from app.schemas.task_readiness import ProjectTaskReadinessOut
 from app.services.execution_gate_delegation import ExecutionGateDelegationService
+from app.services.execution_gate_document import ExecutionGateDocumentService
 from app.services.project_gate_status import ProjectGateStatusService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_readiness import TaskReadinessService
@@ -76,6 +78,23 @@ from app.services.task_support_assignment import TaskSupportAssignmentService
 from app.services.task_verification import TaskVerificationService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-execution-tasks"])
+
+
+def _gate_document_out(document, file_object) -> ExecutionGateDocumentOut:
+    """U14: the document row and its file metadata flattened into one shape.
+    Never exposes `storage_key` - the bytes are reachable only through the
+    authenticated download route."""
+    return ExecutionGateDocumentOut(
+        id=document.id,
+        execution_gate_id=document.execution_gate_id,
+        document_type=document.document_type,
+        caption=document.caption,
+        original_filename=file_object.original_filename,
+        mime_type=file_object.mime_type,
+        size_bytes=file_object.size_bytes,
+        uploaded_by=document.uploaded_by,
+        created_at=document.created_at,
+    )
 
 
 @router.get("/{project_id}/tasks", response_model=list[TaskListItemOut])
@@ -642,4 +661,70 @@ def end_execution_gate_delegation(
 ):
     return ExecutionGateDelegationService(db).end_delegation(
         project_id, gate_id, delegation_id, actor, payload.reason,
+    )
+
+
+@router.post(
+    "/{project_id}/execution-gates/{gate_id}/documents",
+    response_model=ExecutionGateDocumentOut, status_code=201,
+)
+async def attach_execution_gate_document(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    document_type: str = Form(...),
+    caption: str | None = Form(None),
+    file: UploadFile = File(...),
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """U14 (R13). Proof of what was submitted and what came back.
+
+    Multipart, like task evidence - the bytes go to the private evidence
+    store, never to the publicly served uploads directory."""
+    content = await file.read()
+    document = ExecutionGateDocumentService(db).attach_document(
+        project_id, gate_id, actor, document_type, content,
+        file.content_type, file.filename, caption,
+    )
+    file_object = db.get(FileObject, document.file_id)
+    return _gate_document_out(document, file_object)
+
+
+@router.get(
+    "/{project_id}/execution-gates/{gate_id}/documents",
+    response_model=list[ExecutionGateDocumentOut],
+)
+def list_execution_gate_documents(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return [
+        _gate_document_out(document, file_object)
+        for document, file_object in ExecutionGateDocumentService(db).list_documents(project_id, gate_id, actor)
+    ]
+
+
+@router.get("/{project_id}/execution-gates/{gate_id}/documents/{document_id}/download")
+def download_execution_gate_document(
+    project_id: uuid.UUID,
+    gate_id: uuid.UUID,
+    document_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """The only route that serves these bytes. Mirrors the task-evidence
+    download: access checked first, filename sanitised, nosniff set."""
+    file_object, content = ExecutionGateDocumentService(db).download_document(
+        project_id, gate_id, document_id, actor,
+    )
+    safe_filename = file_object.original_filename.replace('"', "").replace("\\", "").replace("\n", "").replace("\r", "")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=file_object.mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
