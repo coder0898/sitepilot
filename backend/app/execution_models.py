@@ -149,6 +149,17 @@ class Task(Base):
     duration_days: Mapped[int | None] = mapped_column(Integer)
     lifecycle_status: Mapped[str] = mapped_column(Text, nullable=False, default="planned")
     created_from_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    actual_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """45-day POC U5: when work really began, written on the *first*
+    transition into `in_progress` and never overwritten - a task rejected
+    and resumed keeps the date it actually started. Null means never
+    started."""
+    actual_finish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """45-day POC U5: when work really finished, written on the transition
+    into `completed`. A `cancelled` task never gets one: it did not finish,
+    it stopped. Null on a task completed before U5 shipped, which is why a
+    terminal task without one has no delay rather than one measured against
+    today."""
     planned_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     """45-day POC U4: midnight UTC at the start of the planned start day,
     derived once at activation by `app.services.project_schedule_dates`.
