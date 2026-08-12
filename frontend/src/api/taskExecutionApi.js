@@ -13,6 +13,10 @@ export const taskExecutionApi = {
   executionGates: projectId => api(`/api/v2/projects/${projectId}/execution-gates`),
   recordGateStatus: (projectId, gateId, payload) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/status`, { method: "POST", body: JSON.stringify(payload) }),
   gateStatusHistory: (projectId, gateId) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/status-history`),
+  // U13: Admin hands the chasing of an approval to an Internal Employee.
+  gateDelegations: (projectId, gateId) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/delegations`),
+  delegateGate: (projectId, gateId, payload) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/delegations`, { method: "POST", body: JSON.stringify(payload) }),
+  endGateDelegation: (projectId, gateId, delegationId, payload) => api(`/api/v2/projects/${projectId}/execution-gates/${gateId}/delegations/${delegationId}/end`, { method: "POST", body: JSON.stringify(payload) }),
   detail: (projectId, taskId) => api(`/api/v2/projects/${projectId}/tasks/${taskId}`),
   transitionStatus: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/status`, { method: "POST", body: JSON.stringify(payload) }),
   submitProgress: (projectId, taskId, formData) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/progress`, { method: "POST", body: formData }),
