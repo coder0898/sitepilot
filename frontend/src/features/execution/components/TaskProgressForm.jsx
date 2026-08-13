@@ -2,11 +2,10 @@ import { useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, Field, Input, Textarea } from "../../../components/ui";
 
-// U3: append-only progress note plus optional evidence file, mirroring the
-// existing (disconnected) <input type="file"> pattern in
-// ExecutionModals.jsx and client.js's FormData-aware request handling.
-// Submitting never changes lifecycle_status itself - it's evidence for a
-// later `submitted` transition (U2) to reference.
+// U3: append-only progress note plus optional evidence file, using
+// client.js's FormData-aware request handling. Submitting never changes
+// lifecycle_status itself - it's evidence for a later `submitted`
+// transition (U2) to reference.
 export function TaskProgressForm({ projectId, task, onSubmitted }) {
   const [note, setNote] = useState("");
   const [statusClaim, setStatusClaim] = useState("");

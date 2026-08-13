@@ -4,7 +4,7 @@ export const TAB_REGISTRY = {
   projects: { label: "Projects", help: "Project setup, ownership and lifecycle", icon: FolderKanban },
   admin_overview: { label: "Portfolio", help: "Cross-project rollup and activity", icon: Gauge },
   templates: { label: "Templates", help: "Approved project schedule library", icon: BookOpenCheck },
-  execution: { label: "Execution", help: "Read-only task baseline for activated projects", icon: CalendarCheck },
+  execution: { label: "Execution", help: "Drive task execution on activated projects", icon: CalendarCheck },
   communication: { label: "Vendor Hub", help: "Vendors, contacts & quick actions", icon: BriefcaseBusiness },
   users: { label: "Users & Access", help: "People, access and your account", icon: UsersRound },
 };
