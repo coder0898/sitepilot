@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -476,6 +476,29 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
         with_reason = self.transition(project["id"], t001.id, "cancelled", reason="Scope removed by client.")
         self.assertEqual(with_reason.status_code, 200, with_reason.text)
         self.assertEqual(with_reason.json()["lifecycle_status"], "cancelled")
+
+    # ---- U9: activation dates the schedule -------------------------------
+
+    def test_activation_resolves_day_offsets_into_calendar_dates(self):
+        """Proves the wiring, not the arithmetic - the conversion rule itself
+        is covered by test_project_schedule_dates_v2.py."""
+        project = self.activate_project()
+        with self.Session() as session:
+            db_project = session.get(V2Project, uuid.UUID(project["id"]))
+            tasks = list(session.scalars(
+                select(Task).where(Task.project_id == db_project.id)
+            ))
+            execution_tasks = [t for t in tasks if t.schedule_classification != "pre_activation"]
+            self.assertTrue(execution_tasks, "expected at least one execution task")
+            for task in execution_tasks:
+                self.assertIsNotNone(
+                    task.planned_start_date,
+                    f"{task.original_code} was instantiated without a planned start date",
+                )
+                expected = db_project.start_date + timedelta(days=task.planned_start_day - 1)
+                self.assertEqual(task.planned_start_date, expected)
+                # The frozen baseline must survive activation untouched.
+                self.assertIsNotNone(task.planned_start_day)
 
     # ---- U10: recorded actuals -------------------------------------------
 

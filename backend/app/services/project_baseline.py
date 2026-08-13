@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
 from app.models import User
+from app.services.project_schedule_dates import resolve_planned_dates
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectTask, V2ProjectTaskDependency
 
 
@@ -116,6 +117,17 @@ class ProjectBaselineService:
 
         task_by_baseline_task_id: dict[uuid.UUID, Task] = {}
         for project_task_id, baseline_task in baseline_task_by_project_task_id.items():
+            # U9: resolve the template's day offsets into real calendar dates
+            # as the task is built, so an activated project is dated from the
+            # moment it exists rather than by a later pass. The day offsets
+            # themselves are copied through untouched - they stay the frozen
+            # baseline that variance is measured against (R13).
+            planned_start_date, planned_end_date = resolve_planned_dates(
+                project.start_date,
+                baseline_task.schedule_classification,
+                baseline_task.planned_start_day,
+                baseline_task.planned_end_day,
+            )
             execution_task = Task(
                 project_id=project.id,
                 baseline_id=baseline.id,
@@ -127,6 +139,8 @@ class ProjectBaselineService:
                 schedule_classification=baseline_task.schedule_classification,
                 planned_start_day=baseline_task.planned_start_day,
                 planned_end_day=baseline_task.planned_end_day,
+                planned_start_date=planned_start_date,
+                planned_end_date=planned_end_date,
                 phase=baseline_task.phase,
                 category=baseline_task.category,
                 applicability=baseline_task.applicability,
