@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.execution_models import TASK_LIFECYCLE_STATUSES
 from app.services.task_approval_metadata import ApprovalMetadataOut
+from app.services.task_delay_variance import DelayVariance
+from app.services.task_readiness import ReadinessReason, TaskReadiness, UnresolvedApproval
 
 TaskLifecycleStatus = Literal[
     "planned", "ready", "in_progress", "submitted", "verified",
@@ -238,6 +240,117 @@ class TaskProgressUpdateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ReadinessReasonOut(BaseModel):
+    """U15: one named fact standing between a task and being ready.
+
+    Mirrors `task_readiness.ReadinessReason` field for field rather than
+    inventing a second vocabulary: `detail` is the sentence the engine
+    already wrote (the frontend must not recompose it, or the board and the
+    engine would drift), and `subject_id` is the predecessor task or the
+    approval itself so a client can link straight to it instead of parsing
+    prose. `blocking` is carried even though blockers and advisories arrive
+    in separate lists, so a client rendering a merged view keeps the flag.
+    """
+
+    kind: str
+    subject_id: uuid.UUID
+    detail: str
+    blocking: bool
+
+    model_config = ConfigDict(from_attributes=False)
+
+    @classmethod
+    def from_reason(cls, reason: ReadinessReason) -> "ReadinessReasonOut":
+        return cls(
+            kind=reason.kind,
+            subject_id=reason.subject_id,
+            detail=reason.detail,
+            blocking=reason.blocking,
+        )
+
+
+class TaskReadinessOut(BaseModel):
+    """U15: one task's computed readiness, as `TaskReadinessService` answered it.
+
+    `reasons` are the facts that actually hold the task; `advisories` are the
+    unsatisfied-but-non-blocking ones the engine deliberately keeps separate
+    (a PM marked that dependency or approval non-blocking, and reporting it
+    as a blocker would override their decision). Both lists are sent so the
+    board can show the whole picture without re-deriving which is which.
+
+    Readiness is advisory this release (R5, KTD1): this is a projection of
+    already-persisted facts, never a statement about which lifecycle
+    transitions the portal permits.
+    """
+
+    state: str
+    reasons: list[ReadinessReasonOut] = Field(default_factory=list)
+    advisories: list[ReadinessReasonOut] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=False)
+
+    @classmethod
+    def from_readiness(cls, readiness: TaskReadiness) -> "TaskReadinessOut":
+        return cls(
+            state=readiness.state,
+            reasons=[ReadinessReasonOut.from_reason(reason) for reason in readiness.reasons],
+            advisories=[ReadinessReasonOut.from_reason(reason) for reason in readiness.advisories],
+        )
+
+
+class TaskVarianceOut(BaseModel):
+    """U15: one task's schedule variance, computed by U13 on the way out.
+
+    `days` is the unsigned magnitude a screen renders ("2 days early") and
+    `variance_days` keeps the sign so a client can sort or sum without
+    consulting `status` first - both are sent because deriving one from the
+    other in the frontend is exactly the recomputation this unit removes.
+    """
+
+    status: str
+    variance_days: int
+    days: int
+    measured_against: str | None
+
+    model_config = ConfigDict(from_attributes=False)
+
+    @classmethod
+    def from_variance(cls, variance: DelayVariance) -> "TaskVarianceOut":
+        return cls(
+            status=variance.status,
+            variance_days=variance.variance_days,
+            days=variance.days,
+            measured_against=variance.measured_against,
+        )
+
+
+class UnresolvedApprovalOut(BaseModel):
+    """U15: an external approval whose task coverage could not be resolved.
+
+    A project-level fact, not a per-task one (R10): an unresolved approval
+    has no rows in `project_external_approval_tasks`, so no task is ever
+    mapped to one and it can never appear as a task's readiness reason. It
+    rides on the list rows because the list response is a JSON array and has
+    no other place to put a project fact - see `list_project_tasks`.
+    """
+
+    approval_id: uuid.UUID
+    status: str
+    blocking: bool
+    coverage_text: str | None
+
+    model_config = ConfigDict(from_attributes=False)
+
+    @classmethod
+    def from_unresolved(cls, approval: UnresolvedApproval) -> "UnresolvedApprovalOut":
+        return cls(
+            approval_id=approval.approval_id,
+            status=approval.status,
+            blocking=approval.blocking,
+            coverage_text=approval.coverage_text,
+        )
+
+
 class TaskListItemOut(BaseModel):
     """List row for the execution board (TaskExecutionBoard). Blockers and
     support assignments are summarized as counts here - the full detail
@@ -262,12 +375,23 @@ class TaskListItemOut(BaseModel):
     # copy of the derivation rule in the frontend.
     planned_start_date: date | None
     planned_end_date: date | None
+    # The recorded actuals alongside the promise, so the board and U16's
+    # timeline read one payload instead of each fetching them separately.
+    actual_start_at: datetime | None
+    actual_finish_at: datetime | None
     phase: str | None
     category: str | None
     evidence_required: bool
     open_blocker_count: int
     active_support_count: int
     approval: ApprovalMetadataOut
+    # U15: readiness and variance are computed server-side and attached
+    # here. Both are derived from facts the client would otherwise have to
+    # re-derive - and a client's copy of the dependency/approval rules would
+    # drift from the engine's, which is worse than no board.
+    readiness: TaskReadinessOut
+    variance: TaskVarianceOut
+    project_unresolved_approvals: list[UnresolvedApprovalOut] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -345,12 +469,18 @@ class TaskDetailOut(BaseModel):
     planned_end_day: int | None
     planned_start_date: date | None
     planned_end_date: date | None
+    actual_start_at: datetime | None
+    actual_finish_at: datetime | None
     phase: str | None
     category: str | None
     evidence_required: bool
     created_at: datetime
     updated_at: datetime
     approval: ApprovalMetadataOut
+    # Same computed readiness the list row carries, from the same engine, so
+    # opening a task cannot contradict the row it was opened from.
+    readiness: TaskReadinessOut
+    variance: TaskVarianceOut
     actor_is_assigned_support: bool
     predecessors: list[TaskDependencyRefOut] = Field(default_factory=list)
     progress_updates: list[TaskProgressUpdateOut] = Field(default_factory=list)

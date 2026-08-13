@@ -4,10 +4,18 @@ This is the real implementation of the write path the read-only
 `GET /{project_id}/execution-tasks` placeholder in `projects_v2.py`
 anticipates. Later units (U3-U6) extend this router with progress/evidence,
 verification/approval, blocker/delay, and support-assignment routes.
+
+U15 additionally attaches computed readiness (`task_readiness.py`) and
+computed schedule variance (`task_delay_variance.py`) to both read-side
+responses, so the Execution tab renders them rather than re-deriving them.
+Both are read-side projections of already-persisted facts: attaching them
+writes nothing, transitions nothing, and does not change which lifecycle
+transitions this router permits (R5, KTD1).
 """
 
 import io
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -46,13 +54,16 @@ from app.schemas.execution_tasks import (
     TaskListItemOut,
     TaskOut,
     TaskProgressUpdateOut,
+    TaskReadinessOut,
     TaskStatusTransitionIn,
     TaskSupportAssignmentCreateIn,
     TaskSupportAssignmentEndIn,
     TaskSupportAssignmentOut,
+    TaskVarianceOut,
     TaskVerificationIn,
     TaskVerificationOut,
     TaskVerificationSummaryOut,
+    UnresolvedApprovalOut,
 )
 from app.schemas.project_gate_decision import ProjectExternalApprovalOut, ProjectGateDecisionIn
 from app.services.project_gate_decision import ProjectGateDecisionService
@@ -60,8 +71,10 @@ from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
 from app.services.task_delay import TaskDelayService
+from app.services.task_delay_variance import variance_for_task
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.task_progress import TaskProgressService
+from app.services.task_readiness import TaskReadinessService
 from app.services.task_support_assignment import TaskSupportAssignmentService
 from app.services.task_verification import TaskVerificationService
 
@@ -84,7 +97,16 @@ def list_project_tasks(
     to on this project - "delegated task support" (their own role
     description) means exactly the tasks delegated to them, not every task
     in a project they happen to be a member of. Every other role (Admin,
-    PM, Supervisor) keeps the full unfiltered project view they already had."""
+    PM, Supervisor) keeps the full unfiltered project view they already had.
+
+    U15: each row also carries its computed readiness and schedule variance.
+    Readiness is resolved for the whole project in ONE batched call
+    (`TaskReadinessService.for_project`, four selects regardless of project
+    size) and then indexed into per row - a per-task readiness call inside
+    this loop would be an N+1 that grows with the project. Readiness is
+    computed over every task in the project, not only the visible ones,
+    because a predecessor an Internal Employee cannot see still blocks the
+    task they can."""
     project = get_project(db, project_id, actor)
     tasks_query = select(Task).where(Task.project_id == project.id).order_by(Task.template_sequence.asc())
     if actor.role == UserRole.internal_employee:
@@ -114,6 +136,21 @@ def list_project_tasks(
     ).all():
         active_support_counts[task_id] = count
 
+    project_readiness = TaskReadinessService(db).for_project(project.id)
+    # A project fact, not a per-task one (R10), but the response is a JSON
+    # array and has nowhere else to carry it. Built once and shared by
+    # reference across the rows rather than rebuilt per row; turning the
+    # response into an envelope would change a shape the shipped board and
+    # four existing test files already consume, which belongs to the
+    # frontend lane, not here.
+    unresolved_approvals = [
+        UnresolvedApprovalOut.from_unresolved(approval)
+        for approval in project_readiness.unresolved_approvals
+    ]
+    # One `today` for the whole response: rows measured against different
+    # days could disagree by one day across a midnight boundary.
+    today = datetime.now(timezone.utc).date()
+
     return [
         TaskListItemOut(
             id=task.id,
@@ -130,12 +167,20 @@ def list_project_tasks(
             planned_end_day=task.planned_end_day,
             planned_start_date=task.planned_start_date,
             planned_end_date=task.planned_end_date,
+            actual_start_at=task.actual_start_at,
+            actual_finish_at=task.actual_finish_at,
             phase=task.phase,
             category=task.category,
             evidence_required=task.evidence_required,
             open_blocker_count=open_blocker_counts.get(task.id, 0),
             active_support_count=active_support_counts.get(task.id, 0),
             approval=build_approval_metadata(task.task_kind, task.task_class, task.lifecycle_status),
+            readiness=TaskReadinessOut.from_readiness(project_readiness.tasks[task.id]),
+            # The pure `variance_for_task`, not `TaskDelayVarianceService`:
+            # the service would re-select the very rows already in hand, and
+            # the arithmetic needs no database at all.
+            variance=TaskVarianceOut.from_variance(variance_for_task(task, today=today)),
+            project_unresolved_approvals=unresolved_approvals,
             created_at=task.created_at,
             updated_at=task.updated_at,
         )
@@ -226,6 +271,13 @@ def get_project_task(
     if actor.role == UserRole.internal_employee and not actor_is_assigned_support:
         raise HTTPException(403, "You can only view tasks you are actively assigned to support.")
 
+    # The same engine the list uses, so a task's readiness cannot differ
+    # between the row and the panel it opens. `for_project` is the only
+    # entry point the service offers - it resolves the whole project in four
+    # selects - and the task is guaranteed to be in the map because it was
+    # just read from the same project in the same session.
+    readiness = TaskReadinessService(db).for_project(project.id).tasks[task.id]
+
     actor_names = _resolve_actor_names(
         db,
         [v.verified_by for v in verifications]
@@ -249,12 +301,16 @@ def get_project_task(
         planned_end_day=task.planned_end_day,
         planned_start_date=task.planned_start_date,
         planned_end_date=task.planned_end_date,
+        actual_start_at=task.actual_start_at,
+        actual_finish_at=task.actual_finish_at,
         phase=task.phase,
         category=task.category,
         evidence_required=task.evidence_required,
         created_at=task.created_at,
         updated_at=task.updated_at,
         approval=build_approval_metadata(task.task_kind, task.task_class, task.lifecycle_status),
+        readiness=TaskReadinessOut.from_readiness(readiness),
+        variance=TaskVarianceOut.from_variance(variance_for_task(task)),
         actor_is_assigned_support=actor_is_assigned_support,
         predecessors=predecessors,
         progress_updates=[_progress_update_out(db, update) for update in progress_updates],
