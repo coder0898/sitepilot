@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { projectsApi } from "../../../api/projectsApi";
+import { useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, Field, Input, Pill, Select } from "../../../components/ui";
 
@@ -40,27 +39,21 @@ function EndAssignmentControl({ projectId, task, assignment, onChanged }) {
   </form>;
 }
 
-// U6: task-level support assignment (BR-005). Supervisor controls support
-// for `work` tasks, PM controls follow-up support for `approval_gate`
-// tasks - the backend is the authority on who may assign; this panel only
-// lists active internal_employee project members as candidates.
-export function TaskSupportAssignmentPanel({ projectId, task, onChanged }) {
-  const [candidates, setCandidates] = useState([]);
+// Task-level support assignment (BR-005). The Supervisor controls support for
+// work tasks and the PM for approval gates - the backend remains the
+// authority, and `canAssign` mirrors its rule so the form is only offered to
+// an actor who can actually use it.
+//
+// `candidates` is passed in rather than fetched here. This panel used to load
+// the project once per expanded task purely for that list, and an actor who
+// could not read the project got an empty dropdown reading "No internal
+// employees on this project" - which describes the project rather than the
+// actor's authority, and is the wrong explanation entirely.
+export function TaskSupportAssignmentPanel({ projectId, task, candidates = [], canAssign = false, onChanged }) {
   const [employeeId, setEmployeeId] = useState("");
   const [responsibility, setResponsibility] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-    projectsApi.detail(projectId)
-      .then(project => {
-        if (!active) return;
-        setCandidates((project.memberships || []).filter(m => m.project_role === "internal_employee"));
-      })
-      .catch(() => { if (active) setCandidates([]); });
-    return () => { active = false; };
-  }, [projectId]);
 
   async function assign(event) {
     event.preventDefault();
@@ -88,6 +81,15 @@ export function TaskSupportAssignmentPanel({ projectId, task, onChanged }) {
       </div>)}
       {!task.support_assignments.length && <p className="text-sm text-slate-500">No support employees assigned.</p>}
     </div>
+    {!canAssign ? (
+      <p className="border-t border-slate-100 pt-3 text-sm text-slate-500">
+        {task.task_kind === "milestone"
+          ? "A milestone is derived from its predecessors, so no one works on it directly."
+          : task.task_kind === "approval_gate"
+            ? "Only this project's PM can assign follow-up support on an approval gate."
+            : "Only this project's Supervisor can assign support on a work task."}
+      </p>
+    ) : (
     <form className="grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_1fr_auto]" onSubmit={assign}>
       <Field label="Support employee">
         <Select value={employeeId} onChange={event => setEmployeeId(event.target.value)} required>
@@ -98,6 +100,7 @@ export function TaskSupportAssignmentPanel({ projectId, task, onChanged }) {
       <Field label="Responsibility"><Input value={responsibility} onChange={event => setResponsibility(event.target.value)} placeholder="What will they help with?" required/></Field>
       <div className="flex items-end"><Button type="submit" size="sm" loading={submitting} disabled={!employeeId || !responsibility.trim()}>Assign</Button></div>
     </form>
+    )}
     {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
   </div>;
 }

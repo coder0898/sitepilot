@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
 import { TaskApprovalSummary } from "./TaskApprovalSummary";
@@ -32,8 +33,44 @@ const STATUS_TONE = {
 
 const EXECUTOR_TARGETS = ["in_progress", "submitted"];
 
-function canCancel(user) {
-  return ["project_manager", "admin", "super_admin"].includes(user?.role);
+// U6: every authority check below is keyed on the actor's membership of THIS
+// project, not on their global role. The backend has always worked that way -
+// `_can_cancel`, `_require_role_for_transition` and
+// `TaskSupportAssignmentService._require_controller` all resolve the actor's
+// V2ProjectMembership rows first - but the board used to check `user.role`,
+// so a PM viewing a project they are not a member of was shown Cancel and the
+// forward-transition buttons and then got a 403 on click.
+//
+// Admin and Super Admin are the one genuine global authority: they short-
+// circuit every backend check, so they short-circuit these too.
+function isPlatformAdmin(user) {
+  return user?.role === "admin" || user?.role === "super_admin";
+}
+
+// Roles the actor holds on this specific project, derived from the project's
+// active memberships. Empty for a non-member, which is exactly the case the
+// old global-role check got wrong.
+export function actorProjectRoles(project, user) {
+  if (!project || !user) return [];
+  return (project.memberships || [])
+    .filter(membership => membership.user_id === user.id && !membership.ends_at)
+    .map(membership => membership.project_role);
+}
+
+// Mirrors task_lifecycle.py's `_can_cancel`: Admin/Super Admin, or the
+// project's own PM.
+function canCancel(user, roles) {
+  return isPlatformAdmin(user) || roles.includes("project_manager");
+}
+
+// Mirrors TaskSupportAssignmentService._require_controller: the Supervisor
+// controls support for work tasks, the PM for approval gates, and a milestone
+// has no support concept at all.
+function canAssignSupport(detail, user, roles) {
+  if (isPlatformAdmin(user)) return true;
+  if (detail.task_kind === "approval_gate") return roles.includes("project_manager");
+  if (detail.task_kind === "milestone") return false;
+  return roles.includes("site_supervisor");
 }
 
 // Mirrors task_lifecycle.py's `_require_role_for_transition`: "start"
@@ -45,27 +82,31 @@ function canCancel(user) {
 // start/submit is exactly who may log the progress evidence those
 // transitions consume, per task_lifecycle.py/task_progress.py's identical
 // executor-driven check.
-function canExecute(detail, user) {
+function canExecute(detail, user, roles) {
   const hasAssignedEmployee = (detail.support_assignments || []).some(a => a.status === "active");
   const isAssignedActor = user?.role === "internal_employee" && detail.actor_is_assigned_support;
-  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
-  const isSupervisorOrPm = user?.role === "supervisor" || user?.role === "project_manager";
-  if (isAdmin) return true;
+  if (isPlatformAdmin(user)) return true;
   if (hasAssignedEmployee) return isAssignedActor;
-  return isSupervisorOrPm;
+  // Approval-gate work has no Supervisor/PM self-execute fallback: the
+  // backend refuses to let anyone start it until an Internal Employee is
+  // delegated. Offering the button here would always 409.
+  if (detail.task_kind === "approval_gate") return false;
+  return roles.includes("site_supervisor") || roles.includes("project_manager");
 }
 
-function forwardTargetsFor(detail, user) {
+function forwardTargetsFor(detail, user, roles) {
   const targets = FORWARD_TRANSITIONS[detail.lifecycle_status] || [];
   if (!targets.length) return [];
-  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
-  const isSupervisorOrPm = user?.role === "supervisor" || user?.role === "project_manager";
-  const canExec = canExecute(detail, user);
+  // Scheduling (`ready`) is Supervisor/PM authority on this project;
+  // start/submit follow the executor rule in canExecute.
+  const canSchedule = isPlatformAdmin(user)
+    || roles.includes("site_supervisor")
+    || roles.includes("project_manager");
+  const canExec = canExecute(detail, user, roles);
 
-  return targets.filter(target => {
-    if (!EXECUTOR_TARGETS.includes(target)) return isSupervisorOrPm || isAdmin;
-    return canExec;
-  });
+  return targets.filter(target => (
+    EXECUTOR_TARGETS.includes(target) ? canExec : canSchedule
+  ));
 }
 
 // Mirrors task_lifecycle.py's own "submitted" precondition exactly: a
@@ -136,7 +177,7 @@ function CancelControl({ projectId, task, onChanged }) {
   </div>;
 }
 
-function TaskDetailPanel({ projectId, task, user, onChanged }) {
+function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -187,8 +228,8 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
   if (loading) return <div className="grid min-h-32 place-items-center"><LoadingSpinner label="Loading task detail..."/></div>;
   if (!detail) return <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-700">{error || "Task detail unavailable."}</div>;
 
-  const forwardTargets = forwardTargetsFor(detail, user);
-  const showCancel = canCancel(user) && CANCELLABLE_STATUSES.includes(detail.lifecycle_status);
+  const forwardTargets = forwardTargetsFor(detail, user, roles);
+  const showCancel = canCancel(user, roles) && CANCELLABLE_STATUSES.includes(detail.lifecycle_status);
   // Terminal = no further outgoing transitions per task_lifecycle.py's
   // ALLOWED_TRANSITIONS (both `completed` and `cancelled` map to an empty
   // set) - none of the execution controls below apply anymore. `rejected`
@@ -225,7 +266,7 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
 
       <TaskDecisionModal projectId={projectId} task={detail} user={user} onDecided={refreshAll}/>
 
-      {detail.lifecycle_status === "in_progress" && canExecute(detail, user) && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
+      {detail.lifecycle_status === "in_progress" && canExecute(detail, user, roles) && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
 
       {detail.progress_updates.length > 0 && <section className="rounded-xl border border-slate-200 bg-white p-4">
         <h4 className="text-xs font-black uppercase tracking-wide text-slate-500">Progress updates</h4>
@@ -262,7 +303,7 @@ function TaskDetailPanel({ projectId, task, user, onChanged }) {
           <ChevronDown size={15} className="text-slate-400 transition group-open:rotate-180"/>
         </summary>
         <div className="border-t border-slate-100 p-4 pt-3">
-          <TaskSupportAssignmentPanel projectId={projectId} task={detail} onChanged={refreshAll}/>
+          <TaskSupportAssignmentPanel projectId={projectId} task={detail} candidates={candidates} canAssign={canAssignSupport(detail, user, roles)} onChanged={refreshAll}/>
         </div>
       </details>
     </>}
@@ -274,6 +315,12 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
+  // The project's active memberships, fetched once for the whole board. Two
+  // things read them: the actor's own roles on this project, which drive
+  // every authority check, and the internal-employee candidate list the
+  // support-assignment panel offers. The panel used to fetch this itself,
+  // once per expanded task, for the candidate list alone.
+  const [project, setProject] = useState(null);
   // Guards against an out-of-order response after a fast project switch
   // (e.g. Project A's slow list resolves after Project B's fast one) -
   // mirrors the `active` flag pattern used elsewhere in this file/diff.
@@ -298,6 +345,22 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
 
   useEffect(() => { load(); }, [projectId]);
 
+  useEffect(() => {
+    let active = true;
+    setProject(null);
+    projectsApi.detail(projectId)
+      .then(detail => { if (active) setProject(detail); })
+      // A failure here must not break the board. It costs the actor their
+      // membership-derived controls, which fails closed to "no authority" -
+      // the safe direction, since the backend refuses anything they should
+      // not have been offered anyway.
+      .catch(() => { if (active) setProject(null); });
+    return () => { active = false; };
+  }, [projectId]);
+
+  const roles = actorProjectRoles(project, user);
+  const candidates = (project?.memberships || []).filter(m => m.project_role === "internal_employee");
+
   const term = search.trim().toLowerCase();
   const filtered = term
     ? tasks.filter(task => [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term)))
@@ -321,7 +384,7 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
           <Pill tone={STATUS_TONE[task.lifecycle_status] || "gray"}>{task.lifecycle_status.replaceAll("_", " ")}</Pill>
           {expanded ? <ChevronUp size={18} className="text-slate-400"/> : <ChevronDown size={18} className="text-slate-400"/>}
         </button>
-        {expanded && <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-4 sm:px-5"><TaskDetailPanel projectId={projectId} task={task} user={user} onChanged={load}/></div>}
+        {expanded && <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-4 sm:px-5"><TaskDetailPanel projectId={projectId} task={task} user={user} roles={roles} candidates={candidates} onChanged={load}/></div>}
       </article>;
     })}
   </div>;

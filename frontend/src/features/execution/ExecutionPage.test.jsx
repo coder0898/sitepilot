@@ -5,6 +5,7 @@ import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { ExecutionPage } from "./ExecutionPage";
 
 vi.mock("../../api/projectsApi", () => ({ projectsApi: {
+  detail: vi.fn(),
   list: vi.fn(), executionTasks: vi.fn(), dependencies: vi.fn(), externalGates: vi.fn(), detail: vi.fn(),
 } }));
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
@@ -23,6 +24,10 @@ const assignedTask = {
 beforeEach(() => {
   vi.clearAllMocks();
   projectsApi.list.mockResolvedValue(activeProjects);
+  // The board resolves the actor's authority from the project's active
+  // memberships, so every render needs this even when the test is about
+  // something else.
+  projectsApi.detail.mockResolvedValue({ id: "p1", memberships: [] });
   projectsApi.executionTasks.mockResolvedValue({
     project_id: "p1", project_name: "Sample Fitout Project", total_tasks: 42, included_task_count: 40, excluded_task_count: 2, tasks: [],
   });
