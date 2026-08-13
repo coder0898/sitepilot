@@ -27,6 +27,8 @@ TASK_LIFECYCLE_STATUSES = (
     "approval_pending", "rejected", "completed", "cancelled",
 )
 
+EXTERNAL_APPROVAL_STATUSES = ("pending", "approved", "rejected")
+
 
 def is_work_task_kind(task_kind: str | None) -> bool:
     """Whether a task should go through the `work` (Supervisor verification,
@@ -207,6 +209,62 @@ class TaskDependency(Base):
     rule_text: Mapped[str | None] = mapped_column(Text)
     created_from_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProjectExternalApproval(Base):
+    """U4: the runtime state of one external approval, instantiated at
+    activation from the planning-layer `V2ProjectExternalGate` it names.
+
+    This table exists precisely so that `project_external_gates` does not
+    have to carry it. That table's `status` is a Draft-time review marker,
+    CHECK-constrained to `pending_review` and written only while the project
+    is still a draft; `applicability_state` beside it answers a different
+    question again (does this approval apply to this project at all?).
+    Neither answers the runtime question "has the approval been granted?",
+    and answering it there would split one approval's state across the
+    planning and execution families - see KTD3/KTD8.
+
+    The gate link mirrors how `Task` points at `BaselineTask`: it is the
+    instantiated-from reference, unique because an approval is instantiated
+    exactly once per gate. It is the ONE place the execution layer names a
+    planning-layer row; readiness itself reads only this table, never the
+    gate.
+    """
+
+    __tablename__ = "project_external_approvals"
+    __table_args__ = (
+        UniqueConstraint("project_gate_id", name="uq_v2_project_external_approvals_gate"),
+        CheckConstraint(f"status in {EXTERNAL_APPROVAL_STATUSES!r}", name="ck_v2_project_external_approvals_status"),
+        # Pending means undecided, and decided means attributable. Without
+        # this, a half-written decision would leave readiness and the audit
+        # trail disagreeing about whether anyone actually granted anything.
+        CheckConstraint(
+            "(status = 'pending' and decided_by is null and decided_at is null)"
+            " or (status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)",
+            name="ck_v2_project_external_approvals_decision_completeness",
+        ),
+        Index("ix_v2_project_external_approvals_project", "project_id"),
+        # Readiness sweeps a project's still-pending approvals on every
+        # recompute, so status is part of the lookup, not a filter after it.
+        Index("ix_v2_project_external_approvals_project_status", "project_id", "status"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    project_gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_gates.id", ondelete="RESTRICT"), nullable=False)
+    """RESTRICT, not the CASCADE the planning layer uses between projects and
+    gates: a granted approval is an execution record and must not evaporate
+    because a planning row was removed underneath it."""
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Nullable pair, unlike `TaskApprovalDecision.decided_by`/`decided_at`:
+    that model records a decision that has already happened, whereas this row
+    exists from activation onward and spends its early life undecided. The
+    completeness CHECK keeps the two columns moving together."""
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class TaskProgressUpdate(Base):
