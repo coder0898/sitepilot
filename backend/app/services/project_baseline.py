@@ -5,6 +5,12 @@
 `POST /{project_id}/activate` must call, inside the same transaction as the
 draft->active status flip, so no activation code path can produce an active
 project without a locked baseline and instantiated tasks.
+
+U8 adds external approvals to what activation instantiates, via
+`ProjectApprovalInstantiationService` below. Activation is the one moment the
+execution layer is allowed to read the planning layer, and it copies across
+everything readiness will later need - coverage, blocking, prose - precisely
+so readiness never has to go back for it (KTD8).
 """
 
 import hashlib
@@ -16,10 +22,24 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency
+from app.execution_models import (
+    BaselineTask,
+    ProjectBaseline,
+    ProjectExternalApproval,
+    ProjectExternalApprovalTask,
+    Task,
+    TaskDependency,
+)
 from app.models import User
 from app.services.project_schedule_dates import resolve_planned_dates
-from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectTask, V2ProjectTaskDependency
+from app.project_models import (
+    V2AuditEvent,
+    V2Project,
+    V2ProjectExternalGate,
+    V2ProjectExternalGateTask,
+    V2ProjectTask,
+    V2ProjectTaskDependency,
+)
 
 
 def _content_hash(payload: dict) -> str:
@@ -178,6 +198,12 @@ class ProjectBaselineService:
             ))
         self.db.flush()
 
+        # U8: the applicable external approvals become runtime records in the
+        # same transaction, reusing the map above rather than re-deriving it.
+        ProjectApprovalInstantiationService(self.db).instantiate_for_project(
+            project, task_by_project_task_id=task_by_project_task_id,
+        )
+
         self.db.add(V2AuditEvent(
             actor_user_id=actor.id,
             action="PROJECT_BASELINE_LOCKED",
@@ -197,3 +223,154 @@ class ProjectBaselineService:
         self.db.flush()
 
         return baseline
+
+
+class ProjectApprovalInstantiationService:
+    """U8: turn a project's applicable planning-layer gates into the runtime
+    approval records readiness decides on.
+
+    Never commits - the caller owns the transaction, so activation's approvals
+    land or roll back with its tasks, matching `ProjectScheduleDateService`.
+
+    Coverage is resolved from the template's *explicit* task references only.
+    A gate classified `broad_text` describes its coverage in prose and a gate
+    classified `unmapped` names nothing at all; neither is parsed, guessed at,
+    expanded to every task or quietly reduced to none. Both produce an
+    approval marked `unresolved`, carrying whatever prose there was, for U12
+    to put in front of a human (R10).
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def instantiate_for_project(
+        self,
+        project: V2Project,
+        *,
+        task_by_project_task_id: dict[uuid.UUID, Task] | None = None,
+    ) -> dict:
+        """Create the missing approvals (and their coverage links) for one project.
+
+        `task_by_project_task_id` lets activation hand over the map it already
+        built while instantiating tasks; the backfill omits it and the map is
+        rebuilt from the execution layer instead. Gates that already have an
+        approval are skipped whole - their status may since have been decided,
+        and re-deriving it would overwrite a real decision - which is what
+        makes this safe to re-run.
+        """
+        gates = list(self.db.scalars(
+            select(V2ProjectExternalGate)
+            .where(
+                V2ProjectExternalGate.project_id == project.id,
+                V2ProjectExternalGate.applicability_state == "applicable",
+            )
+            .order_by(V2ProjectExternalGate.template_sequence.asc(), V2ProjectExternalGate.original_code.asc())
+        ).all())
+
+        already_instantiated = set(self.db.scalars(
+            select(ProjectExternalApproval.project_gate_id)
+            .where(ProjectExternalApproval.project_id == project.id)
+        ).all())
+        pending_gates = [gate for gate in gates if gate.id not in already_instantiated]
+
+        report = {
+            "gates_scanned": len(gates),
+            "approvals_created": 0,
+            "coverage_links_created": 0,
+            "unresolved_count": 0,
+        }
+        if not pending_gates:
+            return report
+
+        if task_by_project_task_id is None:
+            task_by_project_task_id = self._task_by_project_task_id(project.id)
+
+        links_by_gate: dict[uuid.UUID, list[V2ProjectExternalGateTask]] = {}
+        for link in self.db.scalars(
+            select(V2ProjectExternalGateTask)
+            .where(V2ProjectExternalGateTask.project_gate_id.in_([gate.id for gate in pending_gates]))
+            .order_by(V2ProjectExternalGateTask.project_task_id.asc())
+        ).all():
+            links_by_gate.setdefault(link.project_gate_id, []).append(link)
+
+        for gate in pending_gates:
+            resolved = gate.mapping_classification == "exact"
+            approval = ProjectExternalApproval(
+                project_id=project.id,
+                project_gate_id=gate.id,
+                status="pending",
+                # The PM's blocking decision travels with the approval. A
+                # non-blocking gate that arrived here as blocking would stop
+                # every task it covers, which is the opposite of what was set.
+                blocking=gate.blocking,
+                coverage_state="exact" if resolved else "unresolved",
+                coverage_text=None if resolved else gate.broad_mapping_text,
+            )
+            self.db.add(approval)
+            self.db.flush()
+            report["approvals_created"] += 1
+            if not resolved:
+                report["unresolved_count"] += 1
+                continue
+
+            for link in links_by_gate.get(gate.id, []):
+                task = task_by_project_task_id.get(link.project_task_id)
+                if task is None:
+                    # The named task was excluded from the baseline, so it has
+                    # no execution row to block. Coverage stays `exact`: the
+                    # template was explicit and nothing is being guessed - the
+                    # task simply is not part of this project's plan.
+                    continue
+                self.db.add(ProjectExternalApprovalTask(
+                    project_id=project.id,
+                    approval_id=approval.id,
+                    task_id=task.id,
+                ))
+                report["coverage_links_created"] += 1
+        self.db.flush()
+        return report
+
+    def _task_by_project_task_id(self, project_id: uuid.UUID) -> dict[uuid.UUID, Task]:
+        """Rebuild activation's project-task -> execution-task map for a
+        project that was activated before this unit existed.
+
+        `BaselineTask` is the hop that makes this possible without reading the
+        planning tasks themselves: it froze `project_task_id` at activation.
+        """
+        rows = self.db.execute(
+            select(BaselineTask.project_task_id, Task)
+            .join(BaselineTask, Task.baseline_task_id == BaselineTask.id)
+            .where(Task.project_id == project_id)
+        ).all()
+        return {project_task_id: task for project_task_id, task in rows}
+
+    def backfill(self, *, project_id: uuid.UUID | None = None) -> dict:
+        """Instantiate approvals for projects activated before this unit.
+
+        Scoped to projects that already hold a locked baseline, since a draft
+        has no execution layer to attach approvals to and will get them at its
+        own activation. Idempotent by construction: `instantiate_for_project`
+        skips gates that already have an approval, so a second run creates
+        nothing.
+        """
+        statement = select(V2Project).where(
+            V2Project.id.in_(select(ProjectBaseline.project_id))
+        ).order_by(V2Project.id)
+        if project_id is not None:
+            statement = statement.where(V2Project.id == project_id)
+
+        projects = list(self.db.scalars(statement).all())
+        totals = {
+            "projects_scanned": len(projects),
+            "projects_updated": 0,
+            "approvals_created": 0,
+            "coverage_links_created": 0,
+            "unresolved_count": 0,
+        }
+        for project in projects:
+            result = self.instantiate_for_project(project)
+            if result["approvals_created"]:
+                totals["projects_updated"] += 1
+            for key in ("approvals_created", "coverage_links_created", "unresolved_count"):
+                totals[key] += result[key]
+        return totals

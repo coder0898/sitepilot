@@ -19,6 +19,8 @@ from app.auth import current_user
 from app.config import settings
 from app.database import get_db
 from app.execution_models import (
+    ProjectExternalApproval,
+    ProjectExternalApprovalTask,
     BaselineTask,
     FileObject,
     OutboxEvent,
@@ -105,6 +107,8 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             ProjectBaseline.__table__,
             BaselineTask.__table__,
             Task.__table__,
+            ProjectExternalApproval.__table__,
+            ProjectExternalApprovalTask.__table__,
             TaskDependency.__table__,
             TaskSupportAssignment.__table__,
             TaskProgressUpdate.__table__,

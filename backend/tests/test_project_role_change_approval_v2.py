@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, FileObject, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskEvidence, TaskProgressUpdate
+from app.execution_models import BaselineTask, FileObject, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskEvidence, TaskProgressUpdate, ProjectExternalApproval, ProjectExternalApprovalTask
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     ProjectRoleChange,
@@ -84,6 +84,8 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
             ProjectBaseline.__table__,
             BaselineTask.__table__,
             Task.__table__,
+            ProjectExternalApproval.__table__,
+            ProjectExternalApprovalTask.__table__,
             TaskDependency.__table__,
             TaskProgressUpdate.__table__,
             FileObject.__table__,

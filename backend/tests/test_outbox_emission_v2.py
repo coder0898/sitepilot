@@ -15,6 +15,8 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
+    ProjectExternalApproval,
+    ProjectExternalApprovalTask,
     BaselineTask,
     FileObject,
     OutboxEvent,
@@ -102,6 +104,8 @@ class OutboxEmissionApiTests(unittest.TestCase):
             ProjectBaseline.__table__,
             BaselineTask.__table__,
             Task.__table__,
+            ProjectExternalApproval.__table__,
+            ProjectExternalApprovalTask.__table__,
             TaskDependency.__table__,
             TaskProgressUpdate.__table__,
             FileObject.__table__,

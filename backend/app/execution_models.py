@@ -29,6 +29,17 @@ TASK_LIFECYCLE_STATUSES = (
 
 EXTERNAL_APPROVAL_STATUSES = ("pending", "approved", "rejected")
 
+EXTERNAL_APPROVAL_COVERAGE_STATES = ("exact", "unresolved")
+"""U8: whether an approval's task coverage was resolvable at activation.
+
+`exact` means the template named specific tasks and this approval's coverage
+links are those tasks. `unresolved` means it did not - the template described
+coverage in prose, or named nothing at all - and the prose is carried on the
+row instead. The distinction has to be stored rather than inferred from an
+empty link set, because "covers no tasks" and "we do not know what this
+covers" are opposite answers and R10 forbids guessing between them.
+"""
+
 
 def is_work_task_kind(task_kind: str | None) -> bool:
     """Whether a task should go through the `work` (Supervisor verification,
@@ -243,6 +254,14 @@ class ProjectExternalApproval(Base):
             " or (status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)",
             name="ck_v2_project_external_approvals_decision_completeness",
         ),
+        CheckConstraint(f"coverage_state in {EXTERNAL_APPROVAL_COVERAGE_STATES!r}", name="ck_v2_project_external_approvals_coverage_state"),
+        # Prose is what an unresolved approval has *instead of* links. An
+        # exact approval carrying prose would mean both were true at once,
+        # leaving no answer to "which tasks does this block?".
+        CheckConstraint(
+            "coverage_state = 'unresolved' or coverage_text is null",
+            name="ck_v2_project_external_approvals_coverage_text",
+        ),
         Index("ix_v2_project_external_approvals_project", "project_id"),
         # Readiness sweeps a project's still-pending approvals on every
         # recompute, so status is part of the lookup, not a filter after it.
@@ -257,6 +276,24 @@ class ProjectExternalApproval(Base):
     gates: a granted approval is an execution record and must not evaporate
     because a planning row was removed underneath it."""
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    """U8: copied from `V2ProjectExternalGate.blocking`, which a PM sets while
+    the project is a draft and the UI already renders as a "Blocking" badge.
+    Without it here, readiness would block every task a deliberately
+    non-blocking approval covers. Defaults to blocking, matching the gate."""
+    coverage_state: Mapped[str] = mapped_column(Text, nullable=False, default="unresolved", server_default=text("'unresolved'"))
+    """U8: `exact` or `unresolved` - see EXTERNAL_APPROVAL_COVERAGE_STATES.
+
+    Defaults to `unresolved` rather than `exact` deliberately: a row written
+    without stating its coverage has not proven it covers exactly its (zero)
+    links, and surfacing it for a human beats silently claiming it blocks
+    nothing (R10). Instantiation always states this explicitly."""
+    coverage_text: Mapped[str | None] = mapped_column(Text)
+    """The gate's `broad_mapping_text` verbatim when coverage is unresolved,
+    so U12 can show a PM what the template actually asked for instead of an
+    empty list. Null on an exact approval, and also null on an unresolved one
+    whose gate carried no prose at all (`mapping_classification = 'unmapped'`)
+    - both are unresolved, and neither is expanded into a guess."""
     decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     """Nullable pair, unlike `TaskApprovalDecision.decided_by`/`decided_at`:
@@ -265,6 +302,47 @@ class ProjectExternalApproval(Base):
     completeness CHECK keeps the two columns moving together."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProjectExternalApprovalTask(Base):
+    """U8: one execution task that an external approval covers.
+
+    The execution-layer mirror of `V2ProjectExternalGateTask`, which points at
+    planning-layer `project_tasks`. Activation maps each of those links
+    through to the instantiated `tasks` row and records the result here, so
+    readiness can answer "which tasks does this ungranted approval block?"
+    without ever touching the planning tables (KTD8).
+
+    Rows exist only where coverage was resolvable. An approval with
+    `coverage_state = 'unresolved'` has none, which is why that state is a
+    stored column and not something read off the absence of links here.
+
+    No back-reference to the planning link row is kept: the approval already
+    names its gate, and each task names its baseline task, so provenance is
+    fully recoverable without a second FK into the planning family.
+    """
+
+    __tablename__ = "project_external_approval_tasks"
+    __table_args__ = (
+        UniqueConstraint("approval_id", "task_id", name="uq_v2_project_external_approval_tasks_pair"),
+        Index("ix_v2_project_external_approval_tasks_approval", "approval_id"),
+        # Readiness walks the other way too - given a task, which approvals
+        # are still pending against it - so the task side is indexed as well.
+        Index("ix_v2_project_external_approval_tasks_task", "task_id"),
+        Index("ix_v2_project_external_approval_tasks_project", "project_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    """Denormalised from the approval, as on `TaskDependency`, so a project's
+    whole coverage set is one indexed read rather than a join."""
+    approval_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="CASCADE"), nullable=False)
+    """CASCADE, unlike the RESTRICT the approval itself uses toward the
+    planning layer: this row has no meaning apart from its approval, so it
+    should not outlive it."""
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class TaskProgressUpdate(Base):

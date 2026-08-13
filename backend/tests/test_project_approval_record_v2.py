@@ -170,6 +170,11 @@ class ProjectExternalApprovalTests(unittest.TestCase):
             {
                 "id", "project_id", "project_gate_id", "status",
                 "decided_by", "decided_at", "created_at", "updated_at",
+                # U8 copies these three from the planning-layer gate at
+                # activation, so readiness can answer what an approval covers
+                # and whether it gates work without reading the planning
+                # tables (KTD8).
+                "blocking", "coverage_state", "coverage_text",
             },
         )
 
