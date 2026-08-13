@@ -73,6 +73,15 @@ _SUPERVISOR_OR_PM_TARGETS = {"ready", "rejected", "verified", "approval_pending"
 # Internal Employee is assigned to the task").
 _EXECUTOR_DRIVEN_TARGETS = {"in_progress", "submitted"}
 
+# A predecessor counts as "started" for a `start_to_start` edge once it has
+# left the pre-start statuses (`planned`, `ready`). Everything from
+# `in_progress` onward means work actually began, including states the task
+# later moved through - a task that reached `submitted` and was rejected has
+# still started, so its start-to-start successors stay released.
+_STARTED_STATUSES = {
+    "in_progress", "submitted", "verified", "approval_pending", "rejected", "completed",
+}
+
 
 class TaskLifecycleService:
     def __init__(self, db: Session):
@@ -192,9 +201,11 @@ class TaskLifecycleService:
         )
         return latest is not None and latest.decision == "verified"
 
-    def _predecessor_satisfied(self, predecessor: Task) -> bool:
-        """Whether a predecessor task satisfies a blocking dependency,
-        per BR-008's exact per-kind rule:
+    def _predecessor_satisfied(self, predecessor: Task, dependency_type: str) -> bool:
+        """Whether a predecessor task satisfies a blocking dependency, per
+        BR-008's per-kind rule and the edge's own `dependency_type`.
+
+        `finish_to_start` (the default, and every edge before this change):
 
         - `standard` work: satisfied once Supervisor-verified (a
           `task_verifications` row with decision='verified' and no later
@@ -210,7 +221,29 @@ class TaskLifecycleService:
           before completion"; gates likewise complete only via PM
           approval).
         - `milestone`: requires `completed` (system-derived, BR-009).
+
+        `start_to_start`: satisfied as soon as the predecessor has actually
+        started, i.e. left the pre-start statuses. This is the whole point
+        of the edge type - the successor is allowed to overlap the
+        predecessor rather than queue behind it. Before this change
+        `dependency_type` was stored and rendered but never read here, so
+        every start-to-start edge silently behaved as finish-to-start and
+        the parallel execution the template's SS edges exist to express
+        never happened.
+
+        `cancelled` satisfies either type: the work will not happen, so it
+        can never become satisfied any other way, and leaving it
+        unsatisfied strands every downstream task permanently with no
+        recovery but cancelling them too.
+
+        NOTE: this relaxed rule is for *startability* only. Milestone
+        auto-completion deliberately does not use it - see
+        `_milestone_predecessors_completed`.
         """
+        if predecessor.lifecycle_status == "cancelled":
+            return True
+        if dependency_type == "start_to_start":
+            return predecessor.lifecycle_status in _STARTED_STATUSES
         if predecessor.lifecycle_status == "completed":
             return True
         if (
@@ -222,6 +255,7 @@ class TaskLifecycleService:
         return False
 
     def _blocking_predecessors_satisfied(self, task: Task) -> bool:
+        """Startability check: may `task` move to ready/in_progress?"""
         deps = self.db.scalars(
             select(TaskDependency).where(
                 TaskDependency.successor_task_id == task.id,
@@ -230,7 +264,36 @@ class TaskLifecycleService:
         )
         for dep in deps:
             predecessor = self.db.get(Task, dep.predecessor_task_id)
-            if not predecessor or not self._predecessor_satisfied(predecessor):
+            if not predecessor or not self._predecessor_satisfied(predecessor, dep.dependency_type):
+                return False
+        return True
+
+    def _milestone_predecessors_completed(self, task: Task) -> bool:
+        """Derived-completion check: may `task` (a milestone) auto-complete?
+
+        Deliberately stricter than `_blocking_predecessors_satisfied`, and
+        deliberately NOT sharing its per-edge rule. A milestone asserts that
+        the work behind it actually happened, so:
+
+        - `start_to_start` is ignored here: a predecessor that has merely
+          *started* has not delivered anything a milestone can claim.
+        - `cancelled` does NOT satisfy: work that was abandoned cannot
+          evidence a milestone. Sharing the startability rule would let a
+          milestone auto-complete - writing a TASK_STATUS_CHANGED audit
+          event and an actual finish - on the strength of cancelled work,
+          and would cascade recursively through chained milestones.
+
+        Only a predecessor that genuinely reached `completed` counts.
+        """
+        deps = self.db.scalars(
+            select(TaskDependency).where(
+                TaskDependency.successor_task_id == task.id,
+                TaskDependency.blocking.is_(True),
+            )
+        )
+        for dep in deps:
+            predecessor = self.db.get(Task, dep.predecessor_task_id)
+            if not predecessor or predecessor.lifecycle_status != "completed":
                 return False
         return True
 
@@ -251,7 +314,7 @@ class TaskLifecycleService:
             successor = self.db.get(Task, dep.successor_task_id)
             if not successor or successor.task_kind != "milestone" or successor.lifecycle_status != "planned":
                 continue
-            if not self._blocking_predecessors_satisfied(successor):
+            if not self._milestone_predecessors_completed(successor):
                 continue
             before_status = successor.lifecycle_status
             successor.lifecycle_status = "completed"
@@ -348,7 +411,7 @@ class TaskLifecycleService:
                     409,
                     "Only a milestone task can move directly from planned to completed.",
                 )
-            if not self._blocking_predecessors_satisfied(task):
+            if not self._milestone_predecessors_completed(task):
                 raise HTTPException(
                     409,
                     "This milestone's blocking predecessor tasks are not yet all completed.",
