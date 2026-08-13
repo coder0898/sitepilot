@@ -23,6 +23,7 @@ from app.execution_models import (
     TASK_LIFECYCLE_STATUSES,
     Task,
     TaskDependency,
+    TaskEvidence,
     TaskProgressUpdate,
     TaskSupportAssignment,
     TaskVerification,
@@ -484,16 +485,43 @@ class TaskLifecycleService:
             consumed_update_ids = select(TaskVerification.submission_update_id).where(
                 TaskVerification.task_id == task.id
             )
+            unconsumed_update_ids = select(TaskProgressUpdate.id).where(
+                TaskProgressUpdate.task_id == task.id,
+                TaskProgressUpdate.id.not_in(consumed_update_ids),
+            )
             has_unreviewed_progress_update = self.db.scalar(
-                select(TaskProgressUpdate.id)
-                .where(TaskProgressUpdate.task_id == task.id, TaskProgressUpdate.id.not_in(consumed_update_ids))
-                .limit(1)
+                unconsumed_update_ids.limit(1)
             ) is not None
             if not has_unreviewed_progress_update:
                 raise HTTPException(
                     409,
                     "Log a new progress update (a note and/or evidence) before submitting this task for review.",
                 )
+
+            # U7 (R25): `evidence_required` has travelled template -> baseline
+            # -> execution task -> API since the beginning and has never been
+            # enforced anywhere. Enforce it here, over the SAME unconsumed set
+            # the check above just computed, so "fresh" means one thing on this
+            # path rather than two. Reusing that set is also what makes a
+            # rejected task unable to resubmit on the strength of the very file
+            # that was rejected: the rejection consumed that update, so its
+            # evidence no longer counts.
+            if task.evidence_required:
+                has_unreviewed_evidence = self.db.scalar(
+                    select(TaskEvidence.id)
+                    .where(TaskEvidence.task_progress_update_id.in_(unconsumed_update_ids))
+                    .limit(1)
+                ) is not None
+                if not has_unreviewed_evidence:
+                    # Deliberately distinct wording from the message above: the
+                    # board surfaces the backend's own text, and "you logged
+                    # nothing" and "you logged a note but no file" are different
+                    # things for the user to go and do.
+                    raise HTTPException(
+                        409,
+                        "This task requires evidence. Attach a file to a new progress update "
+                        "before submitting this task for review.",
+                    )
 
         # U14: starting ahead of plan is permitted, but never silently. The
         # reason is validated here - before any mutation - so a refused early
