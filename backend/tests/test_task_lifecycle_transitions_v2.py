@@ -477,6 +477,104 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
         self.assertEqual(with_reason.status_code, 200, with_reason.text)
         self.assertEqual(with_reason.json()["lifecycle_status"], "cancelled")
 
+    # ---- U10: recorded actuals -------------------------------------------
+
+    def test_starting_a_task_records_its_actual_start(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project["id"], t001.id, "ready").status_code, 200)
+        self.assertEqual(self.transition(project["id"], t001.id, "in_progress").status_code, 200)
+        with self.Session() as session:
+            task = session.get(Task, t001.id)
+            self.assertIsNotNone(task.actual_start_at)
+            self.assertIsNone(task.actual_finish_at)
+
+    def test_completing_a_task_records_its_actual_finish(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "ready")
+        self.transition(project["id"], t001.id, "in_progress")
+        self.submit_progress(project["id"], t001.id)
+        self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(self.verify(project["id"], t001.id).status_code, 200)
+        with self.Session() as session:
+            task = session.get(Task, t001.id)
+            self.assertEqual(task.lifecycle_status, "completed")
+            self.assertIsNotNone(task.actual_start_at)
+            self.assertIsNotNone(task.actual_finish_at)
+            self.assertGreaterEqual(task.actual_finish_at, task.actual_start_at)
+
+    def test_a_rejected_and_restarted_task_keeps_its_original_actual_start(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "ready")
+        self.transition(project["id"], t001.id, "in_progress")
+        with self.Session() as session:
+            first_start = session.get(Task, t001.id).actual_start_at
+        self.assertIsNotNone(first_start)
+
+        self.submit_progress(project["id"], t001.id)
+        self.transition(project["id"], t001.id, "submitted")
+        rejected = self.verify(project["id"], t001.id, decision="rejected", remarks="Redo the edge trim.")
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+
+        with self.Session() as session:
+            task = session.get(Task, t001.id)
+            # Rejection reopens the task through in_progress; the date work
+            # actually began must survive that second pass.
+            self.assertEqual(task.lifecycle_status, "in_progress")
+            self.assertEqual(task.actual_start_at, first_start)
+
+    def test_a_cancelled_task_records_no_actual_finish(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.act_as_supervisor()
+        self.transition(project["id"], t001.id, "ready")
+        self.transition(project["id"], t001.id, "in_progress")
+        # Cancellation is Admin/PM authority, not the Supervisor's.
+        self.act_as_admin()
+        cancelled = self.transition(project["id"], t001.id, "cancelled", reason="Client dropped the scope.")
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        with self.Session() as session:
+            task = session.get(Task, t001.id)
+            self.assertEqual(task.lifecycle_status, "cancelled")
+            self.assertIsNotNone(task.actual_start_at)
+            self.assertIsNone(task.actual_finish_at)
+
+    def test_a_task_never_started_records_no_actuals(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project["id"], t001.id, "ready").status_code, 200)
+        with self.Session() as session:
+            task = session.get(Task, t001.id)
+            self.assertIsNone(task.actual_start_at)
+            self.assertIsNone(task.actual_finish_at)
+
+    def test_an_auto_completed_milestone_records_actuals(self):
+        """The cascade writes lifecycle_status directly, so it carries its
+        own actuals rather than inheriting transition()'s."""
+        project = self.activate_project()
+        tasks = self.tasks_by_code(project["id"])
+        t004 = tasks["T004"]
+        self.act_as_supervisor()
+        for code in ("T001", "T002", "T003"):
+            task = tasks[code]
+            self.transition(project["id"], task.id, "ready")
+            self.transition(project["id"], task.id, "in_progress")
+            self.submit_progress(project["id"], task.id)
+            self.transition(project["id"], task.id, "submitted")
+            self.verify(project["id"], task.id)
+
+        with self.Session() as session:
+            milestone = session.get(Task, t004.id)
+            self.assertEqual(milestone.lifecycle_status, "completed")
+            self.assertIsNotNone(milestone.actual_finish_at)
+            self.assertIsNotNone(milestone.actual_start_at)
+
 
 if __name__ == "__main__":
     unittest.main()

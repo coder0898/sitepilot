@@ -12,6 +12,7 @@ transition.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -318,6 +319,15 @@ class TaskLifecycleService:
                 continue
             before_status = successor.lifecycle_status
             successor.lifecycle_status = "completed"
+            # This cascade sets lifecycle_status directly rather than going
+            # through transition(), so it must record its own actuals - the
+            # U10 block in transition() does not cover it. A milestone is
+            # derived, never worked on, so its start and finish are the same
+            # instant: the moment its predecessors made it true.
+            completed_at = datetime.now(timezone.utc)
+            successor.actual_finish_at = completed_at
+            if successor.actual_start_at is None:
+                successor.actual_start_at = completed_at
             self.db.add(V2AuditEvent(
                 actor_user_id=actor.id,
                 action="TASK_STATUS_CHANGED",
@@ -487,6 +497,28 @@ class TaskLifecycleService:
 
         before_status = current_status
         task.lifecycle_status = target_status
+
+        # U10: record when work actually began and ended, on the same write
+        # path and inside the same transaction as the status change itself -
+        # the transition is already the single audited authority for status,
+        # and writing actuals anywhere else would create a second source of
+        # truth for the same fact.
+        if target_status == "in_progress" and task.actual_start_at is None:
+            # Only on the FIRST start. A rejected task reopens through
+            # `in_progress` again, and the date work actually began must not
+            # be overwritten by the date it resumed.
+            task.actual_start_at = datetime.now(timezone.utc)
+        elif target_status == "completed":
+            task.actual_finish_at = datetime.now(timezone.utc)
+            if task.actual_start_at is None:
+                # A milestone auto-completes from `planned` without ever
+                # passing through `in_progress`, so it has no start to
+                # inherit. Anchor it to its finish rather than leaving a
+                # finish with no start, which the actual-window CHECK would
+                # otherwise permit but variance could not interpret.
+                task.actual_start_at = task.actual_finish_at
+        # `cancelled` deliberately records no finish: the task never finished.
+
         clean_reason = (reason or "").strip() or f"Task moved from {before_status} to {target_status}."
         self.db.add(V2AuditEvent(
             actor_user_id=actor.id,
