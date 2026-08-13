@@ -12,9 +12,9 @@ artifact. Never conflate the two - see the plan's Key Technical Decisions.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -123,6 +123,9 @@ class Task(Base):
         CheckConstraint("task_kind is null or task_kind in ('work', 'approval_gate', 'milestone')", name="ck_v2_tasks_task_kind"),
         CheckConstraint(f"lifecycle_status in {TASK_LIFECYCLE_STATUSES!r}", name="ck_v2_tasks_lifecycle_status"),
         CheckConstraint("update_sla_hours is null or update_sla_hours > 0", name="ck_v2_tasks_update_sla_hours_positive"),
+        CheckConstraint("early_start_reason is null or actual_start_at is not null", name="ck_v2_tasks_early_start_reason_requires_start"),
+        CheckConstraint("actual_finish_at is null or actual_start_at is null or actual_finish_at >= actual_start_at", name="ck_v2_tasks_actual_finish_after_start"),
+        CheckConstraint("planned_end_date is null or planned_start_date is null or planned_end_date >= planned_start_date", name="ck_v2_tasks_planned_end_after_start"),
         Index("ix_v2_tasks_project_sequence", "project_id", "template_sequence"),
         Index("ix_v2_tasks_baseline", "baseline_id"),
         Index("ix_v2_tasks_project_status", "project_id", "lifecycle_status"),
@@ -157,6 +160,24 @@ class Task(Base):
     """Phase 3 U1: when set, a task not `completed`/`cancelled` whose most
     recent `TaskProgressUpdate` (or `created_at`, if none exists) is older
     than this many hours counts toward the `no_update` derived condition."""
+    planned_start_date: Mapped[date | None] = mapped_column(Date)
+    planned_end_date: Mapped[date | None] = mapped_column(Date)
+    """U5/U9: the baseline day offsets resolved against the project's start
+    date. `date`, not a timestamp - a planned day is a calendar concept with
+    no time-of-day, and `V2Project.start_date` it derives from is itself a
+    bare date. Null for a pre-activation task, which sits outside the
+    execution window. Never rewritten by actual execution: the immutable
+    baseline stays in `planned_start_day`/`planned_end_day`."""
+    actual_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_finish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """U5/U10: when work really began and ended, written by the lifecycle
+    transition. Instants rather than dates, matching every other timestamp
+    in this schema. `actual_start_at` is written once and never overwritten
+    when a rejected task reopens; `actual_finish_at` stays null for a
+    cancelled task, which never finished."""
+    early_start_reason: Mapped[str | None] = mapped_column(Text)
+    """U5/U14: why this task started ahead of its planned start date.
+    Required by the transition when the start is early; null otherwise."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
