@@ -54,6 +54,8 @@ from app.schemas.execution_tasks import (
     TaskVerificationOut,
     TaskVerificationSummaryOut,
 )
+from app.schemas.project_gate_decision import ProjectExternalApprovalOut, ProjectGateDecisionIn
+from app.services.project_gate_decision import ProjectGateDecisionService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
@@ -427,6 +429,38 @@ def approve_task(
         decided_by=approval.decided_by,
         decided_at=approval.decided_at,
         task=TaskOut.model_validate(task),
+    )
+
+
+@router.get("/{project_id}/external-approvals", response_model=list[ProjectExternalApprovalOut])
+def list_project_external_approvals(
+    project_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """U11: the execution-layer approvals for one project.
+
+    Distinct from `GET /{project_id}/external-gates` in `projects_v2.py`,
+    which reads the planning-layer gates and their Draft-time applicability
+    review. This one answers the runtime question - has the approval been
+    granted, does it still block, and which tasks does it cover - which is
+    what the Execution tab renders."""
+    return ProjectGateDecisionService(db).list_for_project(project_id, actor)
+
+
+@router.post(
+    "/{project_id}/external-approvals/{approval_id}/decision",
+    response_model=ProjectExternalApprovalOut,
+)
+def decide_project_external_approval(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    payload: ProjectGateDecisionIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectGateDecisionService(db).decide(
+        project_id, approval_id, payload.decision, actor, reason=payload.reason,
     )
 
 
