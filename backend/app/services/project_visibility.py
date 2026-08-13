@@ -32,9 +32,11 @@ from app.schemas.project_visibility import (
     OverdueTaskOut,
     ProjectVisibilitySummary,
     ReassignmentRequiredOut,
+    ScheduleVarianceOut,
     TaskRefOut,
 )
 from app.services.project_role_change import ProjectRoleChangeService
+from app.services.task_delay_variance import EARLY, LATE, NOT_MEASURED, ON_TIME, variance_for_task
 
 # Approval gates whose due date falls within this window (or has already
 # passed) count as "at risk" per R2's "approaching or past their due date
@@ -109,6 +111,7 @@ class ProjectVisibilityService:
             pending_verifications=[_task_ref(t) for t in pending_verifications],
             pending_approvals=[_task_ref(t) for t in pending_approvals],
             approval_gates_at_risk=approval_gates_at_risk,
+            schedule_variance=self._schedule_variance(tasks, now),
             reassignment_required=[ReassignmentRequiredOut(**row) for row in reassignment],
         )
 
@@ -133,14 +136,48 @@ class ProjectVisibilityService:
         return [t for t in tasks if t.id in delayed_task_ids]
 
     def _overdue_tasks(self, tasks: list[Task], now: datetime) -> list[OverdueTaskOut]:
+        """Tasks still in flight past the day the baseline said they'd finish.
+
+        This used to key on `Task.due_at`, which nothing in the codebase ever
+        wrote, so the list was structurally always empty and the dashboard's
+        Overdue tile reported zero on every project regardless of how late it
+        actually ran. `planned_end_date` is written for every execution task
+        at activation, so the signal is now real.
+        """
+        today = now.date()
         return [
             OverdueTaskOut(
                 id=t.id, original_code=t.original_code, title=t.title, lifecycle_status=t.lifecycle_status,
-                due_at=t.due_at,
+                due_on=t.planned_end_date,
             )
             for t in tasks
-            if t.due_at is not None and _aware(t.due_at) < now and t.lifecycle_status not in TERMINAL_STATUSES
+            if t.planned_end_date is not None
+            and t.planned_end_date < today
+            and t.lifecycle_status not in TERMINAL_STATUSES
         ]
+
+    def _schedule_variance(self, tasks: list[Task], now: datetime) -> ScheduleVarianceOut:
+        """Roll each task's variance up into the counts a dashboard leads with.
+
+        Delegates to U13's `variance_for_task` rather than re-deriving the
+        rule, so this surface can never disagree with the timeline or the
+        per-task figure about whether a task ran late.
+        """
+        today = now.date()
+        counts = {EARLY: 0, ON_TIME: 0, LATE: 0, NOT_MEASURED: 0}
+        worst_late_days = 0
+        for task in tasks:
+            variance = variance_for_task(task, today=today)
+            counts[variance.status] = counts.get(variance.status, 0) + 1
+            if variance.is_late:
+                worst_late_days = max(worst_late_days, variance.days)
+        return ScheduleVarianceOut(
+            early_count=counts[EARLY],
+            on_time_count=counts[ON_TIME],
+            late_count=counts[LATE],
+            not_measured_count=counts[NOT_MEASURED],
+            worst_late_days=worst_late_days,
+        )
 
     def _no_update_tasks(self, project_id: uuid.UUID, tasks: list[Task], now: datetime) -> list[NoUpdateTaskOut]:
         candidates = [t for t in tasks if t.update_sla_hours is not None and t.lifecycle_status not in TERMINAL_STATUSES]

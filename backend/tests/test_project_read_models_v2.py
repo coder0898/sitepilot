@@ -275,7 +275,7 @@ class ProjectReadModelTests(unittest.TestCase):
     def test_attention_ranks_overdue_above_decisions(self):
         project_id = self.add_project()
         past = datetime.now(timezone.utc) - timedelta(days=3)
-        self.add_task(project_id, "T001", 1, "Civil Work", "in_progress", due_at=past)
+        self.add_task(project_id, "T001", 1, "Civil Work", "in_progress", planned_end_date=past.date())
         self.add_task(project_id, "T002", 2, "Civil Work", "approval_pending")
 
         items = self.client.get("/api/v2/projects/attention").json()

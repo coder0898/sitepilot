@@ -146,7 +146,7 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
     def test_blocked_and_overdue_can_apply_to_the_same_task_simultaneously(self):
         now = datetime.now(timezone.utc)
         with self.Session.begin() as session:
-            task = self.make_task(session, "T001", "in_progress", due_at=now - timedelta(days=1))
+            task = self.make_task(session, "T001", "in_progress", planned_end_date=(now - timedelta(days=1)).date())
             session.flush()
             session.add(TaskBlocker(
                 task_id=task.id, project_id=self.project_id, type="material", description="Waiting on rebar.",
@@ -163,7 +163,7 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         with self.Session.begin() as session:
             task = self.make_task(
-                session, "T001", "in_progress", due_at=now - timedelta(days=1),
+                session, "T001", "in_progress", planned_end_date=(now - timedelta(days=1)).date(),
                 update_sla_hours=24, created_at=now - timedelta(hours=48),
             )
             session.flush()
@@ -199,13 +199,83 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
         summary = self.summarize()
         self.assertEqual(summary.blocked_tasks, [])
 
-    def test_completed_task_never_counts_as_overdue_even_past_due_at(self):
+    def test_completed_task_never_counts_as_overdue_even_past_its_planned_end(self):
         now = datetime.now(timezone.utc)
         with self.Session.begin() as session:
-            self.make_task(session, "T001", "completed", due_at=now - timedelta(days=5))
+            self.make_task(session, "T001", "completed", planned_end_date=(now - timedelta(days=5)).date())
 
         summary = self.summarize()
         self.assertEqual(summary.overdue_tasks, [])
+
+    # ---- U17: overdue from the real schedule, and variance roll-up --------
+
+    def test_overdue_derives_from_the_planned_end_date(self):
+        """Overdue used to key on `due_at`, which nothing ever wrote, so this
+        list was structurally always empty on every project."""
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", "in_progress", planned_end_date=(now - timedelta(days=3)).date())
+
+        summary = self.summarize()
+        self.assertEqual(len(summary.overdue_tasks), 1)
+        self.assertEqual(summary.overdue_tasks[0].original_code, "T001")
+        self.assertEqual(summary.overdue_tasks[0].due_on, (now - timedelta(days=3)).date())
+
+    def test_a_task_still_inside_its_planned_window_is_not_overdue(self):
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", "in_progress", planned_end_date=(now + timedelta(days=2)).date())
+
+        self.assertEqual(self.summarize().overdue_tasks, [])
+
+    def test_an_undated_task_is_never_overdue(self):
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", "in_progress")
+
+        self.assertEqual(self.summarize().overdue_tasks, [])
+
+    def test_schedule_variance_separates_early_on_time_and_late(self):
+        now = datetime.now(timezone.utc)
+        planned = (now - timedelta(days=10)).date()
+        with self.Session.begin() as session:
+            self.make_task(
+                session, "T001", "completed",
+                planned_end_date=planned, actual_finish_at=now - timedelta(days=12),
+            )
+            self.make_task(
+                session, "T002", "completed",
+                planned_end_date=planned, actual_finish_at=now - timedelta(days=10),
+            )
+            self.make_task(
+                session, "T003", "completed",
+                planned_end_date=planned, actual_finish_at=now - timedelta(days=6),
+            )
+
+        variance = self.summarize().schedule_variance
+        self.assertEqual(variance.early_count, 1)
+        self.assertEqual(variance.on_time_count, 1)
+        self.assertEqual(variance.late_count, 1)
+        self.assertEqual(variance.worst_late_days, 4)
+
+    def test_schedule_variance_does_not_measure_a_cancelled_task(self):
+        """A cancelled task never finished, so it has no variance to report -
+        measuring it against today would accrue delay forever."""
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", "cancelled", planned_end_date=(now - timedelta(days=30)).date())
+
+        variance = self.summarize().schedule_variance
+        self.assertEqual(variance.late_count, 0)
+        self.assertEqual(variance.not_measured_count, 1)
+
+    def test_schedule_variance_is_all_not_measured_on_an_undated_project(self):
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", "in_progress")
+            self.make_task(session, "T002", "planned")
+
+        variance = self.summarize().schedule_variance
+        self.assertEqual(variance.not_measured_count, 2)
+        self.assertEqual(variance.worst_late_days, 0)
 
     def test_no_update_task_without_progress_updates_uses_created_at(self):
         now = datetime.now(timezone.utc)

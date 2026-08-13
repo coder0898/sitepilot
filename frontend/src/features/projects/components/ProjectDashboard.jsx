@@ -76,6 +76,21 @@ export function ProjectDashboard({ project }) {
       <StatTile label="No update" value={summary.no_update_tasks.length} tone={summary.no_update_tasks.length ? "amber" : "slate"}/>
     </div>
 
+    {/* U17: how finished work landed against the frozen baseline. Early is
+        shown rather than folded into "not late" - a task delivered ahead of
+        plan is a schedule saving, and hiding it would lose every gain the
+        project made. */}
+    {summary.schedule_variance && <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <StatTile label="Finished early" value={summary.schedule_variance.early_count} tone={summary.schedule_variance.early_count ? "emerald" : "slate"}/>
+      <StatTile label="On time" value={summary.schedule_variance.on_time_count} tone="slate"/>
+      <StatTile label="Finished late" value={summary.schedule_variance.late_count} tone={summary.schedule_variance.late_count ? "amber" : "slate"}/>
+      <StatTile
+        label="Worst overrun"
+        value={summary.schedule_variance.worst_late_days ? `${summary.schedule_variance.worst_late_days}d` : "0"}
+        tone={summary.schedule_variance.worst_late_days ? "rose" : "slate"}
+      />
+    </div>}
+
     <TaskListCard title="Pending verifications" icon={Clock3} tone="amber" items={summary.pending_verifications}/>
     <TaskListCard title="Pending approvals" icon={Clock3} tone="amber" items={summary.pending_approvals}/>
     <TaskListCard
@@ -84,7 +99,7 @@ export function ProjectDashboard({ project }) {
     />
     <TaskListCard
       title="Overdue tasks" icon={AlertTriangle} tone="rose" items={summary.overdue_tasks}
-      renderMeta={item => `Due ${new Date(item.due_at).toLocaleDateString()}`}
+      renderMeta={item => `Planned finish ${new Date(item.due_on).toLocaleDateString()}`}
     />
     <TaskListCard
       title="No recent update" icon={Clock3} tone="amber" items={summary.no_update_tasks}

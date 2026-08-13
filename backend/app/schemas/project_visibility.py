@@ -9,7 +9,7 @@ instant.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -22,7 +22,30 @@ class TaskRefOut(BaseModel):
 
 
 class OverdueTaskOut(TaskRefOut):
-    due_at: datetime
+    due_on: date
+    """The task's planned end date, resolved from the baseline at activation.
+
+    Overdue used to derive from `Task.due_at`, a timestamp nothing in the
+    codebase ever wrote, so this list was structurally always empty and the
+    dashboard's Overdue tile read zero on every project. It now derives from
+    `planned_end_date`, which activation writes for every execution task -
+    hence a date rather than an instant.
+    """
+
+
+class ScheduleVarianceOut(BaseModel):
+    """How the project's finished work landed against its frozen baseline.
+
+    Early is reported separately rather than folded into "not late": a task
+    delivered ahead of plan is a schedule saving, and collapsing it into zero
+    would hide every gain the project made.
+    """
+
+    early_count: int
+    on_time_count: int
+    late_count: int
+    not_measured_count: int
+    worst_late_days: int
 
 
 class NoUpdateTaskOut(TaskRefOut):
@@ -60,5 +83,7 @@ class ProjectVisibilitySummary(BaseModel):
     pending_verifications: list[TaskRefOut]
     pending_approvals: list[TaskRefOut]
     approval_gates_at_risk: list[ApprovalGateAtRiskOut]
+
+    schedule_variance: ScheduleVarianceOut
 
     reassignment_required: list[ReassignmentRequiredOut]
