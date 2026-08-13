@@ -130,6 +130,78 @@ describe("TaskExecutionBoard", () => {
     expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
   });
 
+  // U22: the evidence-required flag has been on the payload since the task
+  // API existed and was rendered nowhere, so the rule was invisible here.
+  describe("evidence-required tasks", () => {
+    const noteOnlyUpdate = { id: "pu1", note: "Framing done.", created_at: "2026-08-02T00:00:00Z", evidence: [] };
+    const fileUpdate = { id: "pu2", note: "Framing done.", created_at: "2026-08-02T00:00:00Z", evidence: [{ id: "ev1", file_id: "f1", original_filename: "framing.jpg" }] };
+    const readyToSubmit = extra => ({
+      ...detail, lifecycle_status: "in_progress", evidence_required: true,
+      progress_updates: [noteOnlyUpdate], verifications: [], ...extra,
+    });
+
+    it("flags an evidence-required task on its row", async () => {
+      taskExecutionApi.list.mockResolvedValue([{ ...baseTask, evidence_required: true }]);
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      expect(await screen.findByText("Evidence required")).toBeInTheDocument();
+    });
+
+    it("does not flag a task that needs no evidence", async () => {
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      await screen.findByText("Mobilise site");
+      expect(screen.queryByText("Evidence required")).not.toBeInTheDocument();
+    });
+
+    it("blocks submit when the only update carries no file, and says why", async () => {
+      taskExecutionApi.detail.mockResolvedValue(readyToSubmit());
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByRole("button", { name: "Submit for review" })).toBeDisabled();
+      expect(screen.getByText(/requires evidence/i)).toBeInTheDocument();
+    });
+
+    it("allows submit once an update carries a file", async () => {
+      taskExecutionApi.detail.mockResolvedValue(readyToSubmit({ progress_updates: [fileUpdate] }));
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByRole("button", { name: "Submit for review" })).toBeEnabled();
+      expect(screen.queryByText(/requires evidence/i)).not.toBeInTheDocument();
+    });
+
+    it("still allows a note-only submit when evidence is not required", async () => {
+      taskExecutionApi.detail.mockResolvedValue(readyToSubmit({ evidence_required: false }));
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByRole("button", { name: "Submit for review" })).toBeEnabled();
+    });
+
+    it("ignores evidence already spent on a prior decision", async () => {
+      // The file sits on an update a verification already decided, so it
+      // cannot justify this submission - the same trap the progress rule has.
+      taskExecutionApi.detail.mockResolvedValue(readyToSubmit({
+        progress_updates: [fileUpdate, noteOnlyUpdate],
+        verifications: [{ id: "v1", submission_update_id: "pu2", decision: "rejected", verified_at: "2026-08-03T00:00:00Z" }],
+      }));
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByRole("button", { name: "Submit for review" })).toBeDisabled();
+      expect(screen.getByText(/requires evidence/i)).toBeInTheDocument();
+    });
+
+    it("asks for progress rather than evidence when there is no fresh update at all", async () => {
+      taskExecutionApi.detail.mockResolvedValue(readyToSubmit({ progress_updates: [] }));
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByText(/log a new progress update/i)).toBeInTheDocument();
+      expect(screen.queryByText(/requires evidence/i)).not.toBeInTheDocument();
+    });
+  });
+
   // U6: authority follows membership of THIS project, not the global role.
   // Every case below used to render a control the backend answers with 403.
   it("hides the cancel control from a PM who is not a member of the project", async () => {

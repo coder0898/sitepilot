@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, RefreshCw, ShieldAlert } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, Paperclip, RefreshCw, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
@@ -120,14 +120,35 @@ function forwardTargetsFor(detail, user, roles) {
 // SAME 1 progress update, so "updates <= verifications" (1 <= 2) wrongly
 // stayed true forever even after a genuinely new update was logged.
 // Comparing the actual id set removes that whole class of mismatch.
-function needsFreshProgressUpdate(detail) {
+// Returns null when the task can be submitted for review, otherwise which
+// precondition is unmet - so the board can name what is missing instead of
+// showing a bare disabled button.
+//
+// "progress": the backend's own rule, mirrored exactly. A progress update
+// counts as spent once some TaskVerification decision names it as
+// `submission_update_id`; submission needs at least one that is not.
+// Comparing the id set rather than counts matters because the SAME update can
+// be decided on more than once - a task rejected twice leaves two decisions
+// pointing at one update, and a count comparison stays wrongly true forever.
+//
+// "evidence": U22. A task authored as evidence-required needs a file on the
+// update it is submitting, not merely a note. `evidence_required` has been
+// carried on the task payload since the API existed and was rendered nowhere,
+// so the flag was invisible and the rule unenforced on this surface.
+function submitBlocker(detail) {
   const isWorkKind = detail.task_kind !== "milestone" && detail.task_kind !== "approval_gate";
-  if (!isWorkKind) return false;
-  const updates = detail.progress_updates || [];
-  if (!updates.length) return true;
+  if (!isWorkKind) return null;
   const consumedIds = new Set((detail.verifications || []).map(v => v.submission_update_id));
-  return updates.every(u => consumedIds.has(u.id));
+  const unreviewed = (detail.progress_updates || []).filter(update => !consumedIds.has(update.id));
+  if (!unreviewed.length) return "progress";
+  if (detail.evidence_required && !unreviewed.some(update => (update.evidence || []).length > 0)) return "evidence";
+  return null;
 }
+
+const SUBMIT_BLOCKER_MESSAGE = {
+  progress: "Log a new progress update (a note and/or evidence) below before submitting for review.",
+  evidence: "This task requires evidence. Attach a photo or PDF to a new progress update below before submitting for review.",
+};
 
 function plannedDayLabel(task) {
   if (!task.planned_start_day) return "Pre-activation";
@@ -230,6 +251,7 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
 
   const forwardTargets = forwardTargetsFor(detail, user, roles);
   const showCancel = canCancel(user, roles) && CANCELLABLE_STATUSES.includes(detail.lifecycle_status);
+  const blocker = submitBlocker(detail);
   // Terminal = no further outgoing transitions per task_lifecycle.py's
   // ALLOWED_TRANSITIONS (both `completed` and `cancelled` map to an empty
   // set) - none of the execution controls below apply anymore. `rejected`
@@ -256,11 +278,11 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
         <h4 className="text-xs font-black uppercase tracking-wide text-blue-700">Status</h4>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {forwardTargets.map(target => {
-            const needsProgress = target === "submitted" && needsFreshProgressUpdate(detail);
-            return <Button key={target} size="sm" loading={transitioning === target} disabled={needsProgress} title={needsProgress ? "Log a new progress update below first." : undefined} onClick={() => transition(target)}>{TRANSITION_LABEL[target] || target}</Button>;
+            const blocked = target === "submitted" && blocker !== null;
+            return <Button key={target} size="sm" loading={transitioning === target} disabled={blocked} title={blocked ? SUBMIT_BLOCKER_MESSAGE[blocker] : undefined} onClick={() => transition(target)}>{TRANSITION_LABEL[target] || target}</Button>;
           })}
         </div>
-        {forwardTargets.includes("submitted") && needsFreshProgressUpdate(detail) && <p className="mt-2 text-xs font-bold text-blue-800">Log a new progress update (a note and/or evidence) below before submitting for review.</p>}
+        {forwardTargets.includes("submitted") && blocker && <p className="mt-2 text-xs font-bold text-blue-800">{SUBMIT_BLOCKER_MESSAGE[blocker]}</p>}
         {showCancel && <div className="mt-3 border-t border-blue-100 pt-3"><CancelControl projectId={projectId} task={detail} onChanged={refreshAll}/></div>}
       </section>}
 
@@ -379,6 +401,7 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
           <span className="min-w-0 flex-1"><strong className="block truncate text-sm font-black text-slate-950">{task.title}</strong><span className="mt-0.5 block text-xs text-slate-500">{[task.phase, task.category].filter(Boolean).join(" / ") || plannedDayLabel(task)}</span></span>
           {task.approval?.task_class === "class_a" && <Pill tone="yellow">Class A</Pill>}
           {task.approval?.approval_required && <Pill tone="orange">Approval required</Pill>}
+          {task.evidence_required && <Pill tone="violet"><Paperclip size={12}/> Evidence required</Pill>}
           {task.open_blocker_count > 0 && <Pill tone="orange"><ShieldAlert size={12}/> {task.open_blocker_count} blocker{task.open_blocker_count === 1 ? "" : "s"}</Pill>}
           {task.active_support_count > 0 && <Pill tone="blue"><CircleUserRound size={12}/> {task.active_support_count} support</Pill>}
           <Pill tone={STATUS_TONE[task.lifecycle_status] || "gray"}>{task.lifecycle_status.replaceAll("_", " ")}</Pill>
