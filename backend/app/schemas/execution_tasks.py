@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -256,6 +256,12 @@ class TaskListItemOut(BaseModel):
     schedule_classification: str
     planned_start_day: int | None
     planned_end_day: int | None
+    # The resolved calendar dates alongside the baseline day offsets. The
+    # board needs the planned start to tell a user that a start would be
+    # early; re-deriving it client-side from the offsets would put a second
+    # copy of the derivation rule in the frontend.
+    planned_start_date: date | None
+    planned_end_date: date | None
     phase: str | None
     category: str | None
     evidence_required: bool
@@ -337,6 +343,8 @@ class TaskDetailOut(BaseModel):
     schedule_classification: str
     planned_start_day: int | None
     planned_end_day: int | None
+    planned_start_date: date | None
+    planned_end_date: date | None
     phase: str | None
     category: str | None
     evidence_required: bool

@@ -495,6 +495,38 @@ class TaskLifecycleService:
                     "Log a new progress update (a note and/or evidence) before submitting this task for review.",
                 )
 
+        # U14: starting ahead of plan is permitted, but never silently. The
+        # reason is validated here - before any mutation - so a refused early
+        # start leaves the task exactly as it was, the same shape as the
+        # cancellation path above.
+        #
+        # Only the FIRST start can be early: "early" is a fact about when work
+        # began, and a rejected task reopening through `in_progress` resumes
+        # work that already started. The `actual_start_at is None` guard is the
+        # same one U10's actuals block below writes under, so the reason and
+        # the actual start it must accompany always land in one write - which
+        # is what ck_v2_tasks_early_start_reason_requires_start demands.
+        #
+        # Deliberately no authority check: who may authorise an early start is
+        # an open question owned by management (R17/Q3). This captures the
+        # reason without narrowing who may act.
+        early_start_reason: str | None = None
+        if (
+            target_status == "in_progress"
+            and task.actual_start_at is None
+            and task.planned_start_date is not None
+            # UTC to match the clock U10 stamps actual_start_at from, so the
+            # date compared against the plan is the date that gets recorded.
+            and datetime.now(timezone.utc).date() < task.planned_start_date
+        ):
+            early_start_reason = (reason or "").strip()
+            if not early_start_reason:
+                raise HTTPException(
+                    422,
+                    "A reason is required to start a task before its planned start date "
+                    f"({task.planned_start_date.isoformat()}).",
+                )
+
         before_status = current_status
         task.lifecycle_status = target_status
 
@@ -508,6 +540,12 @@ class TaskLifecycleService:
             # `in_progress` again, and the date work actually began must not
             # be overwritten by the date it resumed.
             task.actual_start_at = datetime.now(timezone.utc)
+            if early_start_reason:
+                # Same write as the status and the actual start, never a
+                # second pass: the CHECK constraint only permits a reason
+                # where actual_start_at is set, so an update ordered after
+                # this block would have nothing to attach to.
+                task.early_start_reason = early_start_reason
         elif target_status == "completed":
             task.actual_finish_at = datetime.now(timezone.utc)
             if task.actual_start_at is None:
@@ -520,6 +558,13 @@ class TaskLifecycleService:
         # `cancelled` deliberately records no finish: the task never finished.
 
         clean_reason = (reason or "").strip() or f"Task moved from {before_status} to {target_status}."
+        after_json: dict[str, str] = {"lifecycle_status": target_status}
+        if early_start_reason:
+            # Carried in the audit event as well as on the row, so the trail
+            # explains the early start at the moment it happened - the column
+            # alone says only that some start was early, not which transition
+            # it was given for.
+            after_json["early_start_reason"] = early_start_reason
         self.db.add(V2AuditEvent(
             actor_user_id=actor.id,
             action="TASK_STATUS_CHANGED",
@@ -528,7 +573,7 @@ class TaskLifecycleService:
             project_id=project.id,
             source="portal",
             before_json={"lifecycle_status": before_status},
-            after_json={"lifecycle_status": target_status},
+            after_json=after_json,
             reason=clean_reason,
         ))
         self.db.flush()
