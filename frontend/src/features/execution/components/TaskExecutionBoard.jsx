@@ -1,8 +1,9 @@
-import { ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, Paperclip, RefreshCw, ShieldAlert } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronUp, CircleUserRound, ClipboardList, GitBranch, Paperclip, RefreshCw, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
-import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
+import { Button, EmptyState, Field, LoadingSpinner, Modal, Pill, Textarea } from "../../../components/ui";
+import { formatDateShort, todayIso } from "../../../utils/format";
 import { TaskApprovalSummary } from "./TaskApprovalSummary";
 import { TaskBlockerDelayPanel } from "./TaskBlockerDelayPanel";
 import { TaskDecisionModal } from "./TaskDecisionModal";
@@ -156,6 +157,31 @@ function plannedDayLabel(task) {
   return `Day ${task.planned_start_day}`;
 }
 
+// U23: whether starting this task now would be starting it ahead of plan.
+// Mirrors task_lifecycle.py's own early-start condition exactly - target
+// `in_progress`, no actual start recorded yet, a planned start date exists,
+// and today is before it - because the backend REFUSES the transition
+// without a reason. Getting this wrong in either direction is visible: too
+// eager and we demand a reason the backend does not want, too lax and the
+// user is refused with no way to answer.
+//
+// `todayIso()` is UTC, matching the clock the backend compares against and
+// stamps `actual_start_at` from. A local-midnight "today" would disagree
+// with the server for several hours a day either side of the boundary.
+//
+// The date comes from `planned_start_date` on the payload, never re-derived
+// from the day offsets: U9 owns that conversion on the backend, and a second
+// copy of the rule here would drift from it.
+function isEarlyStart(task) {
+  if (!task?.planned_start_date) return false;
+  // Only the FIRST start can be early. A rejected task reopening through
+  // `in_progress` is resuming work that already began, not starting ahead of
+  // plan - the backend applies the same `actual_start_at is None` guard, so
+  // re-prompting here would ask for a reason it would then ignore.
+  if (task.actual_start_at) return false;
+  return todayIso() < task.planned_start_date;
+}
+
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -198,11 +224,74 @@ function CancelControl({ projectId, task, onChanged }) {
   </div>;
 }
 
+// U23: collects the reason the backend requires before an early start,
+// rather than letting the user click Start and be refused with a 422 they
+// cannot answer. Follows TaskDecisionModal's shape - required free text,
+// submit gated on it being non-empty, in-flight disabled state, and the
+// server's own message inline on failure.
+//
+// `onConfirm` deliberately does NOT swallow its error: a failed early start
+// must leave the task untouched and show why here, inside the modal the user
+// is still looking at, instead of closing and surfacing it on the panel
+// behind.
+function EarlyStartModal({ task, onConfirm, onClose }) {
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event) {
+    event.preventDefault();
+    const cleanReason = reason.trim();
+    if (!cleanReason) {
+      setError("A reason is required to start this task before its planned start date.");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      await onConfirm(cleanReason);
+    } catch (caught) {
+      setError(caught?.message || "This task could not be started early.");
+      // Only on failure: a success unmounts this modal, and the task is
+      // already gone from under us by the time the refresh resolves.
+      setSubmitting(false);
+    }
+  }
+
+  return <Modal
+    title="Start this task early"
+    subtitle={`${task.original_code} - ${task.title}`}
+    onClose={() => { if (!submitting) onClose(); }}
+    className="sm:max-w-xl"
+  >
+    <form className="grid gap-4" onSubmit={submit}>
+      <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
+        This task is planned to start on {formatDateShort(task.planned_start_date)}. Starting it now is ahead of the baseline, so it needs a reason for the record.
+      </p>
+      <Field label="Reason for starting early (required)">
+        <Textarea
+          value={reason}
+          onChange={event => setReason(event.target.value)}
+          required
+          placeholder="Explain why this task is starting ahead of its planned date"
+        />
+      </Field>
+      {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error}</div>}
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Button type="button" variant="secondary" disabled={submitting} onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={!reason.trim()} loading={submitting}>Confirm early start</Button>
+      </div>
+    </form>
+  </Modal>;
+}
+
 function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [transitioning, setTransitioning] = useState("");
+  // U23: open only while the early-start reason is being collected.
+  const [earlyStartOpen, setEarlyStartOpen] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -237,6 +326,22 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
     }
   }
 
+  // U23: the same transition as any other, carrying the reason the backend
+  // demands. Errors are deliberately NOT caught here - EarlyStartModal shows
+  // them inline and stays open, so a refused start leaves the task exactly as
+  // it was with the reason still in the box.
+  async function startEarly(reason) {
+    setTransitioning("in_progress");
+    setError("");
+    try {
+      await taskExecutionApi.transitionStatus(projectId, task.id, { target_status: "in_progress", reason });
+      setEarlyStartOpen(false);
+      await refreshAll();
+    } finally {
+      setTransitioning("");
+    }
+  }
+
   async function downloadEvidence(fileId) {
     try {
       const { blob, filename } = await taskExecutionApi.downloadEvidence(projectId, task.id, fileId);
@@ -252,6 +357,9 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
   const forwardTargets = forwardTargetsFor(detail, user, roles);
   const showCancel = canCancel(user, roles) && CANCELLABLE_STATUSES.includes(detail.lifecycle_status);
   const blocker = submitBlocker(detail);
+  // U23: computed from the detail payload, which carries the planned dates
+  // and the actuals since U14/U15 put them there.
+  const earlyStart = isEarlyStart(detail);
   // Terminal = no further outgoing transitions per task_lifecycle.py's
   // ALLOWED_TRANSITIONS (both `completed` and `cancelled` map to an empty
   // set) - none of the execution controls below apply anymore. `rejected`
@@ -279,12 +387,27 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {forwardTargets.map(target => {
             const blocked = target === "submitted" && blocker !== null;
-            return <Button key={target} size="sm" loading={transitioning === target} disabled={blocked} title={blocked ? SUBMIT_BLOCKER_MESSAGE[blocker] : undefined} onClick={() => transition(target)}>{TRANSITION_LABEL[target] || target}</Button>;
+            // U23: an early start is relabelled and routed through the
+            // reason modal instead of transitioning straight away.
+            const isEarly = target === "in_progress" && earlyStart;
+            return <Button
+              key={target}
+              size="sm"
+              loading={transitioning === target}
+              disabled={blocked}
+              title={blocked ? SUBMIT_BLOCKER_MESSAGE[blocker] : undefined}
+              onClick={() => (isEarly ? setEarlyStartOpen(true) : transition(target))}
+            >{isEarly ? "Start work early" : (TRANSITION_LABEL[target] || target)}</Button>;
           })}
         </div>
+        {forwardTargets.includes("in_progress") && earlyStart && <p className="mt-2 flex items-center gap-1.5 text-xs font-bold text-amber-700">
+          <CalendarClock size={13}/> Planned to start {formatDateShort(detail.planned_start_date)} - starting now needs a reason.
+        </p>}
         {forwardTargets.includes("submitted") && blocker && <p className="mt-2 text-xs font-bold text-blue-800">{SUBMIT_BLOCKER_MESSAGE[blocker]}</p>}
         {showCancel && <div className="mt-3 border-t border-blue-100 pt-3"><CancelControl projectId={projectId} task={detail} onChanged={refreshAll}/></div>}
       </section>}
+
+      {earlyStartOpen && <EarlyStartModal task={detail} onConfirm={startEarly} onClose={() => setEarlyStartOpen(false)}/>}
 
       <TaskDecisionModal projectId={projectId} task={detail} user={user} onDecided={refreshAll}/>
 

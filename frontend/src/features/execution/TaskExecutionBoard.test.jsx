@@ -423,4 +423,98 @@ describe("TaskExecutionBoard", () => {
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
     await waitFor(() => expect(screen.getByText("Mobilise site")).toBeInTheDocument());
   });
+
+  // U23: the backend has refused an unexplained early start since U14, and
+  // this surface had no idea - the user clicked Start and got a 422 they had
+  // no way to answer. Dates are computed relative to today rather than
+  // hardcoded, because "early" is a fact about now: a fixed date would stop
+  // being in the future and quietly invert these tests.
+  describe("starting a task ahead of its planned date", () => {
+    const isoOffsetDays = days => {
+      const date = new Date();
+      date.setUTCDate(date.getUTCDate() + days);
+      return date.toISOString().slice(0, 10);
+    };
+    const startable = extra => ({
+      ...detail, lifecycle_status: "ready", actual_start_at: null, ...extra,
+    });
+    const openDetail = async () => {
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+    };
+
+    it("relabels the start control and names the planned date when the start would be early", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: isoOffsetDays(10) }));
+      await openDetail();
+      expect(screen.getByRole("button", { name: "Start work early" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+      expect(screen.getByText(/planned to start/i)).toBeInTheDocument();
+    });
+
+    it("shows the ordinary start control once the planned date has passed", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: isoOffsetDays(-3) }));
+      await openDetail();
+      expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
+      expect(screen.queryByText(/planned to start/i)).not.toBeInTheDocument();
+    });
+
+    it("treats a task with no planned start date as an ordinary start", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: null }));
+      await openDetail();
+      expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
+      expect(screen.queryByText(/planned to start/i)).not.toBeInTheDocument();
+    });
+
+    // Mirrors the backend's `actual_start_at is None` guard: a rejected task
+    // reopening through in_progress is resuming work that already began, so
+    // it is not starting ahead of plan and must not be re-prompted.
+    it("does not treat resumed work as an early start", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({
+        lifecycle_status: "rejected",
+        planned_start_date: isoOffsetDays(10),
+        actual_start_at: "2026-08-01T09:00:00Z",
+      }));
+      await openDetail();
+      expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
+      expect(screen.queryByText(/planned to start/i)).not.toBeInTheDocument();
+    });
+
+    it("cannot confirm an early start without a reason", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: isoOffsetDays(10) }));
+      await openDetail();
+      fireEvent.click(screen.getByRole("button", { name: "Start work early" }));
+      const confirm = await screen.findByRole("button", { name: "Confirm early start" });
+      expect(confirm).toBeDisabled();
+      fireEvent.change(screen.getByPlaceholderText(/explain why this task is starting ahead/i), { target: { value: "   " } });
+      expect(confirm).toBeDisabled();
+      expect(taskExecutionApi.transitionStatus).not.toHaveBeenCalled();
+    });
+
+    it("sends the reason with the transition once one is given", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: isoOffsetDays(10) }));
+      taskExecutionApi.transitionStatus.mockResolvedValue({});
+      await openDetail();
+      fireEvent.click(screen.getByRole("button", { name: "Start work early" }));
+      fireEvent.change(await screen.findByPlaceholderText(/explain why this task is starting ahead/i), { target: { value: "Crew freed up early." } });
+      fireEvent.click(screen.getByRole("button", { name: "Confirm early start" }));
+      await waitFor(() => expect(taskExecutionApi.transitionStatus).toHaveBeenCalledWith(
+        "p1", "t1", { target_status: "in_progress", reason: "Crew freed up early." },
+      ));
+    });
+
+    it("shows a refused early start inline and leaves the task untouched", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: isoOffsetDays(10) }));
+      taskExecutionApi.transitionStatus.mockRejectedValue(new Error("A reason is required to start a task before its planned start date."));
+      await openDetail();
+      fireEvent.click(screen.getByRole("button", { name: "Start work early" }));
+      fireEvent.change(await screen.findByPlaceholderText(/explain why this task is starting ahead/i), { target: { value: "Crew freed up early." } });
+      fireEvent.click(screen.getByRole("button", { name: "Confirm early start" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(/a reason is required/i);
+      // The modal stays open with the reason still in it, and nothing was
+      // refetched - the task is exactly as it was.
+      expect(screen.getByRole("button", { name: "Confirm early start" })).toBeInTheDocument();
+      expect(taskExecutionApi.list).toHaveBeenCalledTimes(1);
+    });
+  });
 });
