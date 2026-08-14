@@ -20,8 +20,16 @@ from app.project_models import (
     V2Project,
     V2ProjectExternalGate,
     V2ProjectExternalGateApplicabilityDecision,
+    V2ProjectExternalGateTask,
     V2ProjectMembership,
     V2ProjectTask,
+)
+from app.execution_models import (
+    BaselineTask,
+    ProjectBaseline,
+    ProjectExternalApproval,
+    ProjectExternalApprovalTask,
+    Task,
 )
 from app.routes.projects_v2 import router
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateTask, V2TemplateVersion
@@ -63,8 +71,17 @@ class ProjectGateApplicabilityTests(unittest.TestCase):
             V2ProjectMembership.__table__,
             V2ProjectTask.__table__,
             V2ProjectExternalGate.__table__,
+            V2ProjectExternalGateTask.__table__,
             V2ProjectExternalGateApplicabilityDecision.__table__,
             V2AuditEvent.__table__,
+            # Deciding a gate on an ACTIVE project now instantiates its
+            # runtime approval in the same transaction, so this harness needs
+            # the execution layer that instantiation reads and writes.
+            ProjectBaseline.__table__,
+            BaselineTask.__table__,
+            Task.__table__,
+            ProjectExternalApproval.__table__,
+            ProjectExternalApprovalTask.__table__,
         ]
         for table in tables:
             table.create(self.engine)
@@ -170,6 +187,7 @@ class ProjectGateApplicabilityTests(unittest.TestCase):
             session.flush()
             self.project_id = project.id
             self.gate_id = gate.id
+            self.template_version_id = version.id
         return users
 
     def decide(self, decision, reason=None):
@@ -238,19 +256,98 @@ class ProjectGateApplicabilityTests(unittest.TestCase):
                 self.actor = self.users[role]
                 self.assertEqual(self.decide("not_applicable", "Denied").status_code, 403)
 
-    def test_active_project_rejected_and_gate_tasks_or_template_untouched(self):
+    def test_deciding_on_an_active_project_leaves_tasks_and_template_untouched(self):
+        """Applicability used to be Draft-only, which left a one-way door:
+        activation never required the gates to be reviewed, so a project could
+        go live with every gate `pending_review` and then nobody could ever
+        decide them - and since approvals are instantiated only from
+        APPLICABLE gates, such a project could never have an external approval
+        at all. The decision is now permitted on an active project; what must
+        still never happen is this decision reaching back into the template or
+        the project's task applicability.
+        """
         with self.Session.begin() as session:
             session.get(V2Project, self.project_id).status = "active"
-        response = self.decide("applicable", "Attempt")
-        self.assertEqual(response.status_code, 409, response.text)
+
+        response = self.decide("applicable", "Confirmed on site")
+        self.assertEqual(response.status_code, 200, response.text)
+
         with self.Session() as session:
             gate = session.get(V2ProjectExternalGate, self.gate_id)
             source = session.get(V2TemplateExternalGate, gate.template_gate_id)
-            self.assertEqual(gate.applicability_state, "pending_review")
+            self.assertEqual(gate.applicability_state, "applicable")
+            # The template is shared across every project and must never be
+            # touched by one project's decision.
             self.assertEqual(source.mapping_classification, "unmapped")
             task = session.scalar(select(V2ProjectTask).where(V2ProjectTask.project_id == self.project_id))
             self.assertTrue(task.included)
             self.assertEqual(task.decision_state, "pending_review")
+
+    def test_an_active_projects_gate_gets_its_runtime_approval_immediately(self):
+        """A decision that said "applicable" while no approval appeared would
+        be the same silent dead end this change exists to remove."""
+        with self.Session.begin() as session:
+            session.get(V2Project, self.project_id).status = "active"
+            session.add(ProjectBaseline(project_id=self.project_id, task_count=1, locked_by=ADMIN_ID))
+
+        self.assertEqual(self.decide("applicable", "Confirmed on site").status_code, 200)
+
+        with self.Session() as session:
+            approval = session.scalar(
+                select(ProjectExternalApproval).where(ProjectExternalApproval.project_gate_id == self.gate_id)
+            )
+            self.assertIsNotNone(approval, "an applicable gate on an active project must yield a runtime approval")
+            self.assertEqual(approval.status, "pending")
+            self.assertEqual(approval.project_id, self.project_id)
+
+    def test_deciding_the_same_gate_twice_creates_only_one_approval(self):
+        with self.Session.begin() as session:
+            session.get(V2Project, self.project_id).status = "active"
+            session.add(ProjectBaseline(project_id=self.project_id, task_count=1, locked_by=ADMIN_ID))
+
+        self.assertEqual(self.decide("applicable", "First").status_code, 200)
+        self.assertEqual(self.decide("applicable", "Again").status_code, 200)
+
+        with self.Session() as session:
+            approvals = list(session.scalars(
+                select(ProjectExternalApproval).where(ProjectExternalApproval.project_gate_id == self.gate_id)
+            ).all())
+        self.assertEqual(len(approvals), 1)
+
+    def test_a_gate_that_already_has_an_approval_cannot_be_ruled_out(self):
+        """Cascading a not-applicable decision into an instantiated approval
+        would either delete one that may already carry a recorded decision, or
+        orphan it behind a gate that says it does not apply. Refusing is the
+        only honest option, and it names the action that does work."""
+        with self.Session.begin() as session:
+            session.get(V2Project, self.project_id).status = "active"
+            session.add(ProjectBaseline(project_id=self.project_id, task_count=1, locked_by=ADMIN_ID))
+        self.assertEqual(self.decide("applicable", "Confirmed").status_code, 200)
+
+        response = self.decide("not_applicable", "Changed my mind")
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("Reject the approval instead", response.text)
+        with self.Session() as session:
+            gate = session.get(V2ProjectExternalGate, self.gate_id)
+            self.assertEqual(gate.applicability_state, "applicable")
+
+    def test_a_draft_project_decision_instantiates_nothing_yet(self):
+        """A draft has no execution layer to attach an approval to; it gets
+        one at its own activation, which is U8's job and not this one's."""
+        self.assertEqual(self.decide("applicable", "Confirmed").status_code, 200)
+        with self.Session() as session:
+            self.assertIsNone(session.scalar(
+                select(ProjectExternalApproval).where(ProjectExternalApproval.project_gate_id == self.gate_id)
+            ))
+
+    def test_an_archived_project_is_still_refused(self):
+        with self.Session.begin() as session:
+            session.get(V2Project, self.project_id).status = "archived"
+        response = self.decide("applicable", "Attempt")
+        self.assertEqual(response.status_code, 409, response.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(V2ProjectExternalGate, self.gate_id).applicability_state, "pending_review")
 
 
 if __name__ == "__main__":

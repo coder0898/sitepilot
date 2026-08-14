@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.execution_models import ProjectExternalApproval
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -18,6 +19,7 @@ from app.schemas.project_gate_applicability import (
     ProjectGateApplicabilityDecisionOut,
     ProjectGateApplicabilityHistoryItem,
 )
+from app.services.project_baseline import ProjectApprovalInstantiationService
 
 
 class ProjectGateApplicabilityService:
@@ -28,8 +30,23 @@ class ProjectGateApplicabilityService:
         project = self.db.get(V2Project, project_id)
         if not project:
             raise HTTPException(404, "Project not found.")
-        if project.status != "draft":
-            raise HTTPException(409, "Gate applicability can be reviewed only while the project is Draft.")
+        # Draft OR active. Applicability began as a Draft-only question, and
+        # that left a one-way door: activation never required the gates to be
+        # reviewed (see `activate_project`, which checks PM, Supervisor,
+        # template and handover date and nothing about gates), so a project
+        # could go live with every gate still `pending_review` - and then no
+        # one could ever decide them. U8 instantiates approvals only from
+        # APPLICABLE gates, so those projects could never have an external
+        # approval at all, permanently, and the Execution tab's approvals
+        # panel was empty by construction rather than by circumstance.
+        #
+        # Reviewing after activation is also just true to the work: a permit
+        # nobody thought applied turns out to apply once the site opens.
+        if project.status not in ("draft", "active"):
+            raise HTTPException(
+                409,
+                f"Gate applicability cannot be reviewed on a {project.status.replace('_', ' ')} project.",
+            )
         if actor.role == UserRole.admin:
             return project
         if actor.role == UserRole.project_manager:
@@ -81,6 +98,24 @@ class ProjectGateApplicabilityService:
         if payload.decision == "not_applicable" and not payload.reason:
             raise HTTPException(422, "A reason is required when marking a gate Not Applicable.")
 
+        # Ruling out a gate that already has a runtime approval is refused
+        # rather than cascaded. That approval may already carry a recorded
+        # decision, and quietly deleting a granted approval - or leaving it
+        # orphaned behind a not-applicable gate - are both worse than saying
+        # no. Nothing in this release removes an instantiated approval.
+        if payload.decision == "not_applicable":
+            existing = self.db.scalar(
+                select(ProjectExternalApproval.id).where(
+                    ProjectExternalApproval.project_gate_id == gate.id
+                ).limit(1)
+            )
+            if existing:
+                raise HTTPException(
+                    409,
+                    "This gate has already been instantiated as an external approval on the "
+                    "execution layer and cannot be marked Not Applicable. Reject the approval instead.",
+                )
+
         previous_state = gate.applicability_state
         reason = payload.reason or "Gate confirmed applicable."
         now = datetime.now(timezone.utc)
@@ -109,6 +144,18 @@ class ProjectGateApplicabilityService:
         try:
             self.db.add_all([decision, audit])
             self.db.flush()
+            # An active project's execution layer already exists, so a gate
+            # that has just become applicable gets its runtime approval now
+            # rather than at an activation that has already happened. In the
+            # same transaction as the decision: a decision that said
+            # "applicable" while no approval appeared would be the same
+            # silent dead end this change exists to remove.
+            #
+            # `instantiate_for_project` skips gates that already have one, so
+            # this is safe to reach on every decision.
+            if project.status == "active" and payload.decision == "applicable":
+                ProjectApprovalInstantiationService(self.db).instantiate_for_project(project)
+                self.db.flush()
             self.db.commit()
         except Exception:
             self.db.rollback()
