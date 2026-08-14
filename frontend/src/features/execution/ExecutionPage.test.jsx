@@ -121,6 +121,22 @@ describe("ExecutionPage - external approval decisions", () => {
     expect(within(releasedRow).queryByText("Blocked")).not.toBeInTheDocument();
   });
 
+  // U16: the timeline fetches its own tasks rather than reading the array the
+  // board handed up, so it does not depend on Tasks being the default tab.
+  it("opens the timeline tab and loads the schedule itself", async () => {
+    taskExecutionApi.list.mockResolvedValue([{
+      ...assignedTask, phase: "Design",
+      planned_start_date: "2026-08-01", planned_end_date: "2026-08-05",
+      actual_start_at: "2026-08-01T09:00:00Z", actual_finish_at: "2026-08-04T17:00:00Z",
+      variance: { status: "early", variance_days: -1, days: 1, measured_against: "actual_finish" },
+    }]);
+    render(<ExecutionPage user={projectManager}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /^timeline$/i }));
+    expect(await screen.findByText("Baseline vs actual")).toBeInTheDocument();
+    expect(screen.getByLabelText("Baseline for T001")).toBeInTheDocument();
+    expect(screen.getByLabelText("Actual for T001")).toBeInTheDocument();
+  });
+
   it("no longer reads the planning-layer gates for this tab", async () => {
     render(<ExecutionPage user={projectManager}/>);
     fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));

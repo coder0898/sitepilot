@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { CalendarCheck, ClipboardList, FastForward, FolderKanban, GitBranch, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { CalendarCheck, CalendarRange, ClipboardList, FastForward, FolderKanban, GitBranch, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
 import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
 import { formatDateShort } from "../../utils/format";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
+import { ScheduleTimelinePanel } from "./components/ScheduleTimeline";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
 import { isReadyToAccelerate, READINESS_FILTERS, readinessCounts } from "./components/TaskReadinessPanel";
 
@@ -151,6 +152,7 @@ export function ExecutionPage({ user }) {
             <div className="flex flex-wrap gap-2">
               {[
                 ["tasks", "Tasks", ClipboardList],
+                ["timeline", "Timeline", CalendarRange],
                 ["dependencies", "Dependencies", GitBranch],
                 ["approvals", "External Approvals", ShieldCheck],
               ].map(([key, label, Icon]) => (
@@ -215,6 +217,8 @@ export function ExecutionPage({ user }) {
             onTasksLoaded={setBoardTasks}
           />
           </>}
+
+          {activeTab === "timeline" && <ScheduleTimelinePanel projectId={projectId}/>}
 
           {activeTab === "dependencies" && <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <h3 className="m-0 font-serif text-lg text-slate-950">Task dependencies</h3>
