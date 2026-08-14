@@ -1,5 +1,6 @@
-import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ClipboardCheck, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
+import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, Field, LoadingSpinner, Modal, Pill, Textarea } from "../../../components/ui";
 import { formatDateShort } from "../../../utils/format";
@@ -81,6 +82,13 @@ function DecisionModal({ approval, decision, onConfirm, onClose }) {
 
 export function ExternalApprovalsPanel({ projectId, project, user }) {
   const [approvals, setApprovals] = useState([]);
+  // The PLANNING-layer gates, read only to explain an empty list. An approval
+  // is instantiated at activation from a gate a PM marked applicable, so a
+  // project whose gates are all still awaiting that decision has none here -
+  // and saying only "none were instantiated" describes our mechanism while
+  // leaving the user believing the project has no external approvals at all,
+  // when it may have dozens sitting undecided in setup.
+  const [awaitingReview, setAwaitingReview] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [pendingDecision, setPendingDecision] = useState(null); // { approval, decision }
@@ -94,6 +102,16 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
       setError(caught?.message || "This project's external approvals could not be loaded.");
     } finally {
       setLoading(false);
+    }
+    // Deliberately after, and deliberately swallowed: this read only enriches
+    // an explanation. Failing it must never blank the approvals a user can
+    // actually act on.
+    try {
+      const gates = await projectsApi.externalGates(projectId);
+      const items = gates?.items || gates || [];
+      setAwaitingReview(items.filter(gate => (gate.applicability_state || "pending_review") === "pending_review").length);
+    } catch {
+      setAwaitingReview(0);
     }
   }
 
@@ -123,7 +141,20 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
 
     {error && <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error}</div>}
 
-    {!approvals.length && !error ? <p className="mt-3 text-sm text-slate-500">No external approvals were instantiated for this project.</p> : <div className="mt-4 grid gap-3">
+    {/* Shown whenever gates are still undecided, not only when the list is
+        empty: a project can have three approvals here and twenty more nobody
+        has ruled on, and the three would otherwise read as the whole set. */}
+    {awaitingReview > 0 && <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <ClipboardCheck size={16} className="mt-0.5 shrink-0 text-amber-700"/>
+      <p className="text-sm font-bold leading-6 text-amber-900">
+        {awaitingReview} external approval{awaitingReview === 1 ? " is" : "s are"} awaiting applicability review.
+        <span className="block font-medium">
+          {awaitingReview === 1 ? "It becomes" : "They become"} approvable here once someone decides, in this project's setup, whether {awaitingReview === 1 ? "it applies" : "they apply"} to this project. Until then {awaitingReview === 1 ? "it holds" : "they hold"} nothing up.
+        </span>
+      </p>
+    </div>}
+
+    {!approvals.length && !error && awaitingReview === 0 ? <p className="mt-3 text-sm text-slate-500">No external approvals apply to this project.</p> : !approvals.length ? null : <div className="mt-4 grid gap-3">
       {approvals.map(approval => <article key={approval.id} className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">

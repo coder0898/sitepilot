@@ -1,12 +1,15 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
 
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
   listExternalApprovals: vi.fn(), decideExternalApproval: vi.fn(), list: vi.fn(), detail: vi.fn(),
 } }));
-vi.mock("../../api/projectsApi", () => ({ projectsApi: { detail: vi.fn() } }));
+vi.mock("../../api/projectsApi", () => ({ projectsApi: { detail: vi.fn(), externalGates: vi.fn() } }));
+
+const gate = (applicability_state = "pending_review") => ({ id: `g-${Math.random()}`, applicability_state });
 
 const pending = {
   id: "a1", project_id: "p1", project_gate_id: "g1", gate_code: "FIRE-NOC", gate_name: "Fire NOC",
@@ -30,6 +33,7 @@ const renderPanel = (user, props = {}) => render(
 beforeEach(() => {
   vi.clearAllMocks();
   taskExecutionApi.listExternalApprovals.mockResolvedValue([pending]);
+  projectsApi.externalGates.mockResolvedValue({ items: [gate("applicable")] });
 });
 
 describe("ExternalApprovalsPanel", () => {
@@ -140,9 +144,62 @@ describe("ExternalApprovalsPanel", () => {
     expect(screen.queryByText(/No external approvals were instantiated/i)).not.toBeInTheDocument();
   });
 
-  it("reports a project with no approvals as empty", async () => {
+  it("reports a project whose gates were all ruled out as genuinely having none", async () => {
     taskExecutionApi.listExternalApprovals.mockResolvedValue([]);
+    projectsApi.externalGates.mockResolvedValue({ items: [gate("not_applicable"), gate("not_applicable")] });
     renderPanel(projectManager);
-    expect(await screen.findByText(/No external approvals were instantiated/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No external approvals apply to this project/i)).toBeInTheDocument();
+  });
+
+  // The screen a PM actually hits: 32 gates exist, none has been ruled on, so
+  // nothing was instantiated. Saying only "none were instantiated" describes
+  // our mechanism and leaves the user believing the project has no external
+  // approvals, when it has 32 sitting undecided in setup.
+  describe("gates still awaiting an applicability decision", () => {
+    beforeEach(() => {
+      taskExecutionApi.listExternalApprovals.mockResolvedValue([]);
+      projectsApi.externalGates.mockResolvedValue({ items: Array.from({ length: 32 }, () => gate()) });
+    });
+
+    it("says how many are awaiting review and what unblocks them", async () => {
+      renderPanel(projectManager);
+      expect(await screen.findByText(/32 external approvals are awaiting applicability review/i)).toBeInTheDocument();
+      expect(screen.getByText(/decides, in this project's setup/i)).toBeInTheDocument();
+    });
+
+    it("does not claim the project has none", async () => {
+      renderPanel(projectManager);
+      await screen.findByText(/awaiting applicability review/i);
+      expect(screen.queryByText(/No external approvals apply to this project/i)).not.toBeInTheDocument();
+    });
+
+    it("reassures that undecided gates are not holding work up", async () => {
+      renderPanel(projectManager);
+      expect(await screen.findByText(/they hold nothing up/i)).toBeInTheDocument();
+    });
+
+    it("reads naturally for a single undecided gate", async () => {
+      projectsApi.externalGates.mockResolvedValue({ items: [gate()] });
+      renderPanel(projectManager);
+      expect(await screen.findByText(/1 external approval is awaiting applicability review/i)).toBeInTheDocument();
+      expect(screen.getByText(/it holds nothing up/i)).toBeInTheDocument();
+    });
+  });
+
+  it("warns about undecided gates even when some approvals already exist", async () => {
+    projectsApi.externalGates.mockResolvedValue({ items: [gate("applicable"), gate(), gate()] });
+    renderPanel(projectManager);
+    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    expect(screen.getByText(/2 external approvals are awaiting applicability review/i)).toBeInTheDocument();
+  });
+
+  // This read only enriches an explanation, so losing it must never cost the
+  // user the approvals they can actually act on.
+  it("still renders the approvals when the planning-gate read fails", async () => {
+    projectsApi.externalGates.mockRejectedValue(new Error("gates unavailable"));
+    renderPanel(projectManager);
+    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.queryByText(/awaiting applicability review/i)).not.toBeInTheDocument();
   });
 });

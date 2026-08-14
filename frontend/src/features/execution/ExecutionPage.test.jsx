@@ -137,11 +137,26 @@ describe("ExecutionPage - external approval decisions", () => {
     expect(screen.getByLabelText("Actual for T001")).toBeInTheDocument();
   });
 
-  it("no longer reads the planning-layer gates for this tab", async () => {
+  it("renders the tab from the execution layer, not from the planning gates", async () => {
+    // The planning-layer gates are still read, but only to explain an empty
+    // list (how many are awaiting an applicability decision). What is
+    // RENDERED as approvals comes from the execution-layer endpoint - that
+    // was the point of the switch, and it is what this pins.
+    projectsApi.externalGates.mockResolvedValue({ items: [{ id: "g1", applicability_state: "applicable" }] });
     render(<ExecutionPage user={projectManager}/>);
     fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
-    expect(projectsApi.externalGates).not.toHaveBeenCalled();
+    expect(taskExecutionApi.listExternalApprovals).toHaveBeenCalledWith("p1");
+  });
+
+  it("explains an empty tab by naming the gates still awaiting review", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([]);
+    projectsApi.externalGates.mockResolvedValue({
+      items: Array.from({ length: 32 }, (_, index) => ({ id: `g${index}`, applicability_state: "pending_review" })),
+    });
+    render(<ExecutionPage user={projectManager}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
+    expect(await screen.findByText(/32 external approvals are awaiting applicability review/i)).toBeInTheDocument();
   });
 });
 
