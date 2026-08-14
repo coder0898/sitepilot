@@ -8,6 +8,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.routes import access_requests, admin_visibility_v2, auth, communication, dashboard, execution_tasks_v2, permissions, project_dashboard_v2, project_read_models_v2, project_vendors_v2, projects_v2, reports_v2, templates_v2, users, vendors, dependencies_v2, whatsapp_webhook_v2
 from app.seed import ensure_seed_data
+from app.services.outbox_scheduler import start_dispatcher, stop_dispatcher
 
 
 def create_app() -> FastAPI:
@@ -55,6 +56,17 @@ def create_app() -> FastAPI:
     def startup() -> None:
         with SessionLocal() as db:
             ensure_seed_data(db)
+
+    # U3 (R18): start the outbox dispatcher. Separate from the seed hook
+    # above because it must be async - `asyncio.create_task` needs a running
+    # event loop - and because the two have nothing to do with each other.
+    @app.on_event("startup")
+    async def start_outbox_dispatcher() -> None:
+        start_dispatcher(app)
+
+    @app.on_event("shutdown")
+    async def stop_outbox_dispatcher() -> None:
+        await stop_dispatcher(app)
 
     return app
 

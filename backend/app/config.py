@@ -22,6 +22,24 @@ class Settings(BaseSettings):
     # valid signature can ever be computed, so the route safely rejects
     # every inbound request until an operator configures this.
     whatsapp_webhook_secret: str = ""
+    # U3 (R18): the outbox dispatcher. `OutboxService.emit` has been writing
+    # pending events since Phase 2 and nothing has ever drained them, so
+    # every notification the system decided to send is still sitting in the
+    # table. These two settings are sourced from environment/`.env` like
+    # every other setting here.
+    #
+    # Enabled by default because a queue nobody drains is the bug this unit
+    # exists to fix; the switch is for an operator who needs to stop delivery
+    # without redeploying, and for any process that must not dispatch (a
+    # migration run, a second replica, a test harness).
+    #
+    # The wired adapter is still the sandbox one per KTD7 - this unit changes
+    # only whether anything drains the outbox, never what is emitted or where
+    # it goes. Turning on a REAL provider is a separate, deliberate decision.
+    outbox_dispatch_enabled: bool = True
+    # 30s: this is a notification queue, not a transaction path. Polling
+    # faster costs a query per interval for no benefit anyone can perceive.
+    outbox_dispatch_interval_seconds: float = 30.0
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""
