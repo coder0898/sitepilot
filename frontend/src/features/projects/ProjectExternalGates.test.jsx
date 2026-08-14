@@ -98,4 +98,52 @@ describe("Project external gate applicability", () => {
     const applicable = screen.getAllByRole("button", { name: /^Applicable$/i })[0];
     expect(applicable.parentElement).toHaveClass("grid-cols-2");
   });
+
+  // Applicability used to be offered on drafts only, on both sides. Since
+  // activation never required the gates to be reviewed, a project could go
+  // live with every one undecided and then nobody could decide them - and
+  // only an applicable gate ever becomes a runtime approval, so that
+  // project's Execution tab could never show an external approval at all.
+  describe("an already-active project", () => {
+    const activeProject = { id: "project-1", status: "active" };
+
+    it("still offers the applicability decision", async () => {
+      render(<ProjectExternalGates project={activeProject} user={{ role: "admin" }}/>);
+      await screen.findByText("2 gates");
+      expect(screen.getAllByRole("button", { name: /^Applicable$/i })).toHaveLength(2);
+    });
+
+    it("records the decision against the live project", async () => {
+      render(<ProjectExternalGates project={activeProject} user={{ role: "admin" }}/>);
+      await screen.findByText("2 gates");
+      fireEvent.click(screen.getAllByRole("button", { name: /^Applicable$/i })[0]);
+      // The button opens a confirmation modal; the decision is recorded on
+      // confirm, matching the Not Applicable path above.
+      fireEvent.click(await screen.findByRole("button", { name: /confirm applicable/i }));
+      await waitFor(() => expect(projectsApi.decideGateApplicability).toHaveBeenCalled());
+      expect(projectsApi.decideGateApplicability.mock.calls[0][0]).toBe("project-1");
+      expect(projectsApi.decideGateApplicability.mock.calls[0][2].decision).toBe("applicable");
+    });
+
+    // Adding a NEW approval is still draft-only on the backend, so offering
+    // it here would render a control that 409s on click.
+    it("does not offer adding a manual approval", async () => {
+      render(<ProjectExternalGates project={activeProject} user={{ role: "admin" }}/>);
+      await screen.findByText("2 gates");
+      expect(screen.queryByRole("button", { name: /add manual approval/i })).not.toBeInTheDocument();
+    });
+
+    it("offers neither to a non-Admin", async () => {
+      render(<ProjectExternalGates project={activeProject} user={{ role: "project_manager" }}/>);
+      await screen.findByText("2 gates");
+      expect(screen.queryByRole("button", { name: /^Applicable$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /add manual approval/i })).not.toBeInTheDocument();
+    });
+  });
+
+  it("offers no applicability decision on an archived project", async () => {
+    render(<ProjectExternalGates project={{ id: "project-1", status: "archived" }} user={{ role: "admin" }}/>);
+    await screen.findByText("2 gates");
+    expect(screen.queryByRole("button", { name: /^Applicable$/i })).not.toBeInTheDocument();
+  });
 });
