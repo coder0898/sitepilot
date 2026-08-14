@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -167,6 +167,44 @@ class ReportGenerationTests(unittest.TestCase):
         self.assertIn("schedule_revisions", payload)
         self.assertIn("ownership_changes", payload)
         self.assertIn("management_decisions_required", payload)
+
+    # ---- U17: variance reaches the reports ---------------------------------
+
+    def test_a_generated_report_carries_the_schedule_variance_figures(self):
+        """U17: variance must reach the places management already looks.
+
+        It arrives via the visibility summary rather than as its own payload
+        section - `_build_payload` dumps the whole summary, and
+        `schedule_variance` is a field on it. That makes this test the only
+        thing standing between a future refactor (dumping a subset of the
+        summary, reshaping the payload) and variance silently vanishing from
+        every report with nothing failing.
+        """
+        for report_type in ("daily", "weekly"):
+            with self.subTest(report_type=report_type):
+                payload = self.generate(report_type).json()["payload_json"]
+                variance = payload["summary"]["schedule_variance"]
+                self.assertEqual(
+                    set(variance),
+                    {"early_count", "on_time_count", "late_count", "not_measured_count", "worst_late_days"},
+                )
+
+    def test_report_variance_counts_a_late_task_as_late(self):
+        """Not just present, but populated: a report whose variance block is
+        structurally correct and always zero would pass the test above."""
+        with self.Session.begin() as session:
+            task = session.scalars(select(Task).where(Task.project_id == self.project_id)).one()
+            task.planned_start_date = date(2026, 8, 1)
+            task.planned_end_date = date(2026, 8, 5)
+            task.actual_start_at = datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)
+            task.actual_finish_at = datetime(2026, 8, 9, 17, 0, tzinfo=timezone.utc)
+            task.lifecycle_status = "completed"
+            session.add(task)
+
+        variance = self.generate("weekly").json()["payload_json"]["summary"]["schedule_variance"]
+        self.assertEqual(variance["late_count"], 1)
+        self.assertEqual(variance["worst_late_days"], 4)
+        self.assertEqual(variance["early_count"], 0)
 
     # ---- integration -------------------------------------------------------
 

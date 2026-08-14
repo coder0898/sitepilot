@@ -176,9 +176,10 @@ def list_project_tasks(
             active_support_count=active_support_counts.get(task.id, 0),
             approval=build_approval_metadata(task.task_kind, task.task_class, task.lifecycle_status),
             readiness=TaskReadinessOut.from_readiness(project_readiness.tasks[task.id]),
-            # The pure `variance_for_task`, not `TaskDelayVarianceService`:
-            # the service would re-select the very rows already in hand, and
-            # the arithmetic needs no database at all.
+            # `variance_for_task` is pure: the rows are already in hand and
+            # the arithmetic needs no database at all. A service wrapper that
+            # re-selected them existed briefly and was removed once every
+            # caller had chosen this instead.
             variance=TaskVarianceOut.from_variance(variance_for_task(task, today=today)),
             project_unresolved_approvals=unresolved_approvals,
             created_at=task.created_at,
@@ -303,6 +304,7 @@ def get_project_task(
         planned_end_date=task.planned_end_date,
         actual_start_at=task.actual_start_at,
         actual_finish_at=task.actual_finish_at,
+        early_start_reason=task.early_start_reason,
         phase=task.phase,
         category=task.category,
         evidence_required=task.evidence_required,

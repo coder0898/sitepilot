@@ -34,7 +34,6 @@ from app.services.task_delay_variance import (
     NOT_MEASURED,
     ON_TIME,
     DelayVariance,
-    TaskDelayVarianceService,
     compute_delay_variance,
     variance_for_task,
 )
@@ -249,124 +248,6 @@ class VarianceForTaskTests(unittest.TestCase):
         overdue_by_three = datetime.now(timezone.utc).date() - timedelta(days=3)
         task = self._task(planned_end_date=overdue_by_three)
         self.assertEqual(variance_for_task(task).variance_days, 3)
-
-
-class TaskDelayVarianceServiceTests(unittest.TestCase):
-    def setUp(self):
-        self.engine = create_engine(
-            "sqlite+pysqlite:///:memory:",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-
-        @event.listens_for(self.engine, "connect")
-        def attach_schema(dbapi_connection, _connection_record):
-            dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
-
-        # V2Project carries FKs to users and template versions, so those
-        # tables must exist before it can be created - even though this unit
-        # never reads them.
-        for table in (
-            User.__table__,
-            V2Template.__table__,
-            V2TemplateVersion.__table__,
-            V2Project.__table__,
-            Task.__table__,
-        ):
-            table.create(bind=self.engine, checkfirst=True)
-
-        self.Session = sessionmaker(bind=self.engine, autoflush=False)
-        self.db = self.Session()
-        self.service = TaskDelayVarianceService(self.db)
-        self._sequence = 0
-
-    def tearDown(self):
-        self.db.close()
-        self.engine.dispose()
-
-    def _project(self) -> V2Project:
-        self._sequence += 1
-        project = V2Project(
-            id=uuid.uuid4(),
-            code=f"P{self._sequence:03d}",
-            name=f"Project {self._sequence}",
-            client_name="Client",
-            site_address="Somewhere",
-            start_date=date(2026, 8, 1),
-            status="active",
-            created_by=uuid.uuid4(),
-        )
-        self.db.add(project)
-        self.db.flush()
-        return project
-
-    def _task(self, project, *, planned_end, status="in_progress", finished_on=None) -> Task:
-        self._sequence += 1
-        task = Task(
-            id=uuid.uuid4(),
-            project_id=project.id,
-            baseline_id=uuid.uuid4(),
-            baseline_task_id=uuid.uuid4(),
-            original_code=f"T{self._sequence:03d}",
-            template_sequence=self._sequence,
-            title=f"Task {self._sequence}",
-            schedule_classification="execution",
-            applicability="mandatory",
-            lifecycle_status=status,
-            planned_start_date=date(2026, 8, 1) if planned_end else None,
-            planned_end_date=planned_end,
-            actual_finish_at=_at(finished_on) if finished_on else None,
-        )
-        self.db.add(task)
-        self.db.flush()
-        return task
-
-    def test_it_returns_a_variance_for_every_task_in_the_project(self):
-        project = self._project()
-        late = self._task(project, planned_end=date(2026, 8, 10))
-        early = self._task(
-            project, planned_end=date(2026, 8, 10),
-            status="completed", finished_on=date(2026, 8, 8),
-        )
-        results = self.service.for_project(project.id, today=date(2026, 8, 12))
-        self.assertEqual(set(results), {late.id, early.id})
-        self.assertEqual(results[late.id].status, LATE)
-        self.assertEqual(results[late.id].days, 2)
-        self.assertEqual(results[early.id].status, EARLY)
-        self.assertEqual(results[early.id].days, 2)
-
-    def test_a_cancelled_task_long_past_its_window_reports_nothing(self):
-        project = self._project()
-        cancelled = self._task(project, planned_end=date(2026, 8, 10), status="cancelled")
-        results = self.service.for_project(project.id, today=date(2027, 6, 1))
-        self.assertEqual(results[cancelled.id].status, NOT_MEASURED)
-        self.assertEqual(results[cancelled.id].days, 0)
-
-    def test_it_reads_only_the_requested_project(self):
-        first = self._project()
-        second = self._project()
-        self._task(first, planned_end=date(2026, 8, 10))
-        other = self._task(second, planned_end=date(2026, 8, 10))
-        results = self.service.for_project(first.id, today=date(2026, 8, 12))
-        self.assertNotIn(other.id, results)
-
-    def test_it_writes_nothing(self):
-        """This unit computes and returns - it must never persist."""
-        project = self._project()
-        task = self._task(project, planned_end=date(2026, 8, 10))
-        self.service.for_project(project.id, today=date(2026, 8, 12))
-        self.assertFalse(self.db.dirty)
-        self.assertFalse(self.db.new)
-        self.db.refresh(task)
-        self.assertIsNone(task.actual_finish_at)
-
-    def test_late_tasks_are_the_measured_late_subset(self):
-        project = self._project()
-        late = self._task(project, planned_end=date(2026, 8, 10))
-        self._task(project, planned_end=date(2026, 8, 30))
-        self._task(project, planned_end=date(2026, 8, 10), status="cancelled")
-        late_only = self.service.late_tasks(project.id, today=date(2026, 8, 12))
-        self.assertEqual([task_id for task_id, _ in late_only], [late.id])
 
 
 if __name__ == "__main__":

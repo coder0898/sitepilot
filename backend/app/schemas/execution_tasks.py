@@ -471,6 +471,12 @@ class TaskDetailOut(BaseModel):
     planned_end_date: date | None
     actual_start_at: datetime | None
     actual_finish_at: datetime | None
+    # U14 wrote this on the row and into the audit event, and then nothing
+    # could ever read it back - the reason a task started ahead of plan was
+    # captured from the user and visible to nobody. Carried on the detail
+    # response only: it is per-task narrative, and the board's list rows have
+    # no place to show a sentence.
+    early_start_reason: str | None
     phase: str | None
     category: str | None
     evidence_required: bool

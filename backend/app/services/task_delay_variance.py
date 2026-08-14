@@ -28,12 +28,8 @@ Four decisions are pinned here:
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from app.execution_models import Task
 
@@ -171,40 +167,3 @@ def variance_for_task(task: Task, *, today: date | None = None) -> DelayVariance
         lifecycle_status=task.lifecycle_status,
         today=today or datetime.now(timezone.utc).date(),
     )
-
-
-class TaskDelayVarianceService:
-    """Reads a project's tasks and computes each one's variance.
-
-    Read-only by construction: it selects, computes and returns. Nothing in
-    this unit writes, so a caller can invoke it on any request without
-    thinking about the transaction.
-    """
-
-    def __init__(self, db: Session):
-        self.db = db
-
-    def for_project(
-        self, project_id: uuid.UUID, *, today: date | None = None
-    ) -> dict[uuid.UUID, DelayVariance]:
-        """Every task's variance, keyed by task id for joining on the caller's side.
-
-        Undated and terminal-without-finish tasks are included with a
-        not-measured variance rather than omitted, so a consumer iterating
-        its own task list always finds an entry and never has to decide what
-        a missing key meant.
-        """
-        as_of = today or datetime.now(timezone.utc).date()
-        tasks = self.db.scalars(select(Task).where(Task.project_id == project_id))
-        return {task.id: variance_for_task(task, today=as_of) for task in tasks}
-
-    def late_tasks(
-        self, project_id: uuid.UUID, *, today: date | None = None
-    ) -> list[tuple[uuid.UUID, DelayVariance]]:
-        """The behind-schedule tasks, worst first - what a dashboard leads with."""
-        late = [
-            (task_id, variance)
-            for task_id, variance in self.for_project(project_id, today=today).items()
-            if variance.is_late
-        ]
-        return sorted(late, key=lambda row: row[1].variance_days, reverse=True)

@@ -382,6 +382,17 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
 
     {detail.description && <p className="text-sm leading-6 text-slate-600">{detail.description}</p>}
 
+    {/* U14/U23: the reason someone gave for starting ahead of plan. It was
+        captured at the transition and stored, and until the detail response
+        carried it there was no way to ever read it back - the question "why
+        did this start early?" had an answer nobody could reach. */}
+    {detail.early_start_reason && <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <h4 className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-amber-800">
+        <CalendarClock size={13}/> Started early
+      </h4>
+      <p className="mt-1 text-sm leading-6 text-amber-900">{detail.early_start_reason}</p>
+    </section>}
+
     {detail.predecessors.length > 0 && <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
       <h4 className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-500"><GitBranch size={14}/> Predecessors</h4>
       <div className="mt-2 grid gap-2">{detail.predecessors.map(dep => <div key={dep.id} className="flex flex-wrap items-center gap-2 text-sm"><span className="font-mono text-xs font-black text-blue-700">{dep.original_code}</span><span className="text-slate-700">{dep.title}</span><Pill tone={STATUS_TONE[dep.lifecycle_status] || "gray"}>{dep.lifecycle_status}</Pill>{dep.blocking && <span className="text-[10px] font-bold text-amber-700">Blocking</span>}</div>)}</div>

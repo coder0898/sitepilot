@@ -560,6 +560,23 @@ describe("TaskExecutionBoard", () => {
       ));
     });
 
+    it("shows the stored reason on a task that was started early", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({
+        lifecycle_status: "in_progress",
+        actual_start_at: "2026-08-01T09:00:00Z",
+        early_start_reason: "Client released the floor three weeks early.",
+      }));
+      await openDetail();
+      expect(screen.getByText("Started early")).toBeInTheDocument();
+      expect(screen.getByText("Client released the floor three weeks early.")).toBeInTheDocument();
+    });
+
+    it("shows no early-start section on a task that started on time", async () => {
+      taskExecutionApi.detail.mockResolvedValue(startable({ lifecycle_status: "in_progress", early_start_reason: null }));
+      await openDetail();
+      expect(screen.queryByText("Started early")).not.toBeInTheDocument();
+    });
+
     it("shows a refused early start inline and leaves the task untouched", async () => {
       taskExecutionApi.detail.mockResolvedValue(startable({ planned_start_date: isoOffsetDays(10) }));
       taskExecutionApi.transitionStatus.mockRejectedValue(new Error("A reason is required to start a task before its planned start date."));

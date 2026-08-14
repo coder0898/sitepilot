@@ -418,6 +418,38 @@ class TaskEarlyStartApiTests(unittest.TestCase):
         self.assertEqual(detail.json()["planned_start_date"], start)
         self.assertEqual(detail.json()["planned_end_date"], end)
 
+    # ---- the reason is readable, not just recorded ------------------------
+
+    def test_the_detail_response_exposes_the_early_start_reason(self):
+        """The reason was written to the row and to the audit event and then
+        exposed on no read schema at all - captured from the user and
+        readable by nobody. A stored fact with no read path is indis-
+        tinguishable from one that was never stored."""
+        project = self.activate_project()
+        t002 = self.tasks_by_code(project["id"])["T002"]
+        self.act_as_supervisor()
+        reason = "Client released the floor three weeks early."
+
+        detail = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t002.id}")
+        self.assertIsNone(detail.json()["early_start_reason"])
+
+        self.assertEqual(self.start(project["id"], t002.id, reason=reason).status_code, 200)
+
+        detail = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t002.id}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["early_start_reason"], reason)
+
+    def test_an_ordinary_start_leaves_the_early_start_reason_empty(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.set_planned_start(t001.id, date.today())
+        self.act_as_supervisor()
+
+        self.assertEqual(self.start(project["id"], t001.id).status_code, 200)
+
+        detail = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{t001.id}")
+        self.assertIsNone(detail.json()["early_start_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
