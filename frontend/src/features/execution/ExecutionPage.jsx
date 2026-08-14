@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
-import { CalendarCheck, ClipboardList, FolderKanban, GitBranch, Layers, ListChecks, Search, ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CalendarCheck, ClipboardList, FastForward, FolderKanban, GitBranch, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
 import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
+import { formatDateShort } from "../../utils/format";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
+import { isReadyToAccelerate, READINESS_FILTERS, readinessCounts } from "./components/TaskReadinessPanel";
 
 // U2 (Task Execution Engine, Phase 1): the "Tasks" tab is now the live
 // TaskExecutionBoard - status transitions, evidence, verification/approval,
@@ -28,6 +30,10 @@ export function ExecutionPage({ user }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+  // U19: the execution-layer tasks the board actually drew, handed up so the
+  // tiles below count the same rows the user can see (R26).
+  const [boardTasks, setBoardTasks] = useState([]);
+  const [readinessFilter, setReadinessFilter] = useState("all");
 
   useEffect(() => {
     let active = true;
@@ -85,6 +91,14 @@ export function ExecutionPage({ user }) {
   }, [projectId, user.role]);
 
   const selectedProject = projects.find(project => project.id === projectId);
+  const counts = useMemo(() => readinessCounts(boardTasks), [boardTasks]);
+  // Wrapped, not passed by reference: `filter` supplies (element, index,
+  // array), and the index would land in this predicate's `today` parameter.
+  const accelerable = useMemo(() => boardTasks.filter(task => isReadyToAccelerate(task)), [boardTasks]);
+
+  // A project switch must not leave the previous project's tasks behind the
+  // new project's tiles for the moment before the board reloads.
+  useEffect(() => { setBoardTasks([]); setReadinessFilter("all"); }, [projectId]);
 
   return (
     <section className="grid gap-5">
@@ -111,16 +125,23 @@ export function ExecutionPage({ user }) {
         <div className="rounded-2xl border border-slate-200 bg-white p-8"><LoadingSpinner label="Loading task baseline..."/></div>
       ) : (view || (user.role === "internal_employee" && selectedProject)) ? (
         <>
-          {/* Total/included/excluded/dependency counts are whole-project
-              planning figures, not scoped to this actor - only rendered
-              when `view` (the whole-project baseline fetch, skipped
-              entirely for internal_employee above) actually loaded. */}
-          {view && <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Metric icon={<ClipboardList/>} label="Total tasks" value={view.total_tasks} helper={`${view.included_task_count} included in plan`} tone="blue"/>
-            <Metric icon={<ListChecks/>} label="Included tasks" value={view.included_task_count} helper="Part of the active plan" tone="green"/>
-            <Metric icon={<Layers/>} label="Excluded tasks" value={view.excluded_task_count} helper="Marked not applicable" tone="orange"/>
-            <Metric icon={<GitBranch/>} label="Dependencies" value={dependencies.total || 0} helper={dependencies.excluded_warning_count ? `${dependencies.excluded_warning_count} reference excluded tasks` : "Blocking sequence"} tone="violet"/>
+          {/* U19 (R26): these count the EXECUTION rows the board below drew,
+              handed up by the board itself. They used to come from the
+              planning read model, which counts tasks excluded from the plan
+              and never instantiated into the execution layer - so the number
+              above the board did not describe the board, and no amount of
+              looking at it would tell you why. Only shown to a role that gets
+              the whole-project view; an Internal Employee's list is filtered
+              to their own assignments and a project-wide count would be a
+              claim about work they cannot see. */}
+          {view && <div className="grid grid-cols-2 gap-3 lg:grid-cols-3" role="group" aria-label="Readiness summary">
+            <Metric icon={<ClipboardList/>} label="Total tasks" value={counts.total} helper="In this project's execution layer" tone="blue"/>
+            <Metric icon={<ShieldCheck/>} label="Ready" value={counts.ready} helper="Dependencies and approvals met" tone="green"/>
+            <Metric icon={<ShieldAlert/>} label="Blocked" value={counts.blocked} helper={counts.blocked ? "Waiting on a task or approval" : "Nothing is held up"} tone={counts.blocked ? "red" : "green"}/>
           </div>}
+          {/* No "could start early" tile: the section below already carries
+              that count in its own heading, and two numbers for one fact is
+              how a surface starts disagreeing with itself. */}
 
           {/* An Internal Employee only ever sees their own assigned tasks
               here (server-filtered - see list_project_tasks) - Dependencies
@@ -141,11 +162,43 @@ export function ExecutionPage({ user }) {
           </div>}
 
           {activeTab === "tasks" && <>
-          <div className="rounded-2xl border border-slate-200 bg-white p-3">
+          {/* U19 (R20): work that could be pulled forward - ready to start,
+              but not due to start yet. Shown above the board rather than as
+              another filter because it answers a question the board does not:
+              not "what is ready" but "what could we get ahead on". */}
+          {view && <section className="rounded-2xl border border-violet-200 bg-violet-50/60 p-4">
+            <h3 className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-violet-800">
+              <FastForward size={14}/> Could start early
+              {accelerable.length > 0 && <Pill tone="violet">{accelerable.length}</Pill>}
+            </h3>
+            {accelerable.length ? <div className="mt-3 grid gap-2">
+              {accelerable.map(task => <div key={task.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm">
+                <span className="font-mono text-xs font-black text-blue-700">{task.original_code}</span>
+                <span className="min-w-0 flex-1 truncate font-bold text-slate-900">{task.title}</span>
+                <span className="text-xs font-bold text-slate-500">Planned {formatDateShort(task.planned_start_date)}</span>
+              </div>)}
+            </div> : <p className="mt-2 text-sm text-slate-500">
+              Nothing can be pulled forward right now - every ready task is already due to start, or is waiting on something.
+            </p>}
+          </section>}
+
+          <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
               <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-12 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
             </label>
+            {/* Narrows the same list the search narrows - the two compose. */}
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by readiness">
+              {READINESS_FILTERS.map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={readinessFilter === key}
+                  onClick={() => setReadinessFilter(key)}
+                  className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${readinessFilter === key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600"}`}
+                >{label}</button>
+              ))}
+            </div>
           </div>
 
           {/* U18: the tabs are mutually exclusive, so leaving Tasks unmounts
@@ -154,7 +207,13 @@ export function ExecutionPage({ user }) {
               is needed to recompute the view, and adding a refresh signal
               alongside would be a second mechanism doing the same work. If
               these tabs ever render together, that stops being true. */}
-          <TaskExecutionBoard projectId={projectId} user={user} search={search}/>
+          <TaskExecutionBoard
+            projectId={projectId}
+            user={user}
+            search={search}
+            readinessFilter={readinessFilter}
+            onTasksLoaded={setBoardTasks}
+          />
           </>}
 
           {activeTab === "dependencies" && <div className="rounded-2xl border border-slate-200 bg-white p-5">

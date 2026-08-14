@@ -9,7 +9,7 @@ import { TaskBlockerDelayPanel } from "./TaskBlockerDelayPanel";
 import { TaskDecisionModal } from "./TaskDecisionModal";
 import { TaskLifecycleStepper } from "./TaskLifecycleStepper";
 import { TaskProgressForm } from "./TaskProgressForm";
-import { COMPUTED_READINESS_STATES, readinessLabel, readinessTone, TaskReadinessPanel } from "./TaskReadinessPanel";
+import { COMPUTED_READINESS_STATES, matchesReadinessFilter, readinessLabel, readinessTone, TaskReadinessPanel } from "./TaskReadinessPanel";
 import { TaskSupportAssignmentPanel } from "./TaskSupportAssignmentPanel";
 import { TaskTerminalSummary } from "./TaskTerminalSummary";
 import { TaskVendorDelegationForm } from "./TaskVendorDelegationForm";
@@ -461,7 +461,13 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
   </div>;
 }
 
-export function TaskExecutionBoard({ projectId, user, search = "" }) {
+// `onTasksLoaded` (U19): hands the page the very array this board just drew
+// its rows from, so the count tiles above it are computed from the same data
+// rather than from the planning read model. That mismatch is R26: the tiles
+// counted planning rows (which include tasks excluded from the plan and never
+// instantiated into the execution layer) while the board listed execution
+// rows, so the number above the board could never be trusted to describe it.
+export function TaskExecutionBoard({ projectId, user, search = "", readinessFilter = "all", onTasksLoaded }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -486,6 +492,7 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
       const items = await taskExecutionApi.list(requestedProjectId);
       if (currentProjectIdRef.current !== requestedProjectId) return;
       setTasks(items);
+      onTasksLoaded?.(items);
     } catch (caught) {
       if (currentProjectIdRef.current !== requestedProjectId) return;
       setError(caught?.message || "The task execution board could not be loaded.");
@@ -512,14 +519,33 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
   const roles = actorProjectRoles(project, user);
   const candidates = (project?.memberships || []).filter(m => m.project_role === "internal_employee");
 
+  // U19: the readiness filter narrows the same list the search already
+  // narrowed, using the shared predicate the page's count tiles use - so
+  // "Blocked: 3" above and three rows below are the same three tasks.
   const term = search.trim().toLowerCase();
-  const filtered = term
-    ? tasks.filter(task => [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term)))
-    : tasks;
+  const filtered = tasks.filter(task => {
+    if (!matchesReadinessFilter(task, readinessFilter)) return false;
+    if (!term) return true;
+    return [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term));
+  });
 
   if (loading) return <div className="rounded-2xl border border-slate-200 bg-white p-8"><LoadingSpinner label="Loading task execution board..."/></div>;
   if (error) return <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5"><p className="text-sm font-bold text-rose-700">{error}</p><Button className="mt-3" variant="secondary" size="sm" onClick={load}><RefreshCw size={15}/> Retry</Button></div>;
-  if (!filtered.length) return <EmptyState icon={<ClipboardList size={21}/>} title={tasks.length ? "No tasks match this search" : "No execution tasks yet"} description={tasks.length ? "Try a different search term." : user?.role === "internal_employee" ? "No task is currently assigned to you on this project." : "This project's baseline has no tasks to execute."}/>;
+  // Three different empty states, because they mean three different things:
+  // nothing to execute at all, nothing matching the readiness filter, and
+  // nothing matching the search. Collapsing them would tell a user narrowing
+  // to Blocked on a healthy project that their project has no tasks.
+  if (!filtered.length) {
+    if (!tasks.length) {
+      return <EmptyState icon={<ClipboardList size={21}/>} title="No execution tasks yet" description={user?.role === "internal_employee" ? "No task is currently assigned to you on this project." : "This project's baseline has no tasks to execute."}/>;
+    }
+    const filterLabel = readinessFilter === "all" ? null : readinessFilter;
+    return <EmptyState
+      icon={<ClipboardList size={21}/>}
+      title={filterLabel ? `No ${filterLabel} tasks` : "No tasks match this search"}
+      description={filterLabel ? `No task on this project is currently ${filterLabel}${term ? " and matches this search" : ""}.` : "Try a different search term."}
+    />;
+  }
 
   return <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="Task execution board">
     {filtered.map(task => {

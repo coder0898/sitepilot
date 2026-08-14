@@ -1,5 +1,6 @@
 import { ChevronDown, GitBranch, ShieldCheck } from "lucide-react";
 import { Pill } from "../../../components/ui";
+import { todayIso } from "../../../utils/format";
 
 // U18: renders the readiness U12 computes and U15 puts on the task payload.
 //
@@ -43,6 +44,46 @@ const STATE_TONE = {
 };
 
 const REASON_ICON = { dependency: GitBranch, approval: ShieldCheck };
+
+// U19: the readiness filters offered above the board. `all` is not a
+// readiness state - it is the absence of a filter - so it is handled
+// explicitly rather than compared against `readiness.state`.
+export const READINESS_FILTERS = [["all", "All"], ["ready", "Ready"], ["blocked", "Blocked"]];
+
+// U19: shared by the board (which rows to draw) and the page (what the count
+// tiles say). Defined ONCE and used by both on the same task array, because
+// the whole point of R26 is that the number above the board and the number of
+// rows in it must be the same number - two copies of this predicate is
+// exactly how they drifted apart before.
+export function matchesReadinessFilter(task, filter) {
+  if (!filter || filter === "all") return true;
+  return task.readiness?.state === filter;
+}
+
+// U19 (R20): work that could be pulled forward - ready to start, but not due
+// to start yet. An undated task is never here: with no planned start there is
+// nothing to be ahead of. `todayIso()` is UTC, matching the clock the backend
+// compares planned dates against.
+// `today` is taken as a named option rather than a second positional
+// argument on purpose: passing this straight to `Array.filter` would
+// otherwise put the element INDEX in it and silently compare a date string
+// against a number, which is false for every task and looks like an empty
+// list rather than a bug.
+export function isReadyToAccelerate(task, { today = todayIso() } = {}) {
+  if (task.readiness?.state !== "ready") return false;
+  if (!task.planned_start_date) return false;
+  return task.planned_start_date > today;
+}
+
+export function readinessCounts(tasks) {
+  const counts = { total: tasks.length, ready: 0, blocked: 0, accelerate: 0 };
+  for (const task of tasks) {
+    if (matchesReadinessFilter(task, "ready")) counts.ready += 1;
+    if (matchesReadinessFilter(task, "blocked")) counts.blocked += 1;
+    if (isReadyToAccelerate(task)) counts.accelerate += 1;
+  }
+  return counts;
+}
 
 export function readinessLabel(state) {
   return STATE_LABEL[state] || state;

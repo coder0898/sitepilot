@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
@@ -103,7 +103,10 @@ describe("ExecutionPage - external approval decisions", () => {
       .mockResolvedValueOnce([blockedTask])
       .mockResolvedValue([releasedTask]);
     render(<ExecutionPage user={projectManager}/>);
-    expect(await screen.findByText("Blocked")).toBeInTheDocument();
+    // Scoped to the row: "Blocked" is also a count tile above the board now,
+    // and this assertion is about the task's own readiness pill.
+    const row = await screen.findByRole("button", { name: /freeze approved architectural layout/i });
+    expect(within(row).getByText("Blocked")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /external approvals/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
@@ -113,8 +116,9 @@ describe("ExecutionPage - external approval decisions", () => {
     ));
 
     fireEvent.click(screen.getByRole("button", { name: /^tasks$/i }));
-    expect(await screen.findByText("Ready to start")).toBeInTheDocument();
-    expect(screen.queryByText("Blocked")).not.toBeInTheDocument();
+    const releasedRow = await screen.findByRole("button", { name: /freeze approved architectural layout/i });
+    expect(within(releasedRow).getByText("Ready to start")).toBeInTheDocument();
+    expect(within(releasedRow).queryByText("Blocked")).not.toBeInTheDocument();
   });
 
   it("no longer reads the planning-layer gates for this tab", async () => {
@@ -122,5 +126,146 @@ describe("ExecutionPage - external approval decisions", () => {
     fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
     expect(projectsApi.externalGates).not.toHaveBeenCalled();
+  });
+});
+
+// U19: the header tiles used to be planning figures sitting above an
+// execution board, so they described a different set of tasks than the rows
+// beneath them (R26). They now count the very array the board drew.
+describe("ExecutionPage - readiness counts, filters and accelerate list", () => {
+  const supervisor = { role: "supervisor", id: "u-sup" };
+  const isoOffsetDays = days => {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  };
+  const task = (id, state, extra = {}) => ({
+    ...assignedTask, id, original_code: id.toUpperCase(), title: `Task ${id}`,
+    lifecycle_status: "planned", readiness: { state, reasons: [], advisories: [] }, ...extra,
+  });
+
+  // Two ready (one of them startable early), one blocked, one completed.
+  const boardTasks = [
+    task("t1", "ready", { planned_start_date: isoOffsetDays(12), title: "Pour slab" }),
+    task("t2", "ready", { planned_start_date: isoOffsetDays(-2), title: "Site setup" }),
+    task("t3", "blocked", { planned_start_date: isoOffsetDays(5), title: "Fit ceiling" }),
+    task("t4", "completed", { planned_start_date: isoOffsetDays(-9), title: "Handover pack", lifecycle_status: "completed" }),
+  ];
+
+  const boardRows = () => screen.getAllByRole("button", { name: /^T\d/i });
+  // The accelerate panel deliberately ignores the board's readiness filter -
+  // it answers a different question - so assertions about what the FILTER did
+  // have to look at the rows, not at the page.
+  const boardTitles = () => boardRows().map(row => row.querySelector("strong")?.textContent);
+  // Scoped to the summary group: "Ready" and "Blocked" are also filter
+  // button labels, which is fine on screen but ambiguous to a text query.
+  const tile = label => within(screen.getByRole("group", { name: "Readiness summary" })).getByText(label).closest("article");
+  const acceleratePanel = async () => (await screen.findByRole("heading", { name: /could start early/i })).closest("section");
+
+  beforeEach(() => {
+    taskExecutionApi.list.mockResolvedValue(boardTasks);
+  });
+
+  it("counts the execution rows the board drew, not the planning read model", async () => {
+    // The planning read model claims 42/40/2 - deliberately nothing like the
+    // four execution rows, so a tile still reading from it would be obvious.
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    expect(within(tile("Total tasks")).getByText("4")).toBeInTheDocument();
+    expect(within(tile("Ready")).getByText("2")).toBeInTheDocument();
+    expect(within(tile("Blocked")).getByText("1")).toBeInTheDocument();
+    expect(screen.queryByText("42")).not.toBeInTheDocument();
+  });
+
+  it("lists a ready task whose planned start is still in the future as startable early", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    // Both the panel and the board row carry the title, so wait for the data
+    // to land before scoping to the panel.
+    await screen.findAllByText("Pour slab");
+    const panel = await acceleratePanel();
+    expect(within(panel).getByText("Pour slab")).toBeInTheDocument();
+    expect(within(panel).getByText("1")).toBeInTheDocument();
+  });
+
+  // Both of these wait for the list to actually populate first. Asserting
+  // absence against a panel that has not loaded yet would pass for the wrong
+  // reason and keep passing if the filter broke entirely.
+  it("leaves out a ready task whose planned start has already passed", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    const panel = await acceleratePanel();
+    expect(within(panel).getByText("Pour slab")).toBeInTheDocument();
+    expect(within(panel).queryByText("Site setup")).not.toBeInTheDocument();
+  });
+
+  it("leaves out a blocked task even though its planned start is in the future", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    const panel = await acceleratePanel();
+    expect(within(panel).getByText("Pour slab")).toBeInTheDocument();
+    expect(within(panel).queryByText("Fit ceiling")).not.toBeInTheDocument();
+  });
+
+  it("explains an empty accelerate list rather than showing a bare heading", async () => {
+    taskExecutionApi.list.mockResolvedValue([boardTasks[1], boardTasks[2]]);
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findByText("Site setup");
+    const panel = await acceleratePanel();
+    expect(within(panel).getByText(/nothing can be pulled forward/i)).toBeInTheDocument();
+  });
+
+  it("filters the board to blocked tasks only", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    fireEvent.click(screen.getByRole("button", { name: "Blocked" }));
+    await waitFor(() => expect(boardRows()).toHaveLength(1));
+    expect(boardTitles()).toEqual(["Fit ceiling"]);
+  });
+
+  it("filters the board to ready tasks only", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    fireEvent.click(screen.getByRole("button", { name: "Ready" }));
+    await waitFor(() => expect(boardRows()).toHaveLength(2));
+    expect(boardTitles()).toEqual(["Pour slab", "Site setup"]);
+  });
+
+  it("restores every task when the filter is cleared", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    fireEvent.click(screen.getByRole("button", { name: "Blocked" }));
+    await waitFor(() => expect(boardRows()).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await waitFor(() => expect(boardRows()).toHaveLength(4));
+  });
+
+  // The verification for this unit: the number above the board equals the
+  // number of rows in it, which was not true before.
+  it("keeps each count equal to the rows its filter produces", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    for (const [label, filter] of [["Ready", "Ready"], ["Blocked", "Blocked"]]) {
+      const expected = Number(within(tile(label)).getByText(/^\d+$/).textContent);
+      fireEvent.click(screen.getByRole("button", { name: filter }));
+      await waitFor(() => expect(boardRows()).toHaveLength(expected));
+    }
+  });
+
+  it("says which filter emptied the board rather than claiming the project has no tasks", async () => {
+    taskExecutionApi.list.mockResolvedValue([boardTasks[0]]);
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    fireEvent.click(screen.getByRole("button", { name: "Blocked" }));
+    expect(await screen.findByText("No blocked tasks")).toBeInTheDocument();
+    expect(screen.queryByText("No execution tasks yet")).not.toBeInTheDocument();
+  });
+
+  it("combines the readiness filter with the search box", async () => {
+    render(<ExecutionPage user={supervisor}/>);
+    await screen.findAllByText("Pour slab");
+    fireEvent.click(screen.getByRole("button", { name: "Ready" }));
+    fireEvent.change(screen.getByPlaceholderText(/search task code/i), { target: { value: "slab" } });
+    await waitFor(() => expect(boardRows()).toHaveLength(1));
+    expect(boardTitles()).toEqual(["Pour slab"]);
   });
 });
