@@ -3,13 +3,16 @@ import { CalendarCheck, ClipboardList, FolderKanban, GitBranch, Layers, ListChec
 import { projectsApi } from "../../api/projectsApi";
 import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
 import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
+import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
 import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
 
 // U2 (Task Execution Engine, Phase 1): the "Tasks" tab is now the live
 // TaskExecutionBoard - status transitions, evidence, verification/approval,
 // blockers/delays and support assignment (U2-U6) all happen from here.
-// Dependencies and External Approvals stay read-only planning-time views,
-// unchanged from Phase 9.
+//
+// U18: External Approvals is no longer a read-only planning view either. It
+// now reads the execution-layer approvals and can decide them, so an approval
+// that blocks tasks can actually be granted. Dependencies remains read-only.
 
 export function ExecutionPage({ user }) {
   const [projects, setProjects] = useState([]);
@@ -17,7 +20,10 @@ export function ExecutionPage({ user }) {
   const [projectId, setProjectId] = useState("");
   const [view, setView] = useState(null);
   const [dependencies, setDependencies] = useState({ items: [], total: 0, excluded_warning_count: 0 });
-  const [externalGates, setExternalGates] = useState([]);
+  // U18: the project's memberships, which decide who may record an approval
+  // decision - the same fact the backend checks, rather than the actor's
+  // global role.
+  const [project, setProject] = useState(null);
   const [activeTab, setActiveTab] = useState("tasks");
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -41,35 +47,37 @@ export function ExecutionPage({ user }) {
     if (!projectId) {
       setView(null);
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
-      setExternalGates([]);
+      setProject(null);
       return;
     }
     let active = true;
     setDetailLoading(true);
     setError("");
     if (user.role === "internal_employee") {
-      // executionTasks/dependencies/externalGates are whole-project
+      // executionTasks/dependencies/the project record are whole-project
       // baselines, not scoped to this actor - TaskExecutionBoard below
       // already fetches their own (server-filtered) task list directly, so
-      // there's nothing project-wide for this role to load here.
+      // there's nothing project-wide for this role to load here. The
+      // approvals tab this project record would authorise is not offered to
+      // an Internal Employee either.
       setView(null);
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
-      setExternalGates([]);
+      setProject(null);
       setDetailLoading(false);
       return () => { active = false; };
     }
-    Promise.all([projectsApi.executionTasks(projectId), projectsApi.dependencies(projectId), projectsApi.externalGates(projectId)])
-      .then(([tasksResponse, dependenciesResponse, gatesResponse]) => {
+    Promise.all([projectsApi.executionTasks(projectId), projectsApi.dependencies(projectId), projectsApi.detail(projectId)])
+      .then(([tasksResponse, dependenciesResponse, projectResponse]) => {
         if (!active) return;
         setView(tasksResponse);
         setDependencies(dependenciesResponse);
-        setExternalGates(gatesResponse?.items || gatesResponse || []);
+        setProject(projectResponse);
       })
       .catch(err => {
         if (!active) return;
         setView(null);
         setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
-        setExternalGates([]);
+        setProject(null);
         setError(err.message || "Unable to load this project's task baseline.");
       })
       .finally(() => { if (active) setDetailLoading(false); });
@@ -140,6 +148,12 @@ export function ExecutionPage({ user }) {
             </label>
           </div>
 
+          {/* U18: the tabs are mutually exclusive, so leaving Tasks unmounts
+              this board and returning remounts it - which is what refetches
+              the readiness an approval decision just changed. Nothing extra
+              is needed to recompute the view, and adding a refresh signal
+              alongside would be a second mechanism doing the same work. If
+              these tabs ever render together, that stops being true. */}
           <TaskExecutionBoard projectId={projectId} user={user} search={search}/>
           </>}
 
@@ -161,38 +175,7 @@ export function ExecutionPage({ user }) {
             )}
           </div>}
 
-          {activeTab === "approvals" && <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <h3 className="m-0 font-serif text-lg text-slate-950">External approvals</h3>
-            <p className="mt-1 text-sm text-slate-500">Read-only view of project external gate records.</p>
-            {externalGates.length ? (
-              <div className="mt-4 grid gap-3">
-                {externalGates.map(gate => (
-                  <article key={gate.id} className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          {gate.code && <span className="text-xs font-black text-blue-700">{gate.code}</span>}
-                          <Pill tone="orange">{String(gate.status || "pending_review").replaceAll("_", " ")}</Pill>
-                          <Pill tone={gate.applicability_state === "applicable" ? "green" : "orange"}>
-                            {String(gate.applicability_state || "pending_review").replaceAll("_", " ")}
-                          </Pill>
-                          {gate.mapping_classification && <Pill tone="gray">{String(gate.mapping_classification).replaceAll("_", " ")}</Pill>}
-                        </div>
-                        <h4 className="mt-2 font-black text-slate-950">{gate.approval_name || gate.name || "External approval"}</h4>
-                        {gate.description && <p className="mt-1 text-sm text-slate-600">{gate.description}</p>}
-                      </div>
-                      {gate.sequence && <span className="text-xs font-bold text-slate-400">#{gate.sequence}</span>}
-                    </div>
-                    <div className="mt-4 grid gap-2 text-xs sm:grid-cols-3">
-                      <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">Source</span><strong className="mt-1 block text-slate-700">{gate.source === "project_manual" ? "Manual" : "Template"}</strong></div>
-                      <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">PM owner</span><strong className="mt-1 block text-slate-700">{gate.accountable_pm_name || "Not assigned"}</strong></div>
-                      <div className="rounded-xl bg-slate-50 p-3"><span className="block font-black uppercase tracking-wide text-slate-400">Mapping</span><strong className="mt-1 block text-slate-700">{gate.exact_task_count ? `${gate.exact_task_count} task links` : gate.broad_mapping_text || "Configuration required"}</strong>{gate.blocking && <small className="mt-1 block font-bold text-rose-600">Blocking</small>}</div>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : <p className="mt-3 text-sm text-slate-500">No external approvals available for this project.</p>}
-          </div>}        </>
+          {activeTab === "approvals" && <ExternalApprovalsPanel projectId={projectId} project={project} user={user}/>}        </>
       ) : !error && (
         <EmptyState icon={<CalendarCheck size={21}/>} title="Select an active project" description="Choose an activated project above to view its task baseline."/>
       )}

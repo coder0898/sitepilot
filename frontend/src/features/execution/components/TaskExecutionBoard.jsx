@@ -9,6 +9,7 @@ import { TaskBlockerDelayPanel } from "./TaskBlockerDelayPanel";
 import { TaskDecisionModal } from "./TaskDecisionModal";
 import { TaskLifecycleStepper } from "./TaskLifecycleStepper";
 import { TaskProgressForm } from "./TaskProgressForm";
+import { COMPUTED_READINESS_STATES, readinessLabel, readinessTone, TaskReadinessPanel } from "./TaskReadinessPanel";
 import { TaskSupportAssignmentPanel } from "./TaskSupportAssignmentPanel";
 import { TaskTerminalSummary } from "./TaskTerminalSummary";
 import { TaskVendorDelegationForm } from "./TaskVendorDelegationForm";
@@ -372,6 +373,11 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-700">{error}</div>}
 
     <TaskLifecycleStepper status={detail.lifecycle_status} approvalRequired={detail.approval?.approval_required}/>
+    {/* U18: deliberately above the controls and never wired into them.
+        Readiness is advisory this release, so it explains rather than
+        gates - the lifecycle buttons below still offer whatever the backend
+        permits, even when readiness says blocked. */}
+    <TaskReadinessPanel task={detail}/>
     <TaskApprovalSummary task={detail}/>
 
     {detail.description && <p className="text-sm leading-6 text-slate-600">{detail.description}</p>}
@@ -522,6 +528,12 @@ export function TaskExecutionBoard({ projectId, user, search = "" }) {
         <button type="button" className="flex w-full flex-wrap items-center gap-3 px-4 py-4 text-left sm:px-5" onClick={() => setExpandedId(expanded ? null : task.id)} aria-expanded={expanded}>
           <span className="font-mono text-xs font-black tracking-wide text-blue-700">{task.original_code}</span>
           <span className="min-w-0 flex-1"><strong className="block truncate text-sm font-black text-slate-950">{task.title}</strong><span className="mt-0.5 block text-xs text-slate-500">{[task.phase, task.category].filter(Boolean).join(" / ") || plannedDayLabel(task)}</span></span>
+          {/* U18: only the two COMPUTED states earn a pill. The other seven
+              readiness states are defined by the backend as a restatement of
+              lifecycle_status, which the status pill on this same row
+              already shows - rendering both would put "planned" and
+              "Completed" side by side saying one thing twice. */}
+          {COMPUTED_READINESS_STATES.includes(task.readiness?.state) && <Pill tone={readinessTone(task.readiness.state)}>{readinessLabel(task.readiness.state)}</Pill>}
           {task.approval?.task_class === "class_a" && <Pill tone="yellow">Class A</Pill>}
           {task.approval?.approval_required && <Pill tone="orange">Approval required</Pill>}
           {task.evidence_required && <Pill tone="violet"><Paperclip size={12}/> Evidence required</Pill>}

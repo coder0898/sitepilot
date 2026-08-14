@@ -424,6 +424,63 @@ describe("TaskExecutionBoard", () => {
     await waitFor(() => expect(screen.getByText("Mobilise site")).toBeInTheDocument());
   });
 
+  // U18: readiness is computed by U12 and shipped by U15. The board renders
+  // it and never re-derives it.
+  describe("readiness", () => {
+    const blockedReadiness = {
+      state: "blocked",
+      reasons: [{ kind: "dependency", subject_id: "t0", detail: "Waiting on T000 Handover (planned).", blocking: true }],
+      advisories: [],
+    };
+
+    it("pills a ready task on its row", async () => {
+      taskExecutionApi.list.mockResolvedValue([{ ...baseTask, readiness: { state: "ready", reasons: [], advisories: [] } }]);
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      expect(await screen.findByText("Ready to start")).toBeInTheDocument();
+    });
+
+    it("pills a blocked task on its row", async () => {
+      taskExecutionApi.list.mockResolvedValue([{ ...baseTask, readiness: blockedReadiness }]);
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      expect(await screen.findByText("Blocked")).toBeInTheDocument();
+    });
+
+    // The other seven readiness states restate lifecycle_status, which the
+    // row's own status pill already shows.
+    it("adds no readiness pill for a state that merely restates the lifecycle status", async () => {
+      taskExecutionApi.list.mockResolvedValue([{ ...baseTask, lifecycle_status: "completed", readiness: { state: "completed", reasons: [], advisories: [] } }]);
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      expect(await screen.findByText("completed")).toBeInTheDocument();
+      expect(screen.queryByText("Completed")).not.toBeInTheDocument();
+    });
+
+    it("lists the blocking reasons in the expanded detail", async () => {
+      taskExecutionApi.detail.mockResolvedValue({ ...detail, readiness: blockedReadiness });
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByText("Waiting on T000 Handover (planned).")).toBeInTheDocument();
+    });
+
+    // R5: readiness is advisory this release. It explains, it does not gate -
+    // the backend's own allow-list is still the only authority over what the
+    // portal permits, so a blocked task keeps whatever controls it had.
+    it("still offers the lifecycle controls the backend permits on a blocked task", async () => {
+      taskExecutionApi.detail.mockResolvedValue({ ...detail, lifecycle_status: "ready", readiness: blockedReadiness });
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      fireEvent.click(await screen.findByRole("button", { name: /mobilise site/i }));
+      await screen.findByText("Set up the site office and hoarding.");
+      expect(screen.getByRole("button", { name: "Start work" })).toBeEnabled();
+    });
+
+    it("renders the board unchanged when a task carries no readiness at all", async () => {
+      render(<TaskExecutionBoard projectId="p1" user={supervisor}/>);
+      expect(await screen.findByText("Mobilise site")).toBeInTheDocument();
+      expect(screen.queryByText("Ready to start")).not.toBeInTheDocument();
+    });
+
+  });
+
   // U23: the backend has refused an unexplained early start since U14, and
   // this surface had no idea - the user clicked Start and got a 422 they had
   // no way to answer. Dates are computed relative to today rather than

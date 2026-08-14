@@ -14,6 +14,13 @@ export const taskExecutionApi = {
   logBlocker: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/blockers`, { method: "POST", body: JSON.stringify(payload) }),
   resolveBlocker: (projectId, taskId, blockerId) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/blockers/${blockerId}/resolve`, { method: "POST" }),
   logDelay: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/delays`, { method: "POST", body: JSON.stringify(payload) }),
+  // U18: the EXECUTION-layer approvals, not projectsApi.externalGates. That
+  // one reads the planning-layer gate and its Draft-time applicability
+  // review; this one answers the runtime question the Execution tab asks -
+  // has the approval been granted, does it still block, and which tasks does
+  // it cover. Read access is any active project member; deciding is PM/Admin.
+  listExternalApprovals: projectId => api(`/api/v2/projects/${projectId}/external-approvals`),
+  decideExternalApproval: (projectId, approvalId, payload) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/decision`, { method: "POST", body: JSON.stringify(payload) }),
   assignSupport: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/support-assignments`, { method: "POST", body: JSON.stringify(payload) }),
   endSupportAssignment: (projectId, taskId, assignmentId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/support-assignments/${assignmentId}/end`, { method: "POST", body: JSON.stringify(payload) }),
 };

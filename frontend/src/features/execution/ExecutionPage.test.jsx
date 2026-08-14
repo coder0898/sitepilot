@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
@@ -9,7 +9,7 @@ vi.mock("../../api/projectsApi", () => ({ projectsApi: {
   list: vi.fn(), executionTasks: vi.fn(), dependencies: vi.fn(), externalGates: vi.fn(), detail: vi.fn(),
 } }));
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
-  list: vi.fn(), detail: vi.fn(),
+  list: vi.fn(), detail: vi.fn(), listExternalApprovals: vi.fn(), decideExternalApproval: vi.fn(),
 } }));
 
 const activeProjects = [{ id: "p1", name: "Sample Fitout Project", code: "P1", status: "active" }];
@@ -34,6 +34,7 @@ beforeEach(() => {
   projectsApi.dependencies.mockResolvedValue({ items: [], total: 12, excluded_warning_count: 0 });
   projectsApi.externalGates.mockResolvedValue([]);
   taskExecutionApi.list.mockResolvedValue([assignedTask]);
+  taskExecutionApi.listExternalApprovals.mockResolvedValue([]);
 });
 
 describe("ExecutionPage - Internal Employee scoping", () => {
@@ -65,5 +66,61 @@ describe("ExecutionPage - Internal Employee scoping", () => {
     expect(await screen.findByText("Total tasks")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /dependencies/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /external approvals/i })).toBeInTheDocument();
+  });
+});
+
+// U18's verification: approving the last pending approval on a blocked task
+// flips it to ready without the user reloading anything. This is the whole
+// point of the unit - the approvals endpoints and the readiness engine both
+// shipped weeks ago and nothing on this surface could reach either.
+describe("ExecutionPage - external approval decisions", () => {
+  const projectManager = { role: "project_manager", id: "u-pm" };
+  const blockedTask = {
+    ...assignedTask, lifecycle_status: "planned",
+    readiness: {
+      state: "blocked",
+      reasons: [{ kind: "approval", subject_id: "a1", detail: "Waiting on external approval FIRE-NOC (pending).", blocking: true }],
+      advisories: [],
+    },
+  };
+  const releasedTask = { ...blockedTask, readiness: { state: "ready", reasons: [], advisories: [] } };
+  const approval = {
+    id: "a1", project_id: "p1", project_gate_id: "g1", gate_code: "FIRE-NOC", gate_name: "Fire NOC",
+    status: "pending", blocking: true, coverage_state: "exact", coverage_text: null,
+    covered_task_ids: ["t1"], decided_by: null, decided_by_name: null, decided_at: null,
+  };
+
+  beforeEach(() => {
+    projectsApi.detail.mockResolvedValue({
+      id: "p1", memberships: [{ id: "m1", user_id: "u-pm", project_role: "project_manager", ends_at: null }],
+    });
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([approval]);
+    taskExecutionApi.decideExternalApproval.mockResolvedValue({});
+  });
+
+  it("flips a blocked task to ready once its last approval is granted, with no reload", async () => {
+    taskExecutionApi.list
+      .mockResolvedValueOnce([blockedTask])
+      .mockResolvedValue([releasedTask]);
+    render(<ExecutionPage user={projectManager}/>);
+    expect(await screen.findByText("Blocked")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /external approvals/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm approval" }));
+    await waitFor(() => expect(taskExecutionApi.decideExternalApproval).toHaveBeenCalledWith(
+      "p1", "a1", { decision: "approved", reason: null },
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: /^tasks$/i }));
+    expect(await screen.findByText("Ready to start")).toBeInTheDocument();
+    expect(screen.queryByText("Blocked")).not.toBeInTheDocument();
+  });
+
+  it("no longer reads the planning-layer gates for this tab", async () => {
+    render(<ExecutionPage user={projectManager}/>);
+    fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
+    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    expect(projectsApi.externalGates).not.toHaveBeenCalled();
   });
 });
