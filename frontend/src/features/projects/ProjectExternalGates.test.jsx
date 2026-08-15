@@ -146,4 +146,38 @@ describe("Project external gate applicability", () => {
     await screen.findByText("2 gates");
     expect(screen.queryByRole("button", { name: /^Applicable$/i })).not.toBeInTheDocument();
   });
+
+  describe("bulk applicability decisions", () => {
+    it("marks every selected gate Applicable in one action, skipping gates already there", async () => {
+      render(<ProjectExternalGates project={project} user={{ role: "admin" }}/>);
+      await screen.findByText("2 gates");
+      fireEvent.click(screen.getByLabelText(/select all/i));
+      fireEvent.click(screen.getByRole("button", { name: /mark selected applicable/i }));
+      // g1 is already applicability_state "pending_review" (not "applicable"),
+      // g2 is "not_applicable" - both differ from "applicable" so both go out.
+      await waitFor(() => expect(projectsApi.decideGateApplicability).toHaveBeenCalledTimes(2));
+      expect(projectsApi.decideGateApplicability).toHaveBeenCalledWith("project-1", "g1", { decision: "applicable", reason: null });
+      expect(projectsApi.decideGateApplicability).toHaveBeenCalledWith("project-1", "g2", { decision: "applicable", reason: null });
+    });
+
+    it("requires a shared reason before bulk Not Applicable, then applies it to every selected gate", async () => {
+      render(<ProjectExternalGates project={project} user={{ role: "admin" }}/>);
+      await screen.findByText("2 gates");
+      fireEvent.click(screen.getByLabelText(/select E001/i));
+      fireEvent.click(screen.getByRole("button", { name: /mark selected not applicable/i }));
+      const confirmButton = await screen.findByRole("button", { name: /confirm not applicable/i });
+      expect(confirmButton).toBeDisabled();
+      fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Not required at this site" } });
+      fireEvent.click(confirmButton);
+      await waitFor(() => expect(projectsApi.decideGateApplicability).toHaveBeenCalledWith("project-1", "g1", { decision: "not_applicable", reason: "Not required at this site" }));
+      expect(projectsApi.decideGateApplicability).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not offered to a non-Admin", async () => {
+      render(<ProjectExternalGates project={project} user={{ role: "project_manager" }}/>);
+      await screen.findByText("2 gates");
+      expect(screen.queryByLabelText(/select all/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /mark selected/i })).not.toBeInTheDocument();
+    });
+  });
 });
