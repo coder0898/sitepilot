@@ -110,4 +110,60 @@ describe("TaskDecisionModal", () => {
     const { container: milestoneContainer } = render(<TaskDecisionModal projectId="p1" task={{ ...workTask, task_kind: "milestone", task_class: null }} user={supervisor} onDecided={vi.fn()}/>);
     expect(milestoneContainer).toBeEmptyDOMElement();
   });
+
+  // ---- Admin override confirmation: a speed bump, not a block, when the
+  // role that normally owns this decision is actually available -----------
+
+  describe("Admin override confirmation", () => {
+    const projectWithActiveSupervisor = { memberships: [{ project_role: "site_supervisor", ends_at: null }] };
+    const projectWithEndedSupervisor = { memberships: [{ project_role: "site_supervisor", ends_at: "2026-08-01T00:00:00Z" }] };
+    const projectWithActivePm = { memberships: [{ project_role: "project_manager", ends_at: null }] };
+
+    it("warns Admin before verifying while a Supervisor is active, and proceeds only after confirming", async () => {
+      taskExecutionApi.verify.mockResolvedValue({});
+      render(<TaskDecisionModal projectId="p1" project={projectWithActiveSupervisor} task={workTask} user={admin} onDecided={vi.fn()}/>);
+      fireEvent.click(screen.getByRole("button", { name: "Verify completion" }));
+      expect(await screen.findByText(/supervisor is currently assigned/i)).toBeInTheDocument();
+      expect(taskExecutionApi.verify).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: /continue as admin/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /confirm verification/i }));
+      await waitFor(() => expect(taskExecutionApi.verify).toHaveBeenCalledWith("p1", "t1", { decision: "verified", remarks: null }));
+    });
+
+    it("lets Cancel on the warning drop the action entirely", async () => {
+      render(<TaskDecisionModal projectId="p1" project={projectWithActiveSupervisor} task={workTask} user={admin} onDecided={vi.fn()}/>);
+      fireEvent.click(screen.getByRole("button", { name: "Verify completion" }));
+      fireEvent.click(await screen.findByRole("button", { name: /^cancel$/i }));
+      expect(screen.queryByText(/supervisor is currently assigned/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /confirm verification/i })).not.toBeInTheDocument();
+    });
+
+    it("skips the warning when no Supervisor is currently active (a genuine fallback)", async () => {
+      taskExecutionApi.verify.mockResolvedValue({});
+      render(<TaskDecisionModal projectId="p1" project={projectWithEndedSupervisor} task={workTask} user={admin} onDecided={vi.fn()}/>);
+      fireEvent.click(screen.getByRole("button", { name: "Verify completion" }));
+      expect(screen.queryByText(/supervisor is currently assigned/i)).not.toBeInTheDocument();
+      fireEvent.click(await screen.findByRole("button", { name: /confirm verification/i }));
+      await waitFor(() => expect(taskExecutionApi.verify).toHaveBeenCalled());
+    });
+
+    it("also warns before an Admin approves while a PM is active", async () => {
+      taskExecutionApi.approve.mockResolvedValue({});
+      render(<TaskDecisionModal projectId="p1" project={projectWithActivePm} task={classATask} user={admin} onDecided={vi.fn()}/>);
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+      expect(await screen.findByText(/pm is currently assigned/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /continue as admin/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /confirm approval/i }));
+      await waitFor(() => expect(taskExecutionApi.approve).toHaveBeenCalled());
+    });
+
+    it("does not warn a non-Admin verifier even with an active Supervisor", async () => {
+      taskExecutionApi.verify.mockResolvedValue({});
+      render(<TaskDecisionModal projectId="p1" project={projectWithActiveSupervisor} task={workTask} user={supervisor} onDecided={vi.fn()}/>);
+      fireEvent.click(screen.getByRole("button", { name: "Verify completion" }));
+      expect(screen.queryByText(/supervisor is currently assigned/i)).not.toBeInTheDocument();
+      fireEvent.click(await screen.findByRole("button", { name: /confirm verification/i }));
+      await waitFor(() => expect(taskExecutionApi.verify).toHaveBeenCalled());
+    });
+  });
 });

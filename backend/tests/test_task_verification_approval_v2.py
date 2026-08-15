@@ -522,6 +522,86 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["task"]["lifecycle_status"], "completed")
 
+    def _end_membership(self, project_id: str, role: str) -> None:
+        """Simulates a role being unavailable on the project: ends its
+        active membership row, same shape a real reassignment leaves
+        behind. Used to distinguish a genuine BR-007 fallback from an
+        Admin override in the decision_mode tests below."""
+        with self.Session.begin() as session:
+            membership = session.scalar(
+                select(V2ProjectMembership).where(
+                    V2ProjectMembership.project_id == uuid.UUID(project_id),
+                    V2ProjectMembership.project_role == role,
+                    V2ProjectMembership.ends_at.is_(None),
+                )
+            )
+            membership.ends_at = datetime.now(timezone.utc)
+
+    def test_normal_supervisor_verification_is_tagged_role_normal(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.drive_to_submitted(project["id"], t001.id, submitted_by="pm")
+        self.act_as_supervisor()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        with self.Session() as session:
+            row = session.scalar(select(TaskVerification).where(TaskVerification.task_id == t001.id))
+            self.assertEqual(row.decision_mode, "role_normal")
+
+    def test_admin_verifying_with_an_active_supervisor_is_tagged_override(self):
+        # activate_project() always assigns a Supervisor, so an Admin acting
+        # here is bypassing someone genuinely available, not covering an
+        # absence - decision_mode must say so, distinct from a real fallback.
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.drive_to_submitted(project["id"], t001.id, submitted_by="pm")
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["decision_mode"], "admin_override")
+        with self.Session() as session:
+            row = session.scalar(select(TaskVerification).where(TaskVerification.task_id == t001.id))
+            self.assertEqual(row.decision_mode, "admin_override")
+
+    def test_admin_verifying_with_no_active_supervisor_is_tagged_fallback(self):
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.drive_to_submitted(project["id"], t001.id, submitted_by="pm")
+        # Only now does the Supervisor become unavailable - drive_to_submitted
+        # itself needs an active Supervisor for the ready/in_progress steps.
+        self._end_membership(project["id"], "site_supervisor")
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["decision_mode"], "admin_fallback")
+
+    def test_admin_approving_with_an_active_pm_is_tagged_override(self):
+        project = self.activate_project()
+        t002 = self.tasks_by_code(project["id"])["T002"]
+        self.drive_to_submitted(project["id"], t002.id, submitted_by="admin")
+        self.act_as_supervisor()
+        r = self.verify(project["id"], t002.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        self.act_as_admin()
+        r = self.approve(project["id"], t002.id, "approved")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["decision_mode"], "admin_override")
+
+    def test_admin_approving_with_no_active_pm_is_tagged_fallback(self):
+        project = self.activate_project()
+        self._end_membership(project["id"], "project_manager")
+        t002 = self.tasks_by_code(project["id"])["T002"]
+        self.drive_to_submitted(project["id"], t002.id, submitted_by="admin")
+        self.act_as_supervisor()
+        r = self.verify(project["id"], t002.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        self.act_as_admin()
+        r = self.approve(project["id"], t002.id, "approved")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["decision_mode"], "admin_fallback")
+
     def test_non_pm_cannot_approve_class_a_or_gate(self):
         project = self.activate_project()
         t002 = self.tasks_by_code(project["id"])["T002"]

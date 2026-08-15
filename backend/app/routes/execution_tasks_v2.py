@@ -320,7 +320,7 @@ def get_project_task(
             TaskVerificationSummaryOut(
                 id=v.id, submission_update_id=v.submission_update_id, decision=v.decision, remarks=v.remarks,
                 verified_by=v.verified_by, verified_by_name=actor_names.get(v.verified_by),
-                verified_at=v.verified_at,
+                verified_at=v.verified_at, decision_mode=v.decision_mode,
             )
             for v in verifications
         ],
@@ -328,7 +328,7 @@ def get_project_task(
             TaskApprovalSummaryOut(
                 id=a.id, verification_id=a.verification_id, decision=a.decision, remarks=a.remarks,
                 decided_by=a.decided_by, decided_by_name=actor_names.get(a.decided_by),
-                decided_at=a.decided_at,
+                decided_at=a.decided_at, decision_mode=a.decision_mode,
             )
             for a in approvals
         ],
@@ -457,6 +457,7 @@ def verify_task(
         remarks=verification.remarks,
         verified_by=verification.verified_by,
         verified_at=verification.verified_at,
+        decision_mode=verification.decision_mode,
         task=TaskOut.model_validate(task),
     )
 
@@ -486,6 +487,7 @@ def approve_task(
         remarks=approval.remarks,
         decided_by=approval.decided_by,
         decided_at=approval.decided_at,
+        decision_mode=approval.decision_mode,
         task=TaskOut.model_validate(task),
     )
 

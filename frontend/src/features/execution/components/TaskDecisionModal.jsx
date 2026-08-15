@@ -1,4 +1,4 @@
-import { Hourglass } from "lucide-react";
+import { Hourglass, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, Field, Modal, Textarea } from "../../../components/ui";
@@ -42,12 +42,31 @@ function actorCanAct(action, role) {
   return false;
 }
 
-export function TaskDecisionModal({ projectId, task, user, onDecided }) {
+// Whether an active project member holds `projectRole` right now, mirroring
+// the backend's own check (task_verification.py `_has_active_supervisor`,
+// task_approval.py `_has_active_pm`): an active membership has no `ends_at`.
+function hasActiveRole(project, projectRole) {
+  return (project?.memberships || []).some(m => m.project_role === projectRole && !m.ends_at);
+}
+
+const OVERRIDE_ROLE_FOR_ACTION = { verify: "site_supervisor", approve: "project_manager" };
+const OVERRIDE_ROLE_LABEL = { verify: "Supervisor", approve: "PM" };
+
+export function TaskDecisionModal({ projectId, project, task, user, onDecided }) {
   const action = resolveAction(task);
   const [decision, setDecision] = useState(null); // "positive" | "rejected"
   const [remarks, setRemarks] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // Admin/Super Admin get a speed bump - not a block - when acting while
+  // the role that normally owns this decision (Supervisor for verify, PM
+  // for approve) is actually active on the project, so overriding them is
+  // a deliberate choice rather than a habit. `pendingDecision` holds which
+  // decision ("positive"/"rejected") is waiting on that confirmation.
+  // Mirrors the backend's decision_mode tagging (admin_override vs
+  // admin_fallback), which persists the same distinction to the audit
+  // trail regardless of what happens here.
+  const [pendingDecision, setPendingDecision] = useState(null);
 
   if (!action) return null;
 
@@ -57,6 +76,10 @@ export function TaskDecisionModal({ projectId, task, user, onDecided }) {
     </div>;
   }
 
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const overrideRoleLabel = OVERRIDE_ROLE_LABEL[action];
+  const needsOverrideConfirm = isAdmin && hasActiveRole(project, OVERRIDE_ROLE_FOR_ACTION[action]);
+
   const positiveDecision = action === "verify" ? "verified" : "approved";
   const positiveLabel = action === "verify" ? "Verify completion" : "Approve";
   const modalTitle = action === "verify" ? "Verify task completion" : "Approve task";
@@ -64,8 +87,18 @@ export function TaskDecisionModal({ projectId, task, user, onDecided }) {
 
   function open(next) {
     setError("");
+    if (needsOverrideConfirm) {
+      setPendingDecision(next);
+      return;
+    }
     setRemarks("");
     setDecision(next);
+  }
+
+  function confirmOverride() {
+    setPendingDecision(null);
+    setRemarks("");
+    setDecision(pendingDecision);
   }
 
   async function submit(event) {
@@ -100,6 +133,19 @@ export function TaskDecisionModal({ projectId, task, user, onDecided }) {
         <Button size="sm" variant="danger" onClick={() => open("rejected")}>Reject</Button>
       </div>
     </section>
+
+    {pendingDecision && <Modal title={`${overrideRoleLabel} is currently assigned`} subtitle={`${task.original_code} - ${task.title}`} onClose={() => setPendingDecision(null)} className="sm:max-w-xl">
+      <div className="grid gap-5">
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <ShieldAlert size={20} className="mt-0.5 shrink-0 text-amber-700"/>
+          <p className="text-sm font-bold text-amber-900">This project has an active {overrideRoleLabel}. Continue as Admin instead of leaving this to them?</p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button variant="secondary" onClick={() => setPendingDecision(null)}>Cancel</Button>
+          <Button onClick={confirmOverride}>Continue as Admin</Button>
+        </div>
+      </div>
+    </Modal>}
 
     {decision && <Modal title={decision === "rejected" ? "Reject and reopen task" : modalTitle} subtitle={`${task.original_code} - ${task.title}`} onClose={() => { if (!submitting) setDecision(null); }} className="sm:max-w-xl">
       <form className="grid gap-4" onSubmit={submit}>

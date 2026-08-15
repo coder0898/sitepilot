@@ -286,7 +286,7 @@ function EarlyStartModal({ task, onConfirm, onClose }) {
   </Modal>;
 }
 
-function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }) {
+function TaskDetailPanel({ projectId, project, task, user, roles, candidates, onChanged }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -426,7 +426,7 @@ function TaskDetailPanel({ projectId, task, user, roles, candidates, onChanged }
 
       {earlyStartOpen && <EarlyStartModal task={detail} onConfirm={startEarly} onClose={() => setEarlyStartOpen(false)}/>}
 
-      <TaskDecisionModal projectId={projectId} task={detail} user={user} onDecided={refreshAll}/>
+      <TaskDecisionModal projectId={projectId} project={project} task={detail} user={user} onDecided={refreshAll}/>
 
       {detail.lifecycle_status === "in_progress" && canExecute(detail, user, roles) && <TaskProgressForm projectId={projectId} task={detail} onSubmitted={refreshAll}/>}
 
@@ -579,7 +579,7 @@ export function TaskExecutionBoard({ projectId, user, search = "", readinessFilt
           <Pill tone={STATUS_TONE[task.lifecycle_status] || "gray"}>{task.lifecycle_status.replaceAll("_", " ")}</Pill>
           {expanded ? <ChevronUp size={18} className="text-slate-400"/> : <ChevronDown size={18} className="text-slate-400"/>}
         </button>
-        {expanded && <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-4 sm:px-5"><TaskDetailPanel projectId={projectId} task={task} user={user} roles={roles} candidates={candidates} onChanged={load}/></div>}
+        {expanded && <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-4 sm:px-5"><TaskDetailPanel projectId={projectId} project={project} task={task} user={user} roles={roles} candidates={candidates} onChanged={load}/></div>}
       </article>;
     })}
   </div>;

@@ -92,6 +92,24 @@ class TaskApprovalService:
             403, "Only the project's PM, or an authorized Admin fallback, can approve this task.",
         )
 
+    def _has_active_pm(self, project_id: uuid.UUID) -> bool:
+        return self.db.scalar(
+            select(V2ProjectMembership.id).where(
+                V2ProjectMembership.project_id == project_id,
+                V2ProjectMembership.project_role == "project_manager",
+                V2ProjectMembership.ends_at.is_(None),
+            )
+        ) is not None
+
+    def _decision_mode(self, project: V2Project, actor: User) -> str:
+        """Distinguishes a genuine BR-007 fallback from an Admin override,
+        which `_require_approver` alone cannot: it lets Admin/Super Admin
+        through unconditionally with no record of whether a PM was actually
+        unavailable. See the migration adding this column."""
+        if actor.role in (UserRole.super_admin, UserRole.admin):
+            return "admin_fallback" if not self._has_active_pm(project.id) else "admin_override"
+        return "role_normal"
+
     def _get_task(self, project_id: uuid.UUID, task_id: uuid.UUID) -> Task:
         task = self.db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project_id))
         if not task:
@@ -154,6 +172,7 @@ class TaskApprovalService:
             raise HTTPException(422, "A correction reason is required to reject a task.")
 
         self._require_approver(project, actor)
+        decision_mode = self._decision_mode(project, actor)
 
         verification: TaskVerification | None = None
         if task.task_kind == "approval_gate":
@@ -181,6 +200,7 @@ class TaskApprovalService:
             decision=decision,
             remarks=clean_remarks,
             decided_by=actor.id,
+            decision_mode=decision_mode,
         ))
         self.db.flush()
 
@@ -199,6 +219,7 @@ class TaskApprovalService:
                 "remarks": clean_remarks,
                 "decided_by": str(actor.id),
                 "verification_id": str(verification.id) if verification else None,
+                "decision_mode": decision_mode,
             },
             idempotency_key=f"task:{task.id}:task.approval_recorded:{decision}",
         )

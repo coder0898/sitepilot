@@ -88,6 +88,26 @@ class TaskVerificationService:
             403, "Only the project's Supervisor, or an authorized PM/Admin fallback, can verify work.",
         )
 
+    def _has_active_supervisor(self, project_id: uuid.UUID) -> bool:
+        return self.db.scalar(
+            select(V2ProjectMembership.id).where(
+                V2ProjectMembership.project_id == project_id,
+                V2ProjectMembership.project_role == "site_supervisor",
+                V2ProjectMembership.ends_at.is_(None),
+            )
+        ) is not None
+
+    def _decision_mode(self, project: V2Project, actor: User, roles: set[str]) -> str:
+        """Distinguishes a genuine BR-007 fallback from an Admin override,
+        which `_require_verifier` alone cannot: it lets Admin/Super Admin
+        through unconditionally with no record of whether a Supervisor was
+        actually unavailable. See the migration adding this column."""
+        if actor.role in (UserRole.super_admin, UserRole.admin):
+            return "admin_fallback" if not self._has_active_supervisor(project.id) else "admin_override"
+        if "project_manager" in roles and "site_supervisor" not in roles:
+            return "pm_fallback"
+        return "role_normal"
+
     def _get_task(self, project_id: uuid.UUID, task_id: uuid.UUID) -> Task:
         task = self.db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project_id))
         if not task:
@@ -129,6 +149,7 @@ class TaskVerificationService:
             raise HTTPException(422, "A correction reason is required to reject a task.")
 
         self._require_verifier(project, actor)
+        decision_mode = self._decision_mode(project, actor, self._actor_project_roles(project.id, actor))
 
         submission = self._latest_submission(task.id)
         if submission is None:
@@ -151,6 +172,7 @@ class TaskVerificationService:
             decision=decision,
             remarks=clean_remarks,
             verified_by=actor.id,
+            decision_mode=decision_mode,
         ))
         self.db.flush()
 
@@ -173,6 +195,7 @@ class TaskVerificationService:
                 "decision": decision,
                 "remarks": clean_remarks,
                 "verified_by": str(actor.id),
+                "decision_mode": decision_mode,
             },
             idempotency_key=f"task:{task.id}:task.verification_recorded:{decision}",
         )

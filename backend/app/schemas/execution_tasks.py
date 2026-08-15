@@ -93,6 +93,7 @@ class TaskVerificationOut(BaseModel):
     remarks: str | None
     verified_by: uuid.UUID
     verified_at: datetime
+    decision_mode: str
     task: TaskOut
 
     model_config = ConfigDict(from_attributes=True)
@@ -106,6 +107,7 @@ class TaskApprovalOut(BaseModel):
     remarks: str | None
     decided_by: uuid.UUID
     decided_at: datetime
+    decision_mode: str
     task: TaskOut
 
     model_config = ConfigDict(from_attributes=True)
@@ -417,6 +419,7 @@ class TaskVerificationSummaryOut(BaseModel):
     verified_by: uuid.UUID
     verified_by_name: str | None = None
     verified_at: datetime
+    decision_mode: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -429,6 +432,7 @@ class TaskApprovalSummaryOut(BaseModel):
     decided_by: uuid.UUID
     decided_by_name: str | None = None
     decided_at: datetime
+    decision_mode: str
 
     model_config = ConfigDict(from_attributes=True)
 
