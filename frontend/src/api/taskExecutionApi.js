@@ -21,6 +21,11 @@ export const taskExecutionApi = {
   // it cover. Read access is any active project member; deciding is PM/Admin.
   listExternalApprovals: projectId => api(`/api/v2/projects/${projectId}/external-approvals`),
   decideExternalApproval: (projectId, approvalId, payload) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/decision`, { method: "POST", body: JSON.stringify(payload) }),
+  assignExternalApproval: (projectId, approvalId, payload) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/assign`, { method: "POST", body: JSON.stringify(payload) }),
+  reassignExternalApproval: (projectId, approvalId, payload) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/reassign`, { method: "POST", body: JSON.stringify(payload) }),
+  unassignExternalApproval: (projectId, approvalId) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/unassign`, { method: "POST" }),
+  submitExternalApprovalEvidence: (projectId, approvalId, formData) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/submission`, { method: "POST", body: formData }),
+  downloadExternalApprovalEvidence: (projectId, approvalId, fileId) => fetchBinary(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/evidence/${fileId}`),
   assignSupport: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/support-assignments`, { method: "POST", body: JSON.stringify(payload) }),
   endSupportAssignment: (projectId, taskId, assignmentId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/support-assignments/${assignmentId}/end`, { method: "POST", body: JSON.stringify(payload) }),
 };

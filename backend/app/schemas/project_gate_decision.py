@@ -43,8 +43,29 @@ class ProjectExternalApprovalOut(BaseModel):
     coverage_state: str
     coverage_text: str | None
     covered_task_ids: list[uuid.UUID]
+    assigned_to_user_id: uuid.UUID | None
+    assigned_to_name: str | None
+    assigned_by: uuid.UUID | None
+    assigned_at: datetime | None
+    rejection_reason: str | None
     decided_by: uuid.UUID | None
     decided_by_name: str | None
     decided_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectGateAssignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assignee_user_id: uuid.UUID
+
+
+class ProjectGateSubmissionOut(BaseModel):
+    id: uuid.UUID
+    approval_id: uuid.UUID
+    submitted_by: uuid.UUID
+    note: str | None
+    submitted_at: datetime
+    approval: ProjectExternalApprovalOut
 
     model_config = ConfigDict(from_attributes=True)

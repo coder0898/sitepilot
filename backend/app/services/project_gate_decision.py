@@ -1,7 +1,7 @@
-"""U11: recording a decision against an execution-layer external approval (R8).
+"""U11 / Plan: External Approval Gate Assignment & Evidence Lifecycle (U5).
 
 `ProjectGateDecisionService.decide` moves one `ProjectExternalApproval` from
-`pending` to `approved` or `rejected`, recording who decided and when, and
+`submitted` to `approved` or `rejected`, recording who decided and when, and
 `ProjectGateDecisionService.list_for_project` reads a project's approvals back
 out for the Execution tab.
 
@@ -14,30 +14,41 @@ planning question with the execution one and split one approval's state across
 two families (KTD3/KTD8). `ProjectExternalApproval` exists precisely so that it
 does not have to.
 
-Authority mirrors `TaskApprovalService._require_approver` exactly - the
-project's PM decides, with Admin/Super Admin as the audited fallback under
-BR-007's PM-unavailable hierarchy. Deciding whether an external authority has
-granted permission is the same accountability as approving the work that
-depends on it, so it gets the same rule rather than a new one. Read access is
-wider (any active project member): a Supervisor needs to see which approvals
-are holding up their site even though they may not decide one, which is the
-same split `ProjectGateApplicabilityService` already draws between
-`_require_access` and `_require_decider`.
+Authority is Admin-only (R3) - a deliberate divergence from
+`TaskApprovalService._require_approver`'s PM-first/Admin-fallback pattern,
+made because there is no PM-fallback tier for this decision (see the plan's
+Key Technical Decisions). Read access stays wider (any active project
+member): a Supervisor needs to see which approvals are holding up their site
+even though they may not decide one, which is the same split
+`ProjectGateApplicabilityService` already draws between `_require_access` and
+`_require_decider`.
 
-Three invariants this module is careful about:
+Invariants this module is careful about:
 
 - `ck_v2_project_external_approvals_decision_completeness` requires `status`,
-  `decided_by` and `decided_at` to move together - a `pending` row must have
-  both nulls, a decided row must have both set. They are therefore assigned in
-  one place, never incrementally.
+  `decided_by` and `decided_at` to move together - `unassigned`/`assigned`/
+  `submitted` rows must have both nulls, `approved`/`rejected` rows must have
+  both set. They are therefore assigned in one place, never incrementally,
+  within each of the two writes a rejection makes (see below).
 - `ck_v2_project_external_approvals_coverage_text` permits prose only on an
   `unresolved` approval, so a decision never touches the coverage columns. A
   decision answers "was it granted?", not "what does it cover?" - the two are
   independent, and an approval can perfectly well be granted while its scope is
   still unresolved for a human to pin down (R10).
-- A decided approval is final here. Re-deciding is refused rather than
-  overwritten, because the row carries the attribution of who granted what -
+- An approved approval is final - re-deciding is refused rather than
+  overwritten, because the row carries the attribution of who granted what and
   silently replacing it would destroy the audit answer the row exists to give.
+- A rejection is a TWO-STEP transition, not a single write straight to
+  `assigned`. `decide()` first persists `status='rejected'` with
+  `decided_by`/`decided_at`/`rejection_reason` set (satisfying the
+  completeness check and giving the assignee/PM/Supervisor a real record of
+  why the gate was rejected), then immediately performs a second write in the
+  same call to `status='assigned'`, resetting `decided_by`/`decided_at` to
+  null while KEEPING `rejection_reason` populated so it survives the reset
+  and stays visible to the assignee on resubmission. Without persisting the
+  intermediate `rejected` row, the CHECK constraint's rejected branch would
+  never actually be exercised - a gap three independent doc reviewers flagged
+  before implementation.
 """
 
 from __future__ import annotations
@@ -77,6 +88,11 @@ class ExternalApprovalView:
     coverage_state: str
     coverage_text: str | None
     covered_task_ids: tuple[uuid.UUID, ...]
+    assigned_to_user_id: uuid.UUID | None
+    assigned_to_name: str | None
+    assigned_by: uuid.UUID | None
+    assigned_at: datetime | None
+    rejection_reason: str | None
     decided_by: uuid.UUID | None
     decided_by_name: str | None
     decided_at: datetime | None
@@ -112,22 +128,17 @@ class ProjectGateDecisionService:
         raise HTTPException(403, "You do not have access to this project.")
 
     def _require_approver(self, project: V2Project, actor: User) -> None:
-        """Mirrors `TaskApprovalService._require_approver` deliberately: the
-        project's PM decides, with Admin standing in as the audited fallback
-        (BR-007's PM-unavailable hierarchy). Granting an external approval is
-        the same accountability as approving the work it gates, so it does not
-        get a rule of its own."""
+        """R3: Admin-only, with no PM-fallback tier - a deliberate divergence
+        from `TaskApprovalService._require_approver`'s PM-first pattern. See
+        the plan's Key Technical Decisions for why: the assignment/submission
+        steps that now precede a decision give Admin a real evidence trail to
+        decide from, which is the accountability a PM-first rule exists to
+        provide for task approvals."""
         if actor.role in (UserRole.super_admin, UserRole.admin):
             return
-        roles = self._actor_project_roles(project.id, actor)
-        if "project_manager" in roles:
-            return
-        raise HTTPException(
-            403,
-            "Only the project's PM, or an authorized Admin fallback, can decide an external approval.",
-        )
+        raise HTTPException(403, "Only an Admin can decide an external approval.")
 
-    def _get_approval(self, project_id: uuid.UUID, approval_id: uuid.UUID) -> ProjectExternalApproval:
+    def get_approval(self, project_id: uuid.UUID, approval_id: uuid.UUID) -> ProjectExternalApproval:
         approval = self.db.scalar(
             select(ProjectExternalApproval).where(
                 ProjectExternalApproval.id == approval_id,
@@ -160,41 +171,94 @@ class ProjectGateDecisionService:
             raise HTTPException(422, "A reason is required to reject an external approval.")
 
         self._require_approver(project, actor)
-        approval = self._get_approval(project.id, approval_id)
+        approval = self.get_approval(project.id, approval_id)
 
-        if approval.status != "pending":
+        if approval.status == "approved":
+            raise HTTPException(
+                409, "This external approval has already been approved; a recorded decision cannot be replaced.",
+            )
+        if approval.status != "submitted":
             raise HTTPException(
                 409,
-                f"This external approval has already been {approval.status}; a recorded decision cannot be replaced.",
+                f"This external approval is {approval.status}; only a submitted gate can be decided.",
             )
 
         previous_status = approval.status
         decided_at = datetime.now(timezone.utc)
-        # Assigned together, in one place: the completeness CHECK rejects any
-        # row where status and the decided_by/decided_at pair disagree, and
-        # coverage_state/coverage_text are deliberately untouched.
-        approval.status = decision
-        approval.decided_by = actor.id
-        approval.decided_at = decided_at
-        self.db.add(approval)
 
-        audit_reason = clean_reason or f"External approval {decision} by the accountable PM/Admin."
-        self.db.add(V2AuditEvent(
-            actor_user_id=actor.id,
-            action="PROJECT_EXTERNAL_APPROVAL_DECIDED",
-            entity_type="project_external_approval",
-            entity_id=approval.id,
-            project_id=project.id,
-            source="portal",
-            before_json={"status": previous_status, "decided_by": None, "decided_at": None},
-            after_json={
-                "status": decision,
-                "decided_by": str(actor.id),
-                "decided_at": decided_at.isoformat(),
-            },
-            reason=audit_reason,
-            occurred_at=decided_at,
-        ))
+        if decision == "approved":
+            # Single write: assigned together, in one place, so the
+            # completeness CHECK never sees status and decided_by/decided_at
+            # disagree. coverage_state/coverage_text are deliberately
+            # untouched - a decision answers "was it granted?", not "what
+            # does it cover?".
+            approval.status = "approved"
+            approval.decided_by = actor.id
+            approval.decided_at = decided_at
+            self.db.add(approval)
+
+            self.db.add(V2AuditEvent(
+                actor_user_id=actor.id,
+                action="PROJECT_EXTERNAL_APPROVAL_DECIDED",
+                entity_type="project_external_approval",
+                entity_id=approval.id,
+                project_id=project.id,
+                source="portal",
+                before_json={"status": previous_status},
+                after_json={"status": "approved", "decided_by": str(actor.id), "decided_at": decided_at.isoformat()},
+                reason=clean_reason or "External approval approved by Admin.",
+                occurred_at=decided_at,
+            ))
+        else:
+            # Two-step transition (see module docstring): persist the
+            # 'rejected' state first - satisfying the completeness CHECK and
+            # giving the record a real "why" - then move on to 'assigned' in
+            # the same call so the same assignee can resubmit immediately.
+            approval.status = "rejected"
+            approval.decided_by = actor.id
+            approval.decided_at = decided_at
+            approval.rejection_reason = clean_reason
+            self.db.add(approval)
+            self.db.flush()
+
+            self.db.add(V2AuditEvent(
+                actor_user_id=actor.id,
+                action="PROJECT_EXTERNAL_APPROVAL_DECIDED",
+                entity_type="project_external_approval",
+                entity_id=approval.id,
+                project_id=project.id,
+                source="portal",
+                before_json={"status": previous_status},
+                after_json={
+                    "status": "rejected", "decided_by": str(actor.id),
+                    "decided_at": decided_at.isoformat(), "rejection_reason": clean_reason,
+                },
+                reason=clean_reason,
+                occurred_at=decided_at,
+            ))
+            self.db.flush()
+
+            # The reset: decided_by/decided_at go back to null (no longer a
+            # completed decision) but rejection_reason is deliberately left
+            # populated, unlike the decision pair - it must survive the reset
+            # to stay visible to the assignee's resubmission.
+            approval.status = "assigned"
+            approval.decided_by = None
+            approval.decided_at = None
+            self.db.add(approval)
+
+            self.db.add(V2AuditEvent(
+                actor_user_id=actor.id,
+                action="PROJECT_EXTERNAL_APPROVAL_REOPENED_FOR_RESUBMISSION",
+                entity_type="project_external_approval",
+                entity_id=approval.id,
+                project_id=project.id,
+                source="portal",
+                before_json={"status": "rejected"},
+                after_json={"status": "assigned"},
+                reason="Returned to the assignee for resubmission after rejection.",
+                occurred_at=decided_at,
+            ))
         self.db.flush()
 
         # Emitted before the commit, inside the same transaction as the row it
@@ -202,7 +266,10 @@ class ProjectGateDecisionService:
         # decision land together or not at all. `aggregate_type` is the
         # approval rather than the project on purpose: the dispatcher fans a
         # `project` aggregate out to the PM and Supervisor over WhatsApp, and
-        # notifying on gate decisions is not this unit's call to make.
+        # notifying on gate decisions is not this unit's call to make. One
+        # outbox event per decide() call regardless of decision - the
+        # reject-then-reopen sequence is one logical business event (the
+        # decision), not two.
         OutboxService(self.db).emit(
             event_type="project_external_approval.decided",
             aggregate_type="project_external_approval",
@@ -217,7 +284,7 @@ class ProjectGateDecisionService:
                 "decided_at": decided_at.isoformat(),
                 "blocking": approval.blocking,
             },
-            idempotency_key=f"project_external_approval:{approval.id}:project_external_approval.decided",
+            idempotency_key=f"project_external_approval:{approval.id}:project_external_approval.decided:{decided_at.isoformat()}",
         )
 
         try:
@@ -229,7 +296,7 @@ class ProjectGateDecisionService:
         # The decided row is returned in the same shape the listing uses, so a
         # caller can drop it straight back into the list it came from without
         # a second round trip.
-        return self._view_for_approval(approval)
+        return self.view_for_approval(approval)
 
     # ---- read --------------------------------------------------------
 
@@ -239,6 +306,7 @@ class ProjectGateDecisionService:
         gate: V2ProjectExternalGate,
         covered_task_ids,
         decided_by_name: str | None,
+        assigned_to_name: str | None,
     ) -> ExternalApprovalView:
         return ExternalApprovalView(
             id=approval.id,
@@ -251,12 +319,17 @@ class ProjectGateDecisionService:
             coverage_state=approval.coverage_state,
             coverage_text=approval.coverage_text,
             covered_task_ids=tuple(covered_task_ids),
+            assigned_to_user_id=approval.assigned_to_user_id,
+            assigned_to_name=assigned_to_name,
+            assigned_by=approval.assigned_by,
+            assigned_at=approval.assigned_at,
+            rejection_reason=approval.rejection_reason,
             decided_by=approval.decided_by,
             decided_by_name=decided_by_name,
             decided_at=approval.decided_at,
         )
 
-    def _view_for_approval(self, approval: ProjectExternalApproval) -> ExternalApprovalView:
+    def view_for_approval(self, approval: ProjectExternalApproval) -> ExternalApprovalView:
         """Single-row counterpart to `list_for_project`'s batched build - used
         by `decide`, where exactly one approval is in hand."""
         gate = self.db.get(V2ProjectExternalGate, approval.project_gate_id)
@@ -269,7 +342,11 @@ class ProjectGateDecisionService:
             self.db.scalar(select(User.name).where(User.id == approval.decided_by))
             if approval.decided_by else None
         )
-        return self._view(approval, gate, covered_task_ids, decided_by_name)
+        assigned_to_name = (
+            self.db.scalar(select(User.name).where(User.id == approval.assigned_to_user_id))
+            if approval.assigned_to_user_id else None
+        )
+        return self._view(approval, gate, covered_task_ids, decided_by_name, assigned_to_name)
 
     def list_for_project(self, project_id: uuid.UUID, actor: User) -> list[ExternalApprovalView]:
         """Every execution-layer approval on one project, with the gate's
@@ -305,11 +382,13 @@ class ProjectGateDecisionService:
             covered.setdefault(link.approval_id, []).append(link.task_id)
 
         decider_ids = {approval.decided_by for approval, _ in rows if approval.decided_by}
-        decider_names: dict[uuid.UUID, str] = {}
-        if decider_ids:
-            decider_names = {
+        assignee_ids = {approval.assigned_to_user_id for approval, _ in rows if approval.assigned_to_user_id}
+        user_names: dict[uuid.UUID, str] = {}
+        name_lookup_ids = decider_ids | assignee_ids
+        if name_lookup_ids:
+            user_names = {
                 row[0]: row[1]
-                for row in self.db.execute(select(User.id, User.name).where(User.id.in_(decider_ids))).all()
+                for row in self.db.execute(select(User.id, User.name).where(User.id.in_(name_lookup_ids))).all()
             }
 
         return [
@@ -317,7 +396,8 @@ class ProjectGateDecisionService:
                 approval,
                 gate,
                 covered.get(approval.id, ()),
-                decider_names.get(approval.decided_by) if approval.decided_by else None,
+                user_names.get(approval.decided_by) if approval.decided_by else None,
+                user_names.get(approval.assigned_to_user_id) if approval.assigned_to_user_id else None,
             )
             for approval, gate in rows
         ]

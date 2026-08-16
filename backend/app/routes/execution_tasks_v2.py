@@ -65,8 +65,15 @@ from app.schemas.execution_tasks import (
     TaskVerificationSummaryOut,
     UnresolvedApprovalOut,
 )
-from app.schemas.project_gate_decision import ProjectExternalApprovalOut, ProjectGateDecisionIn
+from app.schemas.project_gate_decision import (
+    ProjectExternalApprovalOut,
+    ProjectGateAssignIn,
+    ProjectGateDecisionIn,
+    ProjectGateSubmissionOut,
+)
+from app.services.project_gate_assignment import ProjectGateAssignmentService
 from app.services.project_gate_decision import ProjectGateDecisionService
+from app.services.project_gate_submission import ProjectGateSubmissionService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
@@ -521,6 +528,95 @@ def decide_project_external_approval(
 ):
     return ProjectGateDecisionService(db).decide(
         project_id, approval_id, payload.decision, actor, reason=payload.reason,
+    )
+
+
+@router.post(
+    "/{project_id}/external-approvals/{approval_id}/assign",
+    response_model=ProjectExternalApprovalOut,
+)
+def assign_project_external_approval(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    payload: ProjectGateAssignIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    approval = ProjectGateAssignmentService(db).assign(project_id, approval_id, payload.assignee_user_id, actor)
+    return ProjectGateDecisionService(db).view_for_approval(approval)
+
+
+@router.post(
+    "/{project_id}/external-approvals/{approval_id}/reassign",
+    response_model=ProjectExternalApprovalOut,
+)
+def reassign_project_external_approval(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    payload: ProjectGateAssignIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    approval = ProjectGateAssignmentService(db).reassign(project_id, approval_id, payload.assignee_user_id, actor)
+    return ProjectGateDecisionService(db).view_for_approval(approval)
+
+
+@router.post(
+    "/{project_id}/external-approvals/{approval_id}/unassign",
+    response_model=ProjectExternalApprovalOut,
+)
+def unassign_project_external_approval(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    approval = ProjectGateAssignmentService(db).unassign(project_id, approval_id, actor)
+    return ProjectGateDecisionService(db).view_for_approval(approval)
+
+
+@router.post(
+    "/{project_id}/external-approvals/{approval_id}/submission",
+    response_model=ProjectGateSubmissionOut,
+)
+async def submit_project_external_approval_evidence(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    note: str | None = Form(default=None),
+    evidence: list[UploadFile] = File(default=[]),
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    files = [(await upload.read(), upload.filename, upload.content_type) for upload in evidence]
+    submission = ProjectGateSubmissionService(db).submit(project_id, approval_id, actor, note=note, files=files)
+    approval = ProjectGateDecisionService(db).get_approval(project_id, approval_id)
+    return ProjectGateSubmissionOut(
+        id=submission.id,
+        approval_id=submission.approval_id,
+        submitted_by=submission.submitted_by,
+        note=submission.note,
+        submitted_at=submission.submitted_at,
+        approval=ProjectGateDecisionService(db).view_for_approval(approval),
+    )
+
+
+@router.get("/{project_id}/external-approvals/{approval_id}/evidence/{file_id}")
+def download_project_external_approval_evidence(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    file_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    file_object, content = ProjectGateSubmissionService(db).get_evidence_file(project_id, approval_id, file_id, actor)
+    safe_filename = file_object.original_filename.replace('"', "").replace("\\", "").replace("\n", "").replace("\r", "")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=file_object.mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
