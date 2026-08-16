@@ -65,6 +65,17 @@ alter table siteops_v2.project_external_approvals
     or (status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)
   );
 
+-- A row already 'approved'/'rejected' under the old model has no assignee
+-- (assigned_to_user_id is a brand-new column, null by default) but is about
+-- to be bound by a constraint requiring one on every non-'unassigned' row.
+-- There is no real historical assignee to recover, so the decider is used
+-- as the best-effort stand-in - the same person is already attributed as
+-- having decided it, and the alternative (leaving the column null) would
+-- make the constraint below impossible to add without an exception carve-out.
+update siteops_v2.project_external_approvals
+  set assigned_to_user_id = decided_by, assigned_by = decided_by, assigned_at = decided_at
+  where status in ('approved', 'rejected') and assigned_to_user_id is null;
+
 -- Every state past 'unassigned' names an assignee - assign() sets it,
 -- reassign()/unassign() (U3) either replace or clear it together with the
 -- status, and it is never left dangling on a status that implies no one is
