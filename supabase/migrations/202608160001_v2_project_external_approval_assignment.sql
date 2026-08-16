@@ -34,13 +34,23 @@ alter table siteops_v2.project_external_approvals
   add column if not exists assigned_at timestamptz,
   add column if not exists rejection_reason text;
 
--- Constraints are widened BEFORE the backfill UPDATE below, not after: the
--- old ck_v2_project_external_approvals_status/decision_completeness pair
--- only permits ('pending', 'approved', 'rejected') and is still the active
--- constraint on the table at this point. Backfilling to 'unassigned' before
--- widening it would trip that still-active old CHECK.
+-- Both old constraints are dropped BEFORE the backfill UPDATE, and the new
+-- (narrower-vocabulary-but-differently-shaped) ones are only added AFTER
+-- it. Neither ordering that keeps a CHECK active throughout works: the old
+-- pair only permits ('pending', 'approved', 'rejected'), so writing
+-- 'unassigned' trips it; the new pair does not permit 'pending' at all, so
+-- adding it before the backfill trips it on every still-'pending' row. The
+-- backfill therefore runs in the gap where no status CHECK is active.
 alter table siteops_v2.project_external_approvals
   drop constraint if exists ck_v2_project_external_approvals_status;
+alter table siteops_v2.project_external_approvals
+  drop constraint if exists ck_v2_project_external_approvals_decision_completeness;
+
+-- Any row instantiated under the old model is 'pending' with no assignee.
+update siteops_v2.project_external_approvals
+  set status = 'unassigned'
+  where status = 'pending';
+
 alter table siteops_v2.project_external_approvals
   add constraint ck_v2_project_external_approvals_status
   check (status in ('unassigned', 'assigned', 'submitted', 'approved', 'rejected'));
@@ -49,19 +59,11 @@ alter table siteops_v2.project_external_approvals
 -- enum: unassigned/assigned/submitted are all pre-decision states and must
 -- carry no decided_by/decided_at; approved/rejected must carry both.
 alter table siteops_v2.project_external_approvals
-  drop constraint if exists ck_v2_project_external_approvals_decision_completeness;
-alter table siteops_v2.project_external_approvals
   add constraint ck_v2_project_external_approvals_decision_completeness
   check (
     (status in ('unassigned', 'assigned', 'submitted') and decided_by is null and decided_at is null)
     or (status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)
   );
-
--- Any row instantiated under the old model is 'pending' with no assignee.
--- Safe now that both CHECK constraints above accept 'unassigned'.
-update siteops_v2.project_external_approvals
-  set status = 'unassigned'
-  where status = 'pending';
 
 -- Every state past 'unassigned' names an assignee - assign() sets it,
 -- reassign()/unassign() (U3) either replace or clear it together with the
