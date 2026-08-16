@@ -52,12 +52,31 @@ describe("ExecutionPage - Internal Employee scoping", () => {
     expect(screen.getByText("Your assigned tasks")).toBeInTheDocument();
   });
 
-  it("hides the whole-project metric cards and the Dependencies/External Approvals sub-tabs", async () => {
+  it("hides the whole-project metric cards and the Dependencies sub-tab, but keeps External Approvals", async () => {
+    // External Approvals is the one sub-tab still offered to an Internal
+    // Employee: they can be a gate's assignee and need to submit evidence
+    // for it. list_for_project scopes what they see there to their own
+    // assigned gates - see the ExternalApprovalsPanel test file.
     render(<ExecutionPage user={{ role: "internal_employee", id: "u-ie" }}/>);
     await screen.findByText("Freeze approved architectural layout");
     expect(screen.queryByText("Total tasks")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /dependencies/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /external approvals/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /timeline/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /external approvals/i })).toBeInTheDocument();
+  });
+
+  it("lets an Internal Employee open External Approvals and see a gate assigned to them", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([{
+      id: "a1", project_id: "p1", project_gate_id: "g1", gate_code: "FIRE-NOC", gate_name: "Fire NOC",
+      status: "assigned", blocking: true, coverage_state: "exact", coverage_text: null, covered_task_ids: [],
+      assigned_to_user_id: "u-ie", assigned_to_name: "Employee", assigned_by: "u-adm", assigned_at: "2026-08-10T09:00:00Z",
+      rejection_reason: null, decided_by: null, decided_by_name: null, decided_at: null,
+    }]);
+    render(<ExecutionPage user={{ role: "internal_employee", id: "u-ie" }}/>);
+    await screen.findByText("Freeze approved architectural layout");
+    fireEvent.click(screen.getByRole("button", { name: /external approvals/i }));
+    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    expect(screen.getByText("Submit evidence")).toBeInTheDocument();
   });
 
   it("still shows the full whole-project view for a Supervisor", async () => {

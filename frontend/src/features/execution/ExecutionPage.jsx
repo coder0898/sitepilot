@@ -144,24 +144,31 @@ export function ExecutionPage({ user }) {
               that count in its own heading, and two numbers for one fact is
               how a surface starts disagreeing with itself. */}
 
-          {/* An Internal Employee only ever sees their own assigned tasks
-              here (server-filtered - see list_project_tasks) - Dependencies
-              and External Approvals are whole-project planning views with
-              nothing "assigned" about them, so they're not offered. */}
-          {user.role !== "internal_employee" && <div className="rounded-2xl border border-slate-200 bg-white p-2">
+          {/* An Internal Employee only ever sees their own assigned tasks in
+              the Tasks tab (server-filtered - see list_project_tasks), and
+              Dependencies stays a whole-project planning view they're not
+              offered. External Approvals is the one exception since a plan
+              U3/U5 change: an employee can now be the assignee of a gate and
+              needs to submit evidence for it - list_for_project scopes what
+              they see there to their own assigned gates, mirroring the same
+              "only what's assigned to me" rule the Tasks tab already uses. */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-2">
             <div className="flex flex-wrap gap-2">
-              {[
-                ["tasks", "Tasks", ClipboardList],
-                ["timeline", "Timeline", CalendarRange],
-                ["dependencies", "Dependencies", GitBranch],
-                ["approvals", "External Approvals", ShieldCheck],
-              ].map(([key, label, Icon]) => (
+              {(user.role === "internal_employee"
+                ? [["tasks", "Tasks", ClipboardList], ["approvals", "External Approvals", ShieldCheck]]
+                : [
+                    ["tasks", "Tasks", ClipboardList],
+                    ["timeline", "Timeline", CalendarRange],
+                    ["dependencies", "Dependencies", GitBranch],
+                    ["approvals", "External Approvals", ShieldCheck],
+                  ]
+              ).map(([key, label, Icon]) => (
                 <button key={key} onClick={() => setActiveTab(key)} className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition ${activeTab === key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600"}`}>
                   <Icon size={16}/>{label}
                 </button>
               ))}
             </div>
-          </div>}
+          </div>
 
           {activeTab === "tasks" && <>
           {/* U19 (R20): work that could be pulled forward - ready to start,

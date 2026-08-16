@@ -354,14 +354,18 @@ class ProjectGateDecisionService:
 
         Read access is any active project member - a Supervisor must be able
         to see what is holding up their site even though `_require_approver`
-        will not let them decide it.
+        will not let them decide it. An Internal Employee is the one
+        exception: mirroring `list_project_tasks`'s own scoping (they only
+        see tasks they're actively assigned to support, not the whole
+        project), they see only the gates assigned to them - not every other
+        assignee's approval evidence on the project.
 
         Three flat queries rather than a join per approval: the Execution tab
         renders the whole list at once, and a per-row lookup would grow with
         the project."""
         project = self._require_access(project_id, actor)
 
-        rows = self.db.execute(
+        query = (
             select(ProjectExternalApproval, V2ProjectExternalGate)
             .join(V2ProjectExternalGate, V2ProjectExternalGate.id == ProjectExternalApproval.project_gate_id)
             .where(ProjectExternalApproval.project_id == project.id)
@@ -369,7 +373,10 @@ class ProjectGateDecisionService:
                 V2ProjectExternalGate.template_sequence.asc(),
                 V2ProjectExternalGate.original_code.asc(),
             )
-        ).all()
+        )
+        if actor.role == UserRole.internal_employee:
+            query = query.where(ProjectExternalApproval.assigned_to_user_id == actor.id)
+        rows = self.db.execute(query).all()
         if not rows:
             return []
 

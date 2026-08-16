@@ -548,6 +548,21 @@ class ProjectGateDecisionTests(unittest.TestCase):
         self.act_as(self.pm_user())
         self.assertEqual(self.listing().status_code, 200)
 
+    def test_an_internal_employee_sees_only_gates_assigned_to_them(self):
+        """Mirrors list_project_tasks' own scoping: an Internal Employee is
+        not a general project-wide reader like PM/Supervisor - they see only
+        what's assigned to them, not every other assignee's approval."""
+        mine = self.make_approval(status="assigned", assigned_to_user_id=INTERNAL_ID)
+        self.make_approval(status="assigned", assigned_to_user_id=PM_ID)
+        self.act_as(self.internal_user())
+        body = self.listing().json()
+        self.assertEqual([item["id"] for item in body], [str(mine["id"])])
+
+    def test_an_internal_employee_with_no_assigned_gates_sees_an_empty_listing(self):
+        self.make_approval(status="assigned", assigned_to_user_id=PM_ID)
+        self.act_as(self.internal_user())
+        self.assertEqual(self.listing().json(), [])
+
     def test_a_non_member_cannot_read_the_listing(self):
         self.make_approval()
         self.act_as(User(
