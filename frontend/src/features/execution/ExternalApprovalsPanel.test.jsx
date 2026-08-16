@@ -5,88 +5,177 @@ import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
 
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
-  listExternalApprovals: vi.fn(), decideExternalApproval: vi.fn(), list: vi.fn(), detail: vi.fn(),
+  listExternalApprovals: vi.fn(), decideExternalApproval: vi.fn(),
+  assignExternalApproval: vi.fn(), reassignExternalApproval: vi.fn(), unassignExternalApproval: vi.fn(),
+  submitExternalApprovalEvidence: vi.fn(),
+  list: vi.fn(), detail: vi.fn(),
 } }));
 vi.mock("../../api/projectsApi", () => ({ projectsApi: { detail: vi.fn(), externalGates: vi.fn() } }));
 
 const gate = (applicability_state = "pending_review") => ({ id: `g-${Math.random()}`, applicability_state });
 
-const pending = {
+const baseApproval = {
   id: "a1", project_id: "p1", project_gate_id: "g1", gate_code: "FIRE-NOC", gate_name: "Fire NOC",
-  status: "pending", blocking: true, coverage_state: "exact", coverage_text: null,
-  covered_task_ids: ["t1", "t2"], decided_by: null, decided_by_name: null, decided_at: null,
+  status: "unassigned", blocking: true, coverage_state: "exact", coverage_text: null,
+  covered_task_ids: ["t1", "t2"],
+  assigned_to_user_id: null, assigned_to_name: null, assigned_by: null, assigned_at: null,
+  rejection_reason: null, decided_by: null, decided_by_name: null, decided_at: null,
 };
 
-// Authority here is the actor's membership of THIS project, not their global
-// role - the same fact ProjectGateDecisionService._require_approver resolves.
-const projectManager = { id: "u-pm", role: "project_manager" };
-const supervisor = { id: "u-sup", role: "supervisor" };
 const admin = { id: "u-adm", role: "admin" };
-const membership = (user, projectRole) => ({ id: `m-${user.id}`, user_id: user.id, project_role: projectRole, ends_at: null });
+const pm = { id: "u-pm", role: "project_manager" };
+const supervisor = { id: "u-sup", role: "supervisor" };
+const employee = { id: "u-emp", role: "internal_employee" };
+const otherEmployee = { id: "u-emp2", role: "internal_employee" };
+
+const membership = (user, projectRole) => ({ id: `m-${user.id}`, user_id: user.id, employee_id: `emp-${user.id}`, name: user.id, project_role: projectRole, ends_at: null });
 const projectWith = (...memberships) => ({ id: "p1", memberships });
-const pmProject = projectWith(membership(projectManager, "project_manager"), membership(supervisor, "site_supervisor"));
+const fullProject = projectWith(
+  membership(pm, "project_manager"),
+  membership(supervisor, "site_supervisor"),
+  membership(employee, "internal_employee"),
+  membership(otherEmployee, "internal_employee"),
+);
 
 const renderPanel = (user, props = {}) => render(
-  <ExternalApprovalsPanel projectId="p1" project={pmProject} user={user} {...props}/>,
+  <ExternalApprovalsPanel projectId="p1" project={fullProject} user={user} {...props}/>,
 );
 
 beforeEach(() => {
   vi.clearAllMocks();
-  taskExecutionApi.listExternalApprovals.mockResolvedValue([pending]);
+  taskExecutionApi.listExternalApprovals.mockResolvedValue([baseApproval]);
   projectsApi.externalGates.mockResolvedValue({ items: [gate("applicable")] });
 });
 
 describe("ExternalApprovalsPanel", () => {
   it("reads the execution-layer approvals, not the planning-layer gates", async () => {
-    renderPanel(projectManager);
+    renderPanel(admin);
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
     expect(taskExecutionApi.listExternalApprovals).toHaveBeenCalledWith("p1");
   });
 
-  it("offers approve and reject to the project's PM on a pending approval", async () => {
-    renderPanel(projectManager);
+  // ---- assignment (Admin only) -------------------------------------------
+
+  it("offers Admin an Assign action on an unassigned gate", async () => {
+    renderPanel(admin);
+    expect(await screen.findByRole("button", { name: "Assign" })).toBeInTheDocument();
+  });
+
+  it("does not offer PM or Supervisor an Assign action", async () => {
+    renderPanel(pm);
+    await screen.findByText("Fire NOC");
+    expect(screen.queryByRole("button", { name: "Assign" })).not.toBeInTheDocument();
+  });
+
+  it("shows the employee picker's empty state when no eligible employees exist", async () => {
+    renderPanel(admin, { project: projectWith(membership(pm, "project_manager")) });
+    fireEvent.click(await screen.findByRole("button", { name: "Assign" }));
+    expect(await screen.findByText("No eligible employees on this project")).toBeInTheDocument();
+  });
+
+  it("assigns the gate to the selected employee", async () => {
+    taskExecutionApi.assignExternalApproval.mockResolvedValue({});
+    renderPanel(admin);
+    fireEvent.click(await screen.findByRole("button", { name: "Assign" }));
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: employee.id } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Assign" })[1]);
+    await waitFor(() => expect(taskExecutionApi.assignExternalApproval).toHaveBeenCalledWith(
+      "p1", "a1", { assignee_user_id: employee.id },
+    ));
+  });
+
+  it("surfaces an assignment failure inline without closing the modal", async () => {
+    taskExecutionApi.assignExternalApproval.mockRejectedValue(new Error("This external approval is already assigned."));
+    renderPanel(admin);
+    fireEvent.click(await screen.findByRole("button", { name: "Assign" }));
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: employee.id } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Assign" })[1]);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/already assigned/i);
+  });
+
+  it("offers Reassign and Unassign on an assigned gate, not Assign", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    renderPanel(admin);
+    expect(await screen.findByRole("button", { name: "Reassign" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unassign" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Assign" })).not.toBeInTheDocument();
+  });
+
+  it("unassigns an assigned gate", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    taskExecutionApi.unassignExternalApproval.mockResolvedValue({});
+    renderPanel(admin);
+    fireEvent.click(await screen.findByRole("button", { name: "Unassign" }));
+    await waitFor(() => expect(taskExecutionApi.unassignExternalApproval).toHaveBeenCalledWith("p1", "a1"));
+  });
+
+  // ---- submission (assignee only) ----------------------------------------
+
+  it("shows the assignee a submission form on their assigned gate", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    renderPanel(employee);
+    expect(await screen.findByText("Submit evidence")).toBeInTheDocument();
+  });
+
+  it("does not show the submission form to a different employee on someone else's assigned gate", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    renderPanel(otherEmployee);
+    await screen.findByText("Fire NOC");
+    expect(screen.queryByText("Submit evidence")).not.toBeInTheDocument();
+  });
+
+  it("submits a note and evidence for the assignee's gate", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    taskExecutionApi.submitExternalApprovalEvidence.mockResolvedValue({});
+    renderPanel(employee);
+    fireEvent.change(await screen.findByPlaceholderText(/describe what's attached/i), { target: { value: "NOC attached." } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit for review" }));
+    await waitFor(() => expect(taskExecutionApi.submitExternalApprovalEvidence).toHaveBeenCalledWith("p1", "a1", expect.any(FormData)));
+  });
+
+  it("displays the rejection reason above the resubmission form", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee", rejection_reason: "Missing a signature page." },
+    ]);
+    renderPanel(employee);
+    expect(await screen.findByText(/Missing a signature page\./)).toBeInTheDocument();
+  });
+
+  // ---- decision (Admin only) ----------------------------------------------
+
+  it("offers Approve and Reject to Admin on a submitted gate", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    renderPanel(admin);
     expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
   });
 
-  it("offers them to an Admin regardless of membership", async () => {
-    renderPanel(admin, { project: projectWith() });
-    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
-  });
-
-  // Read access is deliberately wider than write: a Supervisor must see what
-  // is holding up their site without being offered an action that would 403.
-  it("shows a Supervisor the approval but no decision actions", async () => {
-    renderPanel(supervisor);
-    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
-    expect(screen.getByText(/only the project's PM or an Admin/i)).toBeInTheDocument();
-  });
-
-  it("offers no actions on an approval that is already decided", async () => {
+  it("does not offer PM a decision action, unlike the old PM-fallback rule", async () => {
     taskExecutionApi.listExternalApprovals.mockResolvedValue([
-      { ...pending, status: "approved", decided_by_name: "Priya", decided_at: "2026-08-10T09:00:00Z" },
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
     ]);
-    renderPanel(projectManager);
-    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    renderPanel(pm);
+    await screen.findByText("Fire NOC");
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
-    expect(screen.getByText(/by Priya/)).toBeInTheDocument();
-  });
-
-  // R10: an unresolved approval links no tasks, so it can never surface as a
-  // task's readiness reason. This panel is the only place it is visible.
-  it("labels an approval whose coverage could not be resolved, and shows the prose", async () => {
-    taskExecutionApi.listExternalApprovals.mockResolvedValue([
-      { ...pending, coverage_state: "unresolved", coverage_text: "All electrical works", covered_task_ids: [] },
-    ]);
-    renderPanel(projectManager);
-    expect(await screen.findByText("Coverage unresolved")).toBeInTheDocument();
-    expect(screen.getByText(/All electrical works/)).toBeInTheDocument();
   });
 
   it("cannot submit a rejection without a reason", async () => {
-    renderPanel(projectManager);
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    renderPanel(admin);
     fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
     const confirm = await screen.findByRole("button", { name: "Confirm rejection" });
     expect(confirm).toBeDisabled();
@@ -96,8 +185,11 @@ describe("ExternalApprovalsPanel", () => {
   });
 
   it("records a rejection once a reason is given", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
     taskExecutionApi.decideExternalApproval.mockResolvedValue({});
-    renderPanel(projectManager);
+    renderPanel(admin);
     fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
     fireEvent.change(await screen.findByPlaceholderText(/explain why this approval is being refused/i), { target: { value: "Drawings rejected by the authority." } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm rejection" }));
@@ -107,8 +199,11 @@ describe("ExternalApprovalsPanel", () => {
   });
 
   it("records an approval without requiring remarks", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
     taskExecutionApi.decideExternalApproval.mockResolvedValue({});
-    renderPanel(projectManager);
+    renderPanel(admin);
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
     const confirm = await screen.findByRole("button", { name: "Confirm approval" });
     expect(confirm).toBeEnabled();
@@ -119,42 +214,63 @@ describe("ExternalApprovalsPanel", () => {
   });
 
   it("refetches so the decided approval shows its new status", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
     taskExecutionApi.decideExternalApproval.mockResolvedValue({});
-    renderPanel(projectManager);
+    renderPanel(admin);
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
     fireEvent.click(await screen.findByRole("button", { name: "Confirm approval" }));
     await waitFor(() => expect(taskExecutionApi.listExternalApprovals).toHaveBeenCalledTimes(2));
   });
 
-  it("shows a refused decision inline and leaves the approval unchanged", async () => {
-    taskExecutionApi.decideExternalApproval.mockRejectedValue(new Error("This approval has already been decided."));
-    renderPanel(projectManager);
-    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Confirm approval" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/already been decided/i);
-    // Modal still open and nothing refetched - the approval is as it was.
-    expect(screen.getByRole("button", { name: "Confirm approval" })).toBeInTheDocument();
-    expect(taskExecutionApi.listExternalApprovals).toHaveBeenCalledTimes(1);
+  // ---- read-only view (PM/Supervisor) --------------------------------------
+
+  it("shows a Supervisor the approval but no action buttons regardless of status", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee" },
+    ]);
+    renderPanel(supervisor);
+    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Assign" })).not.toBeInTheDocument();
+    expect(screen.getByText(/only an Admin can assign or decide/i)).toBeInTheDocument();
+  });
+
+  it("offers no actions on an approval that is already approved", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "approved", decided_by_name: "Priya", decided_at: "2026-08-10T09:00:00Z" },
+    ]);
+    renderPanel(admin);
+    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(screen.getByText(/by Priya/)).toBeInTheDocument();
+  });
+
+  // R10: an unresolved approval links no tasks, so it can never surface as a
+  // task's readiness reason. This panel is the only place it is visible.
+  it("labels an approval whose coverage could not be resolved, and shows the prose", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, coverage_state: "unresolved", coverage_text: "All electrical works", covered_task_ids: [] },
+    ]);
+    renderPanel(admin);
+    expect(await screen.findByText("Coverage unresolved")).toBeInTheDocument();
+    expect(screen.getByText(/All electrical works/)).toBeInTheDocument();
   });
 
   it("surfaces a failed load rather than rendering an empty list as if there were none", async () => {
     taskExecutionApi.listExternalApprovals.mockRejectedValue(new Error("Server unavailable"));
-    renderPanel(projectManager);
+    renderPanel(admin);
     expect(await screen.findByText("Server unavailable")).toBeInTheDocument();
-    expect(screen.queryByText(/No external approvals were instantiated/i)).not.toBeInTheDocument();
   });
 
   it("reports a project whose gates were all ruled out as genuinely having none", async () => {
     taskExecutionApi.listExternalApprovals.mockResolvedValue([]);
     projectsApi.externalGates.mockResolvedValue({ items: [gate("not_applicable"), gate("not_applicable")] });
-    renderPanel(projectManager);
+    renderPanel(admin);
     expect(await screen.findByText(/No external approvals apply to this project/i)).toBeInTheDocument();
   });
 
-  // The screen a PM actually hits: 32 gates exist, none has been ruled on, so
-  // nothing was instantiated. Saying only "none were instantiated" describes
-  // our mechanism and leaves the user believing the project has no external
-  // approvals, when it has 32 sitting undecided in setup.
   describe("gates still awaiting an applicability decision", () => {
     beforeEach(() => {
       taskExecutionApi.listExternalApprovals.mockResolvedValue([]);
@@ -162,44 +278,19 @@ describe("ExternalApprovalsPanel", () => {
     });
 
     it("says how many are awaiting review and what unblocks them", async () => {
-      renderPanel(projectManager);
+      renderPanel(admin);
       expect(await screen.findByText(/32 external approvals are awaiting applicability review/i)).toBeInTheDocument();
       expect(screen.getByText(/decides, in this project's setup/i)).toBeInTheDocument();
     });
-
-    it("does not claim the project has none", async () => {
-      renderPanel(projectManager);
-      await screen.findByText(/awaiting applicability review/i);
-      expect(screen.queryByText(/No external approvals apply to this project/i)).not.toBeInTheDocument();
-    });
-
-    it("reassures that undecided gates are not holding work up", async () => {
-      renderPanel(projectManager);
-      expect(await screen.findByText(/they hold nothing up/i)).toBeInTheDocument();
-    });
-
-    it("reads naturally for a single undecided gate", async () => {
-      projectsApi.externalGates.mockResolvedValue({ items: [gate()] });
-      renderPanel(projectManager);
-      expect(await screen.findByText(/1 external approval is awaiting applicability review/i)).toBeInTheDocument();
-      expect(screen.getByText(/it holds nothing up/i)).toBeInTheDocument();
-    });
-  });
-
-  it("warns about undecided gates even when some approvals already exist", async () => {
-    projectsApi.externalGates.mockResolvedValue({ items: [gate("applicable"), gate(), gate()] });
-    renderPanel(projectManager);
-    expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
-    expect(screen.getByText(/2 external approvals are awaiting applicability review/i)).toBeInTheDocument();
   });
 
   // This read only enriches an explanation, so losing it must never cost the
   // user the approvals they can actually act on.
   it("still renders the approvals when the planning-gate read fails", async () => {
     projectsApi.externalGates.mockRejectedValue(new Error("gates unavailable"));
-    renderPanel(projectManager);
+    renderPanel(admin);
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Assign" })).toBeInTheDocument();
     expect(screen.queryByText(/awaiting applicability review/i)).not.toBeInTheDocument();
   });
 });

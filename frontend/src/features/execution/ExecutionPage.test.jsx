@@ -74,25 +74,30 @@ describe("ExecutionPage - Internal Employee scoping", () => {
 // point of the unit - the approvals endpoints and the readiness engine both
 // shipped weeks ago and nothing on this surface could reach either.
 describe("ExecutionPage - external approval decisions", () => {
-  const projectManager = { role: "project_manager", id: "u-pm" };
+  const admin = { role: "admin", id: "u-adm" };
   const blockedTask = {
     ...assignedTask, lifecycle_status: "planned",
     readiness: {
       state: "blocked",
-      reasons: [{ kind: "approval", subject_id: "a1", detail: "Waiting on external approval FIRE-NOC (pending).", blocking: true }],
+      reasons: [{ kind: "approval", subject_id: "a1", detail: "Waiting on external approval FIRE-NOC (submitted).", blocking: true }],
       advisories: [],
     },
   };
   const releasedTask = { ...blockedTask, readiness: { state: "ready", reasons: [], advisories: [] } };
   const approval = {
     id: "a1", project_id: "p1", project_gate_id: "g1", gate_code: "FIRE-NOC", gate_name: "Fire NOC",
-    status: "pending", blocking: true, coverage_state: "exact", coverage_text: null,
-    covered_task_ids: ["t1"], decided_by: null, decided_by_name: null, decided_at: null,
+    status: "submitted", blocking: true, coverage_state: "exact", coverage_text: null,
+    covered_task_ids: ["t1"],
+    assigned_to_user_id: "u-emp", assigned_to_name: "Employee", assigned_by: "u-adm", assigned_at: "2026-08-10T09:00:00Z",
+    rejection_reason: null, decided_by: null, decided_by_name: null, decided_at: null,
   };
 
   beforeEach(() => {
     projectsApi.detail.mockResolvedValue({
-      id: "p1", memberships: [{ id: "m1", user_id: "u-pm", project_role: "project_manager", ends_at: null }],
+      id: "p1", memberships: [
+        { id: "m1", user_id: "u-pm", project_role: "project_manager", ends_at: null },
+        { id: "m2", user_id: "u-emp", employee_id: "emp-1", name: "Employee", project_role: "internal_employee", ends_at: null },
+      ],
     });
     taskExecutionApi.listExternalApprovals.mockResolvedValue([approval]);
     taskExecutionApi.decideExternalApproval.mockResolvedValue({});
@@ -102,7 +107,7 @@ describe("ExecutionPage - external approval decisions", () => {
     taskExecutionApi.list
       .mockResolvedValueOnce([blockedTask])
       .mockResolvedValue([releasedTask]);
-    render(<ExecutionPage user={projectManager}/>);
+    render(<ExecutionPage user={admin}/>);
     // Scoped to the row: "Blocked" is also a count tile above the board now,
     // and this assertion is about the task's own readiness pill.
     const row = await screen.findByRole("button", { name: /freeze approved architectural layout/i });
@@ -130,7 +135,7 @@ describe("ExecutionPage - external approval decisions", () => {
       actual_start_at: "2026-08-01T09:00:00Z", actual_finish_at: "2026-08-04T17:00:00Z",
       variance: { status: "early", variance_days: -1, days: 1, measured_against: "actual_finish" },
     }]);
-    render(<ExecutionPage user={projectManager}/>);
+    render(<ExecutionPage user={admin}/>);
     fireEvent.click(await screen.findByRole("button", { name: /^timeline$/i }));
     expect(await screen.findByText("Baseline vs actual")).toBeInTheDocument();
     expect(screen.getByLabelText("Baseline for T001")).toBeInTheDocument();
@@ -143,7 +148,7 @@ describe("ExecutionPage - external approval decisions", () => {
     // RENDERED as approvals comes from the execution-layer endpoint - that
     // was the point of the switch, and it is what this pins.
     projectsApi.externalGates.mockResolvedValue({ items: [{ id: "g1", applicability_state: "applicable" }] });
-    render(<ExecutionPage user={projectManager}/>);
+    render(<ExecutionPage user={admin}/>);
     fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
     expect(taskExecutionApi.listExternalApprovals).toHaveBeenCalledWith("p1");
@@ -154,7 +159,7 @@ describe("ExecutionPage - external approval decisions", () => {
     projectsApi.externalGates.mockResolvedValue({
       items: Array.from({ length: 32 }, (_, index) => ({ id: `g${index}`, applicability_state: "pending_review" })),
     });
-    render(<ExecutionPage user={projectManager}/>);
+    render(<ExecutionPage user={admin}/>);
     fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
     expect(await screen.findByText(/32 external approvals are awaiting applicability review/i)).toBeInTheDocument();
   });
