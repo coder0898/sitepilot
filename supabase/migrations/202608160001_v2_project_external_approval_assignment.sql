@@ -34,13 +34,11 @@ alter table siteops_v2.project_external_approvals
   add column if not exists assigned_at timestamptz,
   add column if not exists rejection_reason text;
 
--- Any row instantiated under the old model is 'pending' with no assignee.
--- Backfilled before the CHECK below is (re)applied, since 'pending' will no
--- longer be a valid status value.
-update siteops_v2.project_external_approvals
-  set status = 'unassigned'
-  where status = 'pending';
-
+-- Constraints are widened BEFORE the backfill UPDATE below, not after: the
+-- old ck_v2_project_external_approvals_status/decision_completeness pair
+-- only permits ('pending', 'approved', 'rejected') and is still the active
+-- constraint on the table at this point. Backfilling to 'unassigned' before
+-- widening it would trip that still-active old CHECK.
 alter table siteops_v2.project_external_approvals
   drop constraint if exists ck_v2_project_external_approvals_status;
 alter table siteops_v2.project_external_approvals
@@ -58,6 +56,12 @@ alter table siteops_v2.project_external_approvals
     (status in ('unassigned', 'assigned', 'submitted') and decided_by is null and decided_at is null)
     or (status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)
   );
+
+-- Any row instantiated under the old model is 'pending' with no assignee.
+-- Safe now that both CHECK constraints above accept 'unassigned'.
+update siteops_v2.project_external_approvals
+  set status = 'unassigned'
+  where status = 'pending';
 
 -- Every state past 'unassigned' names an assignee - assign() sets it,
 -- reassign()/unassign() (U3) either replace or clear it together with the
