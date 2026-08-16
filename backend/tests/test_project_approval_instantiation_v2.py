@@ -192,12 +192,12 @@ class ProjectApprovalInstantiationTests(unittest.TestCase):
 
     # ---- which gates become approvals ----------------------------------
 
-    def test_an_applicable_gate_becomes_a_pending_approval(self):
+    def test_an_applicable_gate_becomes_an_unassigned_approval(self):
         self._gate()
         report = self.service.instantiate_for_project(self.project)
         self.assertEqual(report["approvals_created"], 1)
         approval = self._approvals()[0]
-        self.assertEqual(approval.status, "pending")
+        self.assertEqual(approval.status, "unassigned")
         self.assertIsNone(approval.decided_by)
         self.assertIsNone(approval.decided_at)
 
@@ -309,8 +309,11 @@ class ProjectApprovalInstantiationTests(unittest.TestCase):
         self.service.instantiate_for_project(self.project)
         approval = self._approvals()[0]
         approval.status = "approved"
-        approval.decided_by = uuid.uuid4()
+        approval.assigned_to_user_id = uuid.uuid4()
+        approval.assigned_by = uuid.uuid4()
         from datetime import datetime, timezone
+        approval.assigned_at = datetime.now(timezone.utc)
+        approval.decided_by = uuid.uuid4()
         approval.decided_at = datetime.now(timezone.utc)
         self.db.flush()
 

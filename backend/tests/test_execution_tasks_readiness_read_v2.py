@@ -308,7 +308,7 @@ class ReadinessReadApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     def cover_task_with_approval(
-        self, project_id: str, task_id, *, status: str = "pending", blocking: bool = True
+        self, project_id: str, task_id, *, status: str = "unassigned", blocking: bool = True
     ) -> uuid.UUID:
         """An execution-layer external approval mapped to one task.
 
@@ -347,7 +347,7 @@ class ReadinessReadApiTestCase(unittest.TestCase):
                 id=approval_id,
                 project_id=uuid.UUID(project_id),
                 project_gate_id=uuid.uuid4(),
-                status="pending",
+                status="unassigned",
                 blocking=True,
                 coverage_state="unresolved",
                 coverage_text=coverage_text,
@@ -434,7 +434,7 @@ class ReadinessOnTheTaskListTests(ReadinessReadApiTestCase):
         surfaced = rows["T001"]["project_unresolved_approvals"]
         self.assertEqual(len(surfaced), 1)
         self.assertEqual(surfaced[0]["approval_id"], str(unresolved_id))
-        self.assertEqual(surfaced[0]["status"], "pending")
+        self.assertEqual(surfaced[0]["status"], "unassigned")
         self.assertTrue(surfaced[0]["blocking"])
         self.assertEqual(surfaced[0]["coverage_text"], "All structural works require the municipal NOC.")
         # A project fact, so every row reports the same one - and an
@@ -471,7 +471,7 @@ class ReadinessOnTheTaskDetailTests(ReadinessReadApiTestCase):
         self.assertEqual(ready["readiness"]["state"], READY)
         self.assertEqual(ready["readiness"]["reasons"], [])
 
-    def test_a_blocking_reason_names_the_specific_pending_approval(self):
+    def test_a_blocking_reason_names_the_specific_unassigned_approval(self):
         project = self.activate_project()
         t001 = self.tasks_by_code(project["id"])["T001"]
         approval_id = self.cover_task_with_approval(project["id"], t001.id)
@@ -482,7 +482,7 @@ class ReadinessOnTheTaskDetailTests(ReadinessReadApiTestCase):
         self.assertEqual(len(reasons), 1)
         self.assertEqual(reasons[0]["kind"], REASON_APPROVAL)
         self.assertEqual(reasons[0]["subject_id"], str(approval_id))
-        self.assertIn("pending", reasons[0]["detail"])
+        self.assertIn("unassigned", reasons[0]["detail"])
         self.assertIn(str(approval_id), reasons[0]["detail"])
 
     def test_a_non_blocking_unsatisfied_fact_is_an_advisory_not_a_blocker(self):

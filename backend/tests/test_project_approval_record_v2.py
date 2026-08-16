@@ -1,8 +1,10 @@
-"""U4: the execution-layer external approval record.
+"""U4/U1 (plan: External Approval Gate Assignment & Evidence Lifecycle): the
+execution-layer external approval record.
 
 Pins the runtime contract the readiness engine depends on: an approval that
-was instantiated from a planning-layer gate is `pending` until somebody
-decides it, and a decided approval always carries who decided and when.
+was instantiated from a planning-layer gate is `unassigned` until an Admin
+assigns it, a decided approval always carries who decided and when, and
+every status past `unassigned` names an assignee.
 
 The planning-layer `siteops_v2.project_external_gates.status` is deliberately
 NOT what these tests exercise. That column is a Draft-time review marker;
@@ -36,6 +38,10 @@ from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateVe
 @compiles(JSONB, "sqlite")
 def compile_jsonb_sqlite(_type, _compiler, **_kw):
     return "JSON"
+
+
+DECIDED_STATUSES = ("approved", "rejected")
+PRE_DECISION_STATUSES = ("unassigned", "assigned", "submitted")
 
 
 class ProjectExternalApprovalTests(unittest.TestCase):
@@ -91,31 +97,45 @@ class ProjectExternalApprovalTests(unittest.TestCase):
         self.db.refresh(approval)
         return approval
 
-    def test_the_three_statuses_are_exactly_pending_approved_rejected(self):
-        self.assertEqual(EXTERNAL_APPROVAL_STATUSES, ("pending", "approved", "rejected"))
+    def test_the_five_statuses_are_exactly_the_assign_submit_decide_lifecycle(self):
+        self.assertEqual(
+            EXTERNAL_APPROVAL_STATUSES,
+            ("unassigned", "assigned", "submitted", "approved", "rejected"),
+        )
 
-    def test_a_new_approval_defaults_to_pending(self):
+    def test_a_new_approval_defaults_to_unassigned(self):
         approval = self._approval()
-        self.assertEqual(approval.status, "pending")
+        self.assertEqual(approval.status, "unassigned")
 
     def test_a_new_approval_links_back_to_the_gate_it_came_from(self):
         gate_id = uuid.uuid4()
         approval = self._approval(project_gate_id=gate_id)
         self.assertEqual(approval.project_gate_id, gate_id)
 
-    def test_a_pending_approval_has_neither_decider_nor_decision_timestamp(self):
+    def test_an_unassigned_approval_has_neither_decider_nor_decision_timestamp(self):
         approval = self._approval()
         self.assertIsNone(approval.decided_by)
         self.assertIsNone(approval.decided_at)
 
-    def test_each_of_the_three_statuses_persists_and_reads_back(self):
+    def test_an_unassigned_approval_has_no_assignee(self):
+        approval = self._approval()
+        self.assertIsNone(approval.assigned_to_user_id)
+        self.assertIsNone(approval.assigned_by)
+        self.assertIsNone(approval.assigned_at)
+
+    def test_each_of_the_five_statuses_persists_and_reads_back(self):
         decided_at = datetime(2026, 8, 13, 9, 15, tzinfo=timezone.utc)
         decider = uuid.uuid4()
+        assignee = uuid.uuid4()
+        assigner = uuid.uuid4()
         for status in EXTERNAL_APPROVAL_STATUSES:
             with self.subTest(status=status):
-                decided = status != "pending"
+                decided = status in DECIDED_STATUSES
                 approval = self._approval(
                     status=status,
+                    assigned_to_user_id=None if status == "unassigned" else assignee,
+                    assigned_by=None if status == "unassigned" else assigner,
+                    assigned_at=None if status == "unassigned" else datetime(2026, 8, 14, tzinfo=timezone.utc),
                     decided_by=decider if decided else None,
                     decided_at=decided_at if decided else None,
                 )
@@ -124,38 +144,69 @@ class ProjectExternalApprovalTests(unittest.TestCase):
 
     def test_a_decided_approval_records_both_decider_and_timestamp(self):
         decider = uuid.uuid4()
+        assignee = uuid.uuid4()
         decided_at = datetime(2026, 8, 13, 9, 15, tzinfo=timezone.utc)
-        approval = self._approval(status="approved", decided_by=decider, decided_at=decided_at)
+        approval = self._approval(
+            status="approved", assigned_to_user_id=assignee, assigned_by=decider,
+            assigned_at=decided_at, decided_by=decider, decided_at=decided_at,
+        )
         self.assertEqual(approval.decided_by, decider)
         self.assertEqual(approval.decided_at.year, 2026)
         self.assertEqual(approval.decided_at.hour, 9)
 
-    def test_a_status_outside_the_three_is_rejected(self):
+    def test_a_rejection_reason_persists_independently_of_the_decision_pair(self):
+        """rejection_reason survives the rejected -> assigned reset that
+        clears decided_by/decided_at (see project_gate_decision.py) - it is
+        not gated by the same completeness check."""
+        approval = self._approval(
+            status="assigned",
+            assigned_to_user_id=uuid.uuid4(), assigned_by=uuid.uuid4(),
+            assigned_at=datetime(2026, 8, 14, tzinfo=timezone.utc),
+            rejection_reason="Fire NOC refused by the authority.",
+        )
+        self.assertIsNone(approval.decided_by)
+        self.assertIsNone(approval.decided_at)
+        self.assertEqual(approval.rejection_reason, "Fire NOC refused by the authority.")
+
+    def test_a_status_outside_the_five_is_rejected(self):
         with self.assertRaises(IntegrityError):
-            self._approval(status="submitted")
+            self._approval(status="pending")
         self.db.rollback()
 
-    def test_a_pending_approval_may_not_carry_a_decider(self):
-        """Pending means undecided; a decider on a pending row would make the
-        readiness engine and the audit trail disagree."""
+    def test_an_unassigned_approval_may_not_carry_a_decider(self):
+        """Unassigned means undecided; a decider on an unassigned row would
+        make the readiness engine and the audit trail disagree."""
         with self.assertRaises(IntegrityError):
-            self._approval(status="pending", decided_by=uuid.uuid4())
+            self._approval(status="unassigned", decided_by=uuid.uuid4())
         self.db.rollback()
 
     def test_a_decided_approval_may_not_omit_its_decision_metadata(self):
         with self.assertRaises(IntegrityError):
-            self._approval(status="approved")
+            self._approval(status="approved", assigned_to_user_id=uuid.uuid4())
         self.db.rollback()
 
         with self.assertRaises(IntegrityError):
-            self._approval(status="rejected", decided_by=uuid.uuid4())
+            self._approval(status="rejected", assigned_to_user_id=uuid.uuid4(), decided_by=uuid.uuid4())
         self.db.rollback()
 
-    def test_model_declares_the_status_and_completeness_check_constraints(self):
+    def test_an_unassigned_approval_may_not_carry_an_assignee(self):
+        with self.assertRaises(IntegrityError):
+            self._approval(status="unassigned", assigned_to_user_id=uuid.uuid4())
+        self.db.rollback()
+
+    def test_a_status_past_unassigned_must_carry_an_assignee(self):
+        for status in ("assigned", "submitted"):
+            with self.subTest(status=status):
+                with self.assertRaises(IntegrityError):
+                    self._approval(status=status)
+                self.db.rollback()
+
+    def test_model_declares_the_status_completeness_and_assignment_check_constraints(self):
         names = {c.name for c in ProjectExternalApproval.__table__.constraints if c.name}
         for name in (
             "ck_v2_project_external_approvals_status",
             "ck_v2_project_external_approvals_decision_completeness",
+            "ck_v2_project_external_approvals_assignment_completeness",
             "uq_v2_project_external_approvals_gate",
         ):
             self.assertIn(name, names)
@@ -169,6 +220,7 @@ class ProjectExternalApprovalTests(unittest.TestCase):
             columns,
             {
                 "id", "project_id", "project_gate_id", "status",
+                "assigned_to_user_id", "assigned_by", "assigned_at", "rejection_reason",
                 "decided_by", "decided_at", "created_at", "updated_at",
                 # U8 copies these three from the planning-layer gate at
                 # activation, so readiness can answer what an approval covers

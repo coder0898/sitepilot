@@ -27,7 +27,14 @@ TASK_LIFECYCLE_STATUSES = (
     "approval_pending", "rejected", "completed", "cancelled",
 )
 
-EXTERNAL_APPROVAL_STATUSES = ("pending", "approved", "rejected")
+EXTERNAL_APPROVAL_STATUSES = ("unassigned", "assigned", "submitted", "approved", "rejected")
+"""Plan: External Approval Gate Assignment & Evidence Lifecycle (U1/U2).
+
+Widened from the original ('pending', 'approved', 'rejected'). 'rejected' is
+a real but briefly-held state: `ProjectGateDecisionService.decide()` persists
+it (with `rejection_reason`/`decided_by`/`decided_at` set) before a second
+transition in the same call moves the row on to 'assigned' for resubmission -
+see project_gate_decision.py."""
 
 EXTERNAL_APPROVAL_COVERAGE_STATES = ("exact", "unresolved")
 """U8: whether an approval's task coverage was resolvable at activation.
@@ -246,13 +253,20 @@ class ProjectExternalApproval(Base):
     __table_args__ = (
         UniqueConstraint("project_gate_id", name="uq_v2_project_external_approvals_gate"),
         CheckConstraint(f"status in {EXTERNAL_APPROVAL_STATUSES!r}", name="ck_v2_project_external_approvals_status"),
-        # Pending means undecided, and decided means attributable. Without
-        # this, a half-written decision would leave readiness and the audit
-        # trail disagreeing about whether anyone actually granted anything.
+        # Decided means attributable. Without this, a half-written decision
+        # would leave readiness and the audit trail disagreeing about
+        # whether anyone actually granted anything.
         CheckConstraint(
-            "(status = 'pending' and decided_by is null and decided_at is null)"
+            "(status in ('unassigned', 'assigned', 'submitted') and decided_by is null and decided_at is null)"
             " or (status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)",
             name="ck_v2_project_external_approvals_decision_completeness",
+        ),
+        # Every state past 'unassigned' names an assignee - see U1's
+        # migration for the full rationale.
+        CheckConstraint(
+            "(status = 'unassigned' and assigned_to_user_id is null)"
+            " or (status <> 'unassigned' and assigned_to_user_id is not null)",
+            name="ck_v2_project_external_approvals_assignment_completeness",
         ),
         CheckConstraint(f"coverage_state in {EXTERNAL_APPROVAL_COVERAGE_STATES!r}", name="ck_v2_project_external_approvals_coverage_state"),
         # Prose is what an unresolved approval has *instead of* links. An
@@ -275,7 +289,20 @@ class ProjectExternalApproval(Base):
     """RESTRICT, not the CASCADE the planning layer uses between projects and
     gates: a granted approval is an execution record and must not evaporate
     because a planning row was removed underneath it."""
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="unassigned")
+    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """U1/U2 (assignment lifecycle): who the gate is assigned to, who
+    assigned them, and when. Cleared and reset together by assign()/
+    reassign()/unassign() (project_gate_assignment.py) - never written
+    incrementally, matching the decided_by/decided_at pairing below."""
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    """Set alongside decided_by/decided_at when decide() persists the
+    intermediate 'rejected' state, but - unlike those two - NOT reset when
+    the row moves on to 'assigned' in the same call, so the assignee and
+    PM/Supervisor can see why a submission was rejected without querying
+    the audit log directly."""
     blocking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     """U8: copied from `V2ProjectExternalGate.blocking`, which a PM sets while
     the project is a draft and the UI already renders as a "Blocking" badge.
@@ -342,6 +369,52 @@ class ProjectExternalApprovalTask(Base):
     planning layer: this row has no meaning apart from its approval, so it
     should not outlive it."""
     task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProjectExternalApprovalSubmission(Base):
+    """Plan: External Approval Gate Assignment & Evidence Lifecycle (U1/U2).
+
+    Append-only submission of evidence against a `ProjectExternalApproval`,
+    mirroring `TaskProgressUpdate`'s shape. One row per submit() call -
+    including a resubmission after rejection, so the full history of what
+    was submitted and when is retained rather than overwritten."""
+
+    __tablename__ = "project_external_approval_submissions"
+    __table_args__ = (
+        Index("ix_v2_project_external_approval_submissions_approval", "approval_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approval_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="CASCADE"), nullable=False)
+    submitted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProjectExternalApprovalEvidence(Base):
+    """Plan: External Approval Gate Assignment & Evidence Lifecycle (U1/U2).
+
+    Real FK link between a submission and an uploaded file - deliberately
+    NOT a polymorphic entity_type/entity_id reference, mirroring
+    `TaskEvidence`'s Key Technical Decision for the same reason: this
+    repo's non-polymorphic convention keeps a submission's evidence typed
+    to exactly one entity rather than shared across unrelated ones."""
+
+    __tablename__ = "project_external_approval_evidence"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "file_id", name="uq_v2_project_external_approval_evidence_submission_file"),
+        Index("ix_v2_project_external_approval_evidence_submission", "submission_id"),
+        Index("ix_v2_project_external_approval_evidence_file", "file_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    submission_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approval_submissions.id", ondelete="CASCADE"), nullable=False)
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"), nullable=False)
+    evidence_type: Mapped[str] = mapped_column(Text, nullable=False, default="photo")
+    caption: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

@@ -174,17 +174,21 @@ class TaskReadinessTestCase(unittest.TestCase):
         self.db.flush()
         return dependency
 
-    def _approval(self, *, status="pending", blocking=True, coverage_state="exact", coverage_text=None):
+    def _approval(self, *, status="unassigned", blocking=True, coverage_state="exact", coverage_text=None):
+        decided = status in ("approved", "rejected")
         approval = ProjectExternalApproval(
             id=uuid.uuid4(),
             project_id=self.project.id,
             project_gate_id=uuid.uuid4(),
             status=status,
+            assigned_to_user_id=uuid.uuid4() if status != "unassigned" else None,
+            assigned_by=uuid.uuid4() if status != "unassigned" else None,
+            assigned_at=datetime(2026, 8, 9, tzinfo=timezone.utc) if status != "unassigned" else None,
             blocking=blocking,
             coverage_state=coverage_state,
             coverage_text=coverage_text,
-            decided_by=uuid.uuid4() if status != "pending" else None,
-            decided_at=datetime(2026, 8, 10, tzinfo=timezone.utc) if status != "pending" else None,
+            decided_by=uuid.uuid4() if decided else None,
+            decided_at=datetime(2026, 8, 10, tzinfo=timezone.utc) if decided else None,
         )
         self.db.add(approval)
         self.db.flush()
@@ -323,7 +327,7 @@ class DependencyReadinessTests(TaskReadinessTestCase):
 class ApprovalReadinessTests(TaskReadinessTestCase):
     def test_a_pending_blocking_approval_blocks_and_is_named(self):
         task = self._task()
-        approval = self._approval(status="pending")
+        approval = self._approval(status="unassigned")
         self._cover(approval, task)
         readiness = self._readiness(task)
         self.assertEqual(readiness.state, BLOCKED)
@@ -332,7 +336,7 @@ class ApprovalReadinessTests(TaskReadinessTestCase):
         self.assertEqual(reason.kind, REASON_APPROVAL)
         self.assertEqual(reason.subject_id, approval.id)
         self.assertIn(str(approval.id), reason.detail)
-        self.assertIn("pending", reason.detail)
+        self.assertIn("unassigned", reason.detail)
 
     def test_a_rejected_blocking_approval_blocks(self):
         task = self._task()
@@ -355,7 +359,7 @@ class ApprovalReadinessTests(TaskReadinessTestCase):
         """The PM deliberately marked this gate non-blocking; reporting every
         task it covers as blocked would override that decision."""
         task = self._task()
-        approval = self._approval(status="pending", blocking=False)
+        approval = self._approval(status="unassigned", blocking=False)
         self._cover(approval, task)
         readiness = self._readiness(task)
         self.assertEqual(readiness.state, READY)
@@ -366,14 +370,14 @@ class ApprovalReadinessTests(TaskReadinessTestCase):
     def test_an_approval_only_blocks_the_tasks_it_actually_covers(self):
         covered = self._task()
         uncovered = self._task()
-        approval = self._approval(status="pending")
+        approval = self._approval(status="unassigned")
         self._cover(approval, covered)
         self.assertEqual(self._readiness(covered).state, BLOCKED)
         self.assertEqual(self._readiness(uncovered).state, READY)
 
     def test_every_unapproved_approval_gets_its_own_reason(self):
         task = self._task()
-        for status in ("pending", "rejected"):
+        for status in ("unassigned", "rejected"):
             self._cover(self._approval(status=status), task)
         self._cover(self._approval(status="approved"), task)
         readiness = self._readiness(task)
@@ -383,7 +387,7 @@ class ApprovalReadinessTests(TaskReadinessTestCase):
         predecessor = self._task(status="planned")
         task = self._task()
         self._dependency(predecessor, task)
-        approval = self._approval(status="pending")
+        approval = self._approval(status="unassigned")
         self._cover(approval, task)
         readiness = self._readiness(task)
         self.assertEqual(readiness.state, BLOCKED)
@@ -398,10 +402,13 @@ class ApprovalReadinessTests(TaskReadinessTestCase):
 
     def test_approving_the_last_outstanding_approval_flips_the_task_to_ready(self):
         task = self._task()
-        approval = self._approval(status="pending")
+        approval = self._approval(status="unassigned")
         self._cover(approval, task)
         self.assertEqual(self._readiness(task).state, BLOCKED)
         approval.status = "approved"
+        approval.assigned_to_user_id = uuid.uuid4()
+        approval.assigned_by = uuid.uuid4()
+        approval.assigned_at = datetime(2026, 8, 11, tzinfo=timezone.utc)
         approval.decided_by = uuid.uuid4()
         approval.decided_at = datetime(2026, 8, 12, tzinfo=timezone.utc)
         self.db.flush()
@@ -459,7 +466,7 @@ class LifecycleStatusReadinessTests(TaskReadinessTestCase):
         tasks = {status: self._task(status=status) for status in TASK_LIFECYCLE_STATUSES}
         # Every task above is blocked by the same pending approval, so a
         # ready answer here could only come from the status branch.
-        approval = self._approval(status="pending")
+        approval = self._approval(status="unassigned")
         for task in tasks.values():
             self._cover(approval, task)
         result = self.service.for_project(self.project.id)
@@ -490,7 +497,7 @@ class ProjectLevelReadinessTests(TaskReadinessTestCase):
         self.assertEqual(len(result.unresolved_approvals), 1)
         surfaced = result.unresolved_approvals[0]
         self.assertEqual(surfaced.approval_id, unresolved.id)
-        self.assertEqual(surfaced.status, "pending")
+        self.assertEqual(surfaced.status, "unassigned")
         self.assertEqual(surfaced.coverage_text, "All structural works require the municipal NOC.")
         self.assertEqual(result.tasks[task.id].state, READY)
 
@@ -579,7 +586,7 @@ class ReadinessQueryCountTests(TaskReadinessTestCase):
         tasks = [self._task() for _ in range(99)]
         for predecessor, successor in zip(tasks, tasks[1:]):
             self._dependency(predecessor, successor)
-        approval = self._approval(status="pending")
+        approval = self._approval(status="unassigned")
         for task in tasks:
             self._cover(approval, task)
         self.db.commit()
