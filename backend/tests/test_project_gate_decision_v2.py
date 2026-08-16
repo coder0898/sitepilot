@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -42,9 +42,12 @@ from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
     BaselineTask,
+    FileObject,
     OutboxEvent,
     ProjectBaseline,
     ProjectExternalApproval,
+    ProjectExternalApprovalEvidence,
+    ProjectExternalApprovalSubmission,
     ProjectExternalApprovalTask,
     Task,
 )
@@ -97,6 +100,9 @@ class ProjectGateDecisionTests(unittest.TestCase):
             Task.__table__,
             ProjectExternalApproval.__table__,
             ProjectExternalApprovalTask.__table__,
+            ProjectExternalApprovalSubmission.__table__,
+            ProjectExternalApprovalEvidence.__table__,
+            FileObject.__table__,
             OutboxEvent.__table__,
         ):
             table.create(self.engine)
@@ -290,6 +296,38 @@ class ProjectGateDecisionTests(unittest.TestCase):
                 "project_id": project_id,
                 "task_ids": task_ids,
             }
+
+    def make_submission(self, approval: dict, *, note: str | None = "Attached the NOC.", filename: str | None = "noc.pdf") -> uuid.UUID:
+        """Seeds one submission, optionally with one evidence file, against
+        an approval already made by `make_approval` - this file's subject is
+        the decision/listing carrying submissions back out, not U4's
+        submission service itself (see test_project_gate_submission_v2.py)."""
+        self._sequence += 1
+        with self.Session.begin() as session:
+            submission = ProjectExternalApprovalSubmission(
+                approval_id=approval["id"], submitted_by=INTERNAL_ID, note=note,
+                # Explicit, strictly increasing timestamps: relying on
+                # server_default=now() ties two submissions made in the same
+                # test to the same second, leaving "most recent first"
+                # ordering to a random-UUID id tiebreak instead.
+                submitted_at=datetime(2026, 8, 15, 9, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=self._sequence),
+            )
+            session.add(submission)
+            session.flush()
+            if filename:
+                file_object = FileObject(
+                    storage_key=f"{approval['id']}-{uuid.uuid4().hex}.pdf",
+                    original_filename=filename, mime_type="application/pdf",
+                    size_bytes=1024, checksum="deadbeef", uploaded_by=INTERNAL_ID,
+                )
+                session.add(file_object)
+                session.flush()
+                session.add(ProjectExternalApprovalEvidence(
+                    submission_id=submission.id, file_id=file_object.id,
+                    evidence_type="document", caption=None,
+                ))
+                session.flush()
+            return submission.id
 
     # ---- requests -------------------------------------------------------
 
@@ -535,6 +573,39 @@ class ProjectGateDecisionTests(unittest.TestCase):
         self.assertEqual(item["status"], "assigned")
         self.assertEqual(item["rejection_reason"], "Missing an inspection photo.")
         self.assertIsNone(item["decided_by"])
+
+    def test_the_listing_carries_a_submission_with_its_evidence_for_review(self):
+        """The gap this closes: without this, Admin deciding a `submitted`
+        gate had no way to see what the assignee actually uploaded."""
+        approval = self.make_approval()
+        self.make_submission(approval, note="NOC attached.", filename="noc.pdf")
+        self.act_as(self.admin_user())
+        item = self.listing().json()[0]
+        self.assertEqual(len(item["submissions"]), 1)
+        submission = item["submissions"][0]
+        self.assertEqual(submission["note"], "NOC attached.")
+        self.assertEqual(submission["submitted_by"], str(INTERNAL_ID))
+        self.assertEqual(submission["submitted_by_name"], "Internal")
+        self.assertEqual(len(submission["evidence"]), 1)
+        self.assertEqual(submission["evidence"][0]["original_filename"], "noc.pdf")
+        self.assertEqual(submission["evidence"][0]["mime_type"], "application/pdf")
+
+    def test_a_decision_response_also_carries_the_submission_history(self):
+        approval = self.make_approval()
+        self.make_submission(approval)
+        self.act_as(self.admin_user())
+        body = self.decide(approval, "approved").json()
+        self.assertEqual(len(body["submissions"]), 1)
+
+    def test_multiple_submissions_across_a_reject_resubmit_loop_are_all_retained(self):
+        approval = self.make_approval()
+        self.make_submission(approval, note="First try.", filename="v1.pdf")
+        self.make_submission(approval, note="Fixed.", filename="v2.pdf")
+        self.act_as(self.admin_user())
+        item = self.listing().json()[0]
+        self.assertEqual(len(item["submissions"]), 2)
+        # Most recent first.
+        self.assertEqual(item["submissions"][0]["note"], "Fixed.")
 
     def test_a_supervisor_may_read_the_listing_even_though_they_cannot_decide(self):
         """Reading which approvals block the site is part of the Supervisor's

@@ -61,7 +61,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import ProjectExternalApproval, ProjectExternalApprovalTask
+from app.execution_models import (
+    FileObject,
+    ProjectExternalApproval,
+    ProjectExternalApprovalEvidence,
+    ProjectExternalApprovalSubmission,
+    ProjectExternalApprovalTask,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.outbox import OutboxService
@@ -70,6 +76,32 @@ GATE_DECISIONS = ("approved", "rejected")
 """The subset of `EXTERNAL_APPROVAL_STATUSES` a human may write - `pending` is
 instantiation's starting point, not a decision anyone records, which is also
 why `decide` treats "not pending" as "already decided"."""
+
+
+@dataclass(frozen=True)
+class GateEvidenceView:
+    id: uuid.UUID
+    file_id: uuid.UUID
+    evidence_type: str
+    caption: str | None
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class GateSubmissionView:
+    """One past submission - the review context Admin needs on a `submitted`
+    gate (what was actually attached), and the history PM/Supervisor read
+    (R6). Without this, an Admin deciding a gate had no way to see what the
+    assignee uploaded - the same gap task review closes via
+    `TaskDetailOut.progress_updates`."""
+    id: uuid.UUID
+    submitted_by: uuid.UUID
+    submitted_by_name: str | None
+    note: str | None
+    submitted_at: datetime
+    evidence: tuple[GateEvidenceView, ...]
 
 
 @dataclass(frozen=True)
@@ -96,6 +128,7 @@ class ExternalApprovalView:
     decided_by: uuid.UUID | None
     decided_by_name: str | None
     decided_at: datetime | None
+    submissions: tuple[GateSubmissionView, ...]
 
 
 class ProjectGateDecisionService:
@@ -307,6 +340,7 @@ class ProjectGateDecisionService:
         covered_task_ids,
         decided_by_name: str | None,
         assigned_to_name: str | None,
+        submissions: tuple[GateSubmissionView, ...],
     ) -> ExternalApprovalView:
         return ExternalApprovalView(
             id=approval.id,
@@ -327,11 +361,79 @@ class ProjectGateDecisionService:
             decided_by=approval.decided_by,
             decided_by_name=decided_by_name,
             decided_at=approval.decided_at,
+            submissions=submissions,
         )
+
+    def _submissions_for_approvals(
+        self, approval_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, tuple[GateSubmissionView, ...]]:
+        """Batched submission+evidence build for one or many approvals - the
+        review context Admin needs on a `submitted` gate (what was actually
+        attached) and the history PM/Supervisor/the assignee read (R6).
+        Four flat queries regardless of how many approvals are asked for,
+        matching this module's existing batching discipline."""
+        if not approval_ids:
+            return {}
+
+        submissions = list(self.db.scalars(
+            select(ProjectExternalApprovalSubmission)
+            .where(ProjectExternalApprovalSubmission.approval_id.in_(approval_ids))
+            .order_by(ProjectExternalApprovalSubmission.submitted_at.desc(), ProjectExternalApprovalSubmission.id.desc())
+        ))
+        if not submissions:
+            return {}
+        submission_ids = [submission.id for submission in submissions]
+
+        evidence_rows = list(self.db.scalars(
+            select(ProjectExternalApprovalEvidence)
+            .where(ProjectExternalApprovalEvidence.submission_id.in_(submission_ids))
+        ))
+        file_ids = {row.file_id for row in evidence_rows}
+        files_by_id: dict[uuid.UUID, FileObject] = {}
+        if file_ids:
+            files_by_id = {
+                file_object.id: file_object
+                for file_object in self.db.scalars(select(FileObject).where(FileObject.id.in_(file_ids)))
+            }
+        evidence_by_submission: dict[uuid.UUID, list[GateEvidenceView]] = {}
+        for row in evidence_rows:
+            file_object = files_by_id.get(row.file_id)
+            if not file_object:
+                continue
+            evidence_by_submission.setdefault(row.submission_id, []).append(GateEvidenceView(
+                id=row.id,
+                file_id=row.file_id,
+                evidence_type=row.evidence_type,
+                caption=row.caption,
+                original_filename=file_object.original_filename,
+                mime_type=file_object.mime_type,
+                size_bytes=file_object.size_bytes,
+            ))
+
+        submitter_ids = {submission.submitted_by for submission in submissions}
+        submitter_names: dict[uuid.UUID, str] = {}
+        if submitter_ids:
+            submitter_names = {
+                row[0]: row[1]
+                for row in self.db.execute(select(User.id, User.name).where(User.id.in_(submitter_ids))).all()
+            }
+
+        by_approval: dict[uuid.UUID, list[GateSubmissionView]] = {}
+        for submission in submissions:
+            by_approval.setdefault(submission.approval_id, []).append(GateSubmissionView(
+                id=submission.id,
+                submitted_by=submission.submitted_by,
+                submitted_by_name=submitter_names.get(submission.submitted_by),
+                note=submission.note,
+                submitted_at=submission.submitted_at,
+                evidence=tuple(evidence_by_submission.get(submission.id, ())),
+            ))
+        return {approval_id: tuple(views) for approval_id, views in by_approval.items()}
 
     def view_for_approval(self, approval: ProjectExternalApproval) -> ExternalApprovalView:
         """Single-row counterpart to `list_for_project`'s batched build - used
-        by `decide`, where exactly one approval is in hand."""
+        by `decide`/`assign`/`reassign`/`unassign`/`submit`, where exactly
+        one approval is in hand."""
         gate = self.db.get(V2ProjectExternalGate, approval.project_gate_id)
         covered_task_ids = list(self.db.scalars(
             select(ProjectExternalApprovalTask.task_id)
@@ -346,7 +448,8 @@ class ProjectGateDecisionService:
             self.db.scalar(select(User.name).where(User.id == approval.assigned_to_user_id))
             if approval.assigned_to_user_id else None
         )
-        return self._view(approval, gate, covered_task_ids, decided_by_name, assigned_to_name)
+        submissions = self._submissions_for_approvals([approval.id]).get(approval.id, ())
+        return self._view(approval, gate, covered_task_ids, decided_by_name, assigned_to_name, submissions)
 
     def list_for_project(self, project_id: uuid.UUID, actor: User) -> list[ExternalApprovalView]:
         """Every execution-layer approval on one project, with the gate's
@@ -398,6 +501,8 @@ class ProjectGateDecisionService:
                 for row in self.db.execute(select(User.id, User.name).where(User.id.in_(name_lookup_ids))).all()
             }
 
+        submissions_by_approval = self._submissions_for_approvals([approval.id for approval, _ in rows])
+
         return [
             self._view(
                 approval,
@@ -405,6 +510,7 @@ class ProjectGateDecisionService:
                 covered.get(approval.id, ()),
                 user_names.get(approval.decided_by) if approval.decided_by else None,
                 user_names.get(approval.assigned_to_user_id) if approval.assigned_to_user_id else None,
+                submissions_by_approval.get(approval.id, ()),
             )
             for approval, gate in rows
         ]

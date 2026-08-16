@@ -7,7 +7,7 @@ import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
   listExternalApprovals: vi.fn(), decideExternalApproval: vi.fn(),
   assignExternalApproval: vi.fn(), reassignExternalApproval: vi.fn(), unassignExternalApproval: vi.fn(),
-  submitExternalApprovalEvidence: vi.fn(),
+  submitExternalApprovalEvidence: vi.fn(), downloadExternalApprovalEvidence: vi.fn(),
   list: vi.fn(), detail: vi.fn(),
 } }));
 vi.mock("../../api/projectsApi", () => ({ projectsApi: { detail: vi.fn(), externalGates: vi.fn() } }));
@@ -20,6 +20,7 @@ const baseApproval = {
   covered_task_ids: ["t1", "t2"],
   assigned_to_user_id: null, assigned_to_name: null, assigned_by: null, assigned_at: null,
   rejection_reason: null, decided_by: null, decided_by_name: null, decided_at: null,
+  submissions: [],
 };
 
 const admin = { id: "u-adm", role: "admin" };
@@ -160,6 +161,37 @@ describe("ExternalApprovalsPanel", () => {
     renderPanel(admin);
     expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+  });
+
+  // The gap this closes: without a rendered submission history, Admin
+  // deciding a submitted gate had no way to see what was actually uploaded.
+  it("shows the submission history with a download link for its evidence", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([{
+      ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee",
+      submissions: [{
+        id: "s1", submitted_by: employee.id, submitted_by_name: "employee", note: "NOC attached.",
+        submitted_at: "2026-08-15T09:00:00Z",
+        evidence: [{ id: "e1", file_id: "f1", evidence_type: "document", caption: null, original_filename: "noc.pdf", mime_type: "application/pdf", size_bytes: 1024 }],
+      }],
+    }]);
+    renderPanel(admin);
+    expect(await screen.findByText("NOC attached.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /noc\.pdf/i })).toBeInTheDocument();
+  });
+
+  it("downloads an evidence file when its link is clicked", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([{
+      ...baseApproval, status: "submitted", assigned_to_user_id: employee.id, assigned_to_name: "employee",
+      submissions: [{
+        id: "s1", submitted_by: employee.id, submitted_by_name: "employee", note: null,
+        submitted_at: "2026-08-15T09:00:00Z",
+        evidence: [{ id: "e1", file_id: "f1", evidence_type: "document", caption: null, original_filename: "noc.pdf", mime_type: "application/pdf", size_bytes: 1024 }],
+      }],
+    }]);
+    taskExecutionApi.downloadExternalApprovalEvidence.mockResolvedValue({ blob: new Blob(["x"]), filename: "noc.pdf" });
+    renderPanel(admin);
+    fireEvent.click(await screen.findByRole("button", { name: /noc\.pdf/i }));
+    await waitFor(() => expect(taskExecutionApi.downloadExternalApprovalEvidence).toHaveBeenCalledWith("p1", "a1", "f1"));
   });
 
   it("does not offer PM a decision action, unlike the old PM-fallback rule", async () => {

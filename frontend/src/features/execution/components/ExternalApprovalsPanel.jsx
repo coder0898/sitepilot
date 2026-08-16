@@ -1,9 +1,20 @@
-import { AlertTriangle, ClipboardCheck, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ClipboardCheck, Paperclip, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, Field, LoadingSpinner, Modal, Pill, Select, Textarea } from "../../../components/ui";
 import { formatDateShort } from "../../../utils/format";
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 // Plan: External Approval Gate Assignment & Evidence Lifecycle (U6).
 //
@@ -128,6 +139,45 @@ function SubmissionForm({ projectId, approval, onSubmitted }) {
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</div>}
       <Button type="submit" size="sm" loading={submitting} disabled={!!fileError || (!note.trim() && !files.length)}>Submit for review</Button>
     </form>
+  </section>;
+}
+
+// Review context for Admin deciding a `submitted` gate, and history for
+// everyone else (R6) - without this, there was no way to see what the
+// assignee actually attached, the same gap TaskExecutionBoard's evidence
+// list closes for task review.
+function SubmissionHistory({ projectId, approval }) {
+  const [error, setError] = useState("");
+  const submissions = approval.submissions || [];
+  if (!submissions.length) return null;
+
+  async function download(fileId, filename) {
+    setError("");
+    try {
+      const { blob } = await taskExecutionApi.downloadExternalApprovalEvidence(projectId, approval.id, fileId);
+      triggerDownload(blob, filename);
+    } catch (caught) {
+      setError(caught?.message || "This evidence file could not be downloaded.");
+    }
+  }
+
+  return <section className="mt-4 border-t border-slate-100 pt-3">
+    <h5 className="text-xs font-black uppercase tracking-wide text-slate-500">Submission history</h5>
+    <div className="mt-2 grid gap-2">
+      {submissions.map(submission => <article key={submission.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-slate-500">
+          <span>{submission.submitted_by_name || "Unknown"}</span>
+          <span>{formatDateShort(submission.submitted_at.slice(0, 10))}</span>
+        </div>
+        {submission.note && <p className="mt-1 text-slate-700">{submission.note}</p>}
+        {submission.evidence.length > 0 && <div className="mt-2 flex flex-wrap gap-2">
+          {submission.evidence.map(file => <button key={file.id} type="button" onClick={() => download(file.file_id, file.original_filename)} className="flex items-center gap-1 rounded-md bg-blue-100 px-2 py-1 text-xs font-bold text-blue-700 hover:bg-blue-200">
+            <Paperclip size={12}/>{file.original_filename}
+          </button>)}
+        </div>}
+      </article>)}
+    </div>
+    {error && <p className="mt-2 text-xs font-bold text-rose-700">{error}</p>}
   </section>;
 }
 
@@ -331,6 +381,8 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
             <Button size="sm" onClick={() => setPendingDecision({ approval, decision: "approved" })}>Approve</Button>
             <Button size="sm" variant="danger" onClick={() => setPendingDecision({ approval, decision: "rejected" })}>Reject</Button>
           </div>}
+
+          <SubmissionHistory projectId={projectId} approval={approval}/>
 
           {assignedToMe && approval.status === "assigned" && <SubmissionForm projectId={projectId} approval={approval} onSubmitted={load}/>}
         </article>;
