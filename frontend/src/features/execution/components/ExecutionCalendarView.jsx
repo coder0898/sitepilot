@@ -1,5 +1,5 @@
 import {
-  CalendarRange, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList,
+  CalendarRange, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList,
   Clock3, ListChecks, PlayCircle, RotateCcw, Search, ShieldAlert, ShieldCheck, Target,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -35,11 +35,12 @@ const LEFT_PANE_WIDTH = 360;
 // under whatever header/KPI/filter chrome sits above it at any screen size.
 const CALENDAR_BODY_HEIGHT_CLASS = "max-h-[68vh] min-h-[420px]";
 
-const TILE_ICONS = { total: ClipboardList, ready: ShieldCheck, in_progress: PlayCircle, completed: CheckCircle2, delayed: Clock3, blocked: ShieldAlert };
+const TILE_ICONS = { total: ClipboardList, ready: ShieldCheck, in_progress: PlayCircle, needs_review: ClipboardCheck, completed: CheckCircle2, delayed: Clock3, blocked: ShieldAlert };
 const TILE_TONES = {
   total: "text-blue-700 bg-blue-50",
   ready: "text-emerald-700 bg-emerald-50",
   in_progress: "text-blue-700 bg-blue-50",
+  needs_review: "text-orange-700 bg-orange-50",
   completed: "text-emerald-700 bg-emerald-50",
   delayed: "text-amber-700 bg-amber-50",
   blocked: "text-rose-700 bg-rose-50",
@@ -362,6 +363,7 @@ export function ExecutionCalendarView({ projectId, user }) {
         <CompactStat icon={TILE_ICONS.total} label="Total" value={counts.total} tone="total"/>
         <CompactStat icon={TILE_ICONS.ready} label="Ready" value={counts.ready} tone="ready"/>
         <CompactStat icon={TILE_ICONS.in_progress} label="In progress" value={counts.in_progress} tone="in_progress"/>
+        <CompactStat icon={TILE_ICONS.needs_review} label="Needs review" value={counts.needs_review} tone="needs_review"/>
         <CompactStat icon={TILE_ICONS.completed} label="Completed" value={counts.completed} tone="completed"/>
         <CompactStat icon={TILE_ICONS.delayed} label="Delayed" value={counts.delayed} tone="delayed"/>
         <CompactStat icon={TILE_ICONS.blocked} label="Blocked" value={counts.blocked} tone="blocked"/>

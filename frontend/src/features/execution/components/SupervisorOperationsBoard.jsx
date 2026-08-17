@@ -1,4 +1,4 @@
-import { CalendarClock, Clock3, ShieldAlert, ShieldCheck } from "lucide-react";
+import { CalendarClock, ClipboardCheck, Clock3, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
@@ -6,7 +6,7 @@ import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui
 import { todayIso } from "../../../utils/format";
 import { STATUS_TONE } from "./TaskDetailContent";
 import { TaskDetailDrawer } from "./TaskDetailDrawer";
-import { taskOccupiesDay, todayAsDay } from "./executionViewHelpers";
+import { needsReview, taskOccupiesDay, todayAsDay } from "./executionViewHelpers";
 
 const VISIBLE_PER_COLUMN = 5;
 
@@ -25,6 +25,7 @@ function columnLabel(date, kind) {
 const ATTENTION_KEYS = [
   ["delayed", "Delayed", Clock3, task => task.variance?.status === "late"],
   ["blocked", "Blocked", ShieldAlert, task => task.readiness?.state === "blocked"],
+  ["needs_review", "Needs Review", ClipboardCheck, needsReview],
   ["approval_pending", "Approval Pending", ShieldCheck, task => task.lifecycle_status === "approval_pending"],
 ];
 
@@ -69,6 +70,7 @@ export function SupervisorOperationsBoard({ projectId, user }) {
   const [expandedColumns, setExpandedColumns] = useState(() => new Set());
   const [attentionFilter, setAttentionFilter] = useState(null);
   const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [search, setSearch] = useState("");
 
   async function load() {
     setLoading(true);
@@ -90,11 +92,17 @@ export function SupervisorOperationsBoard({ projectId, user }) {
     projectsApi.detail(projectId).then(detail => { if (active) setProject(detail); }).catch(() => { if (active) setProject(null); });
     return () => { active = false; };
   }, [projectId]);
-  useEffect(() => { setExpandedColumns(new Set()); setAttentionFilter(null); }, [projectId]);
+  useEffect(() => { setExpandedColumns(new Set()); setAttentionFilter(null); setSearch(""); }, [projectId]);
 
   const today = todayAsDay();
   const candidates = (project?.memberships || []).filter(m => m.project_role === "internal_employee");
   const selectedTask = tasks.find(task => task.id === selectedTaskId) || null;
+
+  const term = search.trim().toLowerCase();
+  const searchedTasks = useMemo(() => {
+    if (!term) return tasks;
+    return tasks.filter(task => [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term)));
+  }, [tasks, term]);
 
   const columns = useMemo(() => {
     if (!today) return [];
@@ -105,9 +113,9 @@ export function SupervisorOperationsBoard({ projectId, user }) {
     ].map(({ key, day, kind }) => ({
       key,
       label: columnLabel(day, kind),
-      tasks: tasks.filter(task => taskOccupiesDay(task, day, today)),
+      tasks: searchedTasks.filter(task => taskOccupiesDay(task, day, today)),
     }));
-  }, [tasks, today]);
+  }, [searchedTasks, today]);
 
   // Attention Required is scoped to the same window the board shows - the
   // union of tasks appearing in any of the three columns, not the whole
@@ -147,6 +155,11 @@ export function SupervisorOperationsBoard({ projectId, user }) {
         <h3 className="m-0 flex items-center gap-2 font-serif text-lg text-slate-950"><CalendarClock size={18}/> 3-Day Operations Board</h3>
         <span className="text-xs font-bold text-slate-500">Today: {new Date(`${todayIso()}T00:00:00Z`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" })}</span>
       </header>
+
+      <label className="relative min-w-[200px]">
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
+        <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
+      </label>
 
       <div className="grid gap-3 sm:grid-cols-3">
         {visibleColumns.map(column => <DayColumn
