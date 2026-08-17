@@ -32,6 +32,33 @@ class ProjectGateDecisionIn(BaseModel):
         return cleaned or None
 
 
+class ProjectGateEvidenceOut(BaseModel):
+    id: uuid.UUID
+    file_id: uuid.UUID
+    evidence_type: str
+    caption: str | None
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectGateSubmissionSummaryOut(BaseModel):
+    """One past submission against an approval - the Admin's review context
+    on a `submitted` gate, and PM/Supervisor's read-only history (R6).
+    Mirrors `TaskProgressUpdateOut`'s shape for the same reason: append-only
+    evidence trail, most recent first."""
+    id: uuid.UUID
+    submitted_by: uuid.UUID
+    submitted_by_name: str | None
+    note: str | None
+    submitted_at: datetime
+    evidence: list[ProjectGateEvidenceOut] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ProjectExternalApprovalOut(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -43,8 +70,30 @@ class ProjectExternalApprovalOut(BaseModel):
     coverage_state: str
     coverage_text: str | None
     covered_task_ids: list[uuid.UUID]
+    assigned_to_user_id: uuid.UUID | None
+    assigned_to_name: str | None
+    assigned_by: uuid.UUID | None
+    assigned_at: datetime | None
+    rejection_reason: str | None
     decided_by: uuid.UUID | None
     decided_by_name: str | None
     decided_at: datetime | None
+    submissions: list[ProjectGateSubmissionSummaryOut] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectGateAssignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assignee_user_id: uuid.UUID
+
+
+class ProjectGateSubmissionOut(BaseModel):
+    id: uuid.UUID
+    approval_id: uuid.UUID
+    submitted_by: uuid.UUID
+    note: str | None
+    submitted_at: datetime
+    approval: ProjectExternalApprovalOut
 
     model_config = ConfigDict(from_attributes=True)

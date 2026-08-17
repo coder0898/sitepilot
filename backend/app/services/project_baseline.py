@@ -298,7 +298,7 @@ class ProjectApprovalInstantiationService:
             approval = ProjectExternalApproval(
                 project_id=project.id,
                 project_gate_id=gate.id,
-                status="pending",
+                status="unassigned",
                 # The PM's blocking decision travels with the approval. A
                 # non-blocking gate that arrived here as blocking would stop
                 # every task it covers, which is the opposite of what was set.

@@ -43,7 +43,21 @@ const STATE_TONE = {
   cancelled: "gray",
 };
 
-const REASON_ICON = { dependency: GitBranch, approval: ShieldCheck };
+// Exported so any surface that wants to show "blocked by dependency /
+// approval / both" at a glance (not just this panel's own reason list) uses
+// the same icon per kind rather than inventing a second vocabulary.
+export const REASON_ICON = { dependency: GitBranch, approval: ShieldCheck };
+
+// The distinct kinds of BLOCKING reason on a task, in a stable order
+// (dependency before approval) - `advisories` are deliberately excluded,
+// since those were marked non-gating and showing them here would claim a
+// task is held up by something a PM decided doesn't gate it. A task blocked
+// by both a predecessor and an external approval returns both kinds, so a
+// caller can render one icon per kind instead of one generic "blocked" mark.
+export function blockingReasonKinds(task) {
+  const kinds = new Set((task?.readiness?.reasons || []).map(reason => reason.kind));
+  return ["dependency", "approval"].filter(kind => kinds.has(kind));
+}
 
 // U19: the readiness filters offered above the board. `all` is not a
 // readiness state - it is the absence of a filter - so it is handled

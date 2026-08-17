@@ -1,5 +1,5 @@
 import { AlertTriangle, Clock3, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, Field, Input, Pill, Select, Textarea } from "../../../components/ui";
 
@@ -125,8 +125,16 @@ function DelayForm({ projectId, task, onDone, onChanged }) {
 // forms are collapsed by default behind compact "Report..." actions
 // (progressive disclosure); only the selected form opens, and cancelling
 // it never touches the task's status.
-export function TaskBlockerDelayPanel({ projectId, task, onChanged }) {
-  const [openForm, setOpenForm] = useState(null); // "blocker" | "delay" | null
+//
+// `autoOpen` ("blocker" | "delay" | undefined): a quick-action button
+// elsewhere on the page can drive this open remotely (e.g. TaskDetailDrawer's
+// "Report Delay - Blocker" action) instead of the user finding and clicking
+// the toggle themselves. Re-applied whenever it changes, not just on mount,
+// so a second quick-action click while this panel is already open still
+// switches to the requested form.
+export function TaskBlockerDelayPanel({ projectId, task, onChanged, autoOpen }) {
+  const [openForm, setOpenForm] = useState(autoOpen || null); // "blocker" | "delay" | null
+  useEffect(() => { if (autoOpen) setOpenForm(autoOpen); }, [autoOpen]);
   const openBlockers = task.blockers.filter(b => !b.resolved_at).length;
 
   return <section className="rounded-xl border border-slate-200 bg-white p-4">

@@ -1,31 +1,34 @@
-"""U11: recording a decision against an execution-layer external approval.
+"""U11 / Plan: External Approval Gate Assignment & Evidence Lifecycle (U5).
 
 What this file pins:
 
-- Authority is the PM's, with Admin/Super Admin as the audited fallback -
-  the same rule `TaskApprovalService._require_approver` already applies to
-  task approvals. A Supervisor may see the approvals but may not decide one,
-  and an Internal Employee may do neither.
-- Rejection needs a reason, matching the task rejection rule.
-- A decision is attributable: status, `decided_by` and `decided_at` all move
-  together, which is exactly what the DB's
-  `ck_v2_project_external_approvals_decision_completeness` check demands.
-- A decided approval is final. Re-deciding is refused rather than silently
-  overwriting who granted what.
-- The listing feeds the Execution tab (U18): status, coverage and covered
-  task ids for one project, and never another project's approvals.
+- Authority is Admin-only - no PM-fallback tier for this decision, unlike
+  `TaskApprovalService`. A PM sees the approvals but may not decide one,
+  matching the same rule Supervisor and Internal Employee already sit under.
+- A decision only fires on a `submitted` gate - `unassigned`/`assigned` gates
+  are not yet decidable.
+- Rejection needs a reason, matching the task rejection rule, and the reason
+  persists as `rejection_reason` on the row - surviving the reset back to
+  `assigned` that lets the same assignee resubmit.
+- Rejection is a two-step transition: the row is briefly `rejected` (with
+  `decided_by`/`decided_at`/`rejection_reason` all set) before landing on
+  `assigned` in the same call, resetting `decided_by`/`decided_at` to null
+  while keeping `rejection_reason`.
+- An approved approval is final. Re-deciding it is refused rather than
+  silently overwriting who granted what.
+- The listing feeds the Execution tab: status, coverage, assignment and
+  covered task ids for one project, and never another project's approvals.
 
-The harness seeds rows directly rather than driving the activation flow -
-this unit's subject is the decision, not instantiation (which
-test_project_approval_instantiation_v2.py already covers), and seeding
-directly lets the tests state the exact approval state under test.
+The harness seeds rows directly rather than driving the assign/submit flow -
+this unit's subject is the decision, not assignment (U3) or submission (U4),
+which have their own test files.
 """
 
 from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -39,9 +42,12 @@ from app.auth import current_user
 from app.database import get_db
 from app.execution_models import (
     BaselineTask,
+    FileObject,
     OutboxEvent,
     ProjectBaseline,
     ProjectExternalApproval,
+    ProjectExternalApprovalEvidence,
+    ProjectExternalApprovalSubmission,
     ProjectExternalApprovalTask,
     Task,
 )
@@ -94,6 +100,9 @@ class ProjectGateDecisionTests(unittest.TestCase):
             Task.__table__,
             ProjectExternalApproval.__table__,
             ProjectExternalApprovalTask.__table__,
+            ProjectExternalApprovalSubmission.__table__,
+            ProjectExternalApprovalEvidence.__table__,
+            FileObject.__table__,
             OutboxEvent.__table__,
         ):
             table.create(self.engine)
@@ -230,16 +239,19 @@ class ProjectGateDecisionTests(unittest.TestCase):
         self,
         project_id: uuid.UUID | None = None,
         *,
-        status: str = "pending",
+        status: str = "submitted",
         blocking: bool = True,
         coverage_state: str = "exact",
         coverage_text: str | None = None,
         covered_task_count: int = 0,
+        assigned_to_user_id: uuid.UUID | None = INTERNAL_ID,
         decided_by: uuid.UUID | None = None,
+        rejection_reason: str | None = None,
     ) -> dict:
         """Seeds one gate + its execution-layer approval, returning plain
         values (not ORM instances) so assertions never depend on a session
-        that has since closed."""
+        that has since closed. Defaults to `submitted` (this unit's subject
+        state), assigned to the seeded Internal Employee."""
         project_id = project_id or self.project_id
         with self.Session.begin() as session:
             self._sequence += 1
@@ -254,10 +266,15 @@ class ProjectGateDecisionTests(unittest.TestCase):
             )
             session.add(gate)
             session.flush()
+            effective_assignee = assigned_to_user_id if status != "unassigned" else None
             approval = ProjectExternalApproval(
                 id=uuid.uuid4(), project_id=project_id, project_gate_id=gate.id,
                 status=status, blocking=blocking, coverage_state=coverage_state,
                 coverage_text=coverage_text,
+                assigned_to_user_id=effective_assignee,
+                assigned_by=ADMIN_ID if effective_assignee else None,
+                assigned_at=datetime.now(timezone.utc) if effective_assignee else None,
+                rejection_reason=rejection_reason,
                 decided_by=decided_by,
                 decided_at=datetime.now(timezone.utc) if decided_by else None,
             )
@@ -280,6 +297,38 @@ class ProjectGateDecisionTests(unittest.TestCase):
                 "task_ids": task_ids,
             }
 
+    def make_submission(self, approval: dict, *, note: str | None = "Attached the NOC.", filename: str | None = "noc.pdf") -> uuid.UUID:
+        """Seeds one submission, optionally with one evidence file, against
+        an approval already made by `make_approval` - this file's subject is
+        the decision/listing carrying submissions back out, not U4's
+        submission service itself (see test_project_gate_submission_v2.py)."""
+        self._sequence += 1
+        with self.Session.begin() as session:
+            submission = ProjectExternalApprovalSubmission(
+                approval_id=approval["id"], submitted_by=INTERNAL_ID, note=note,
+                # Explicit, strictly increasing timestamps: relying on
+                # server_default=now() ties two submissions made in the same
+                # test to the same second, leaving "most recent first"
+                # ordering to a random-UUID id tiebreak instead.
+                submitted_at=datetime(2026, 8, 15, 9, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=self._sequence),
+            )
+            session.add(submission)
+            session.flush()
+            if filename:
+                file_object = FileObject(
+                    storage_key=f"{approval['id']}-{uuid.uuid4().hex}.pdf",
+                    original_filename=filename, mime_type="application/pdf",
+                    size_bytes=1024, checksum="deadbeef", uploaded_by=INTERNAL_ID,
+                )
+                session.add(file_object)
+                session.flush()
+                session.add(ProjectExternalApprovalEvidence(
+                    submission_id=submission.id, file_id=file_object.id,
+                    evidence_type="document", caption=None,
+                ))
+                session.flush()
+            return submission.id
+
     # ---- requests -------------------------------------------------------
 
     def decide(self, approval: dict, decision: str, reason: str | None = None, project_id=None):
@@ -300,67 +349,110 @@ class ProjectGateDecisionTests(unittest.TestCase):
 
     # ---- who may decide -------------------------------------------------
 
-    def test_the_projects_pm_can_approve_a_pending_approval(self):
+    def test_an_admin_can_approve_a_submitted_approval(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         response = self.decide(approval, "approved")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["status"], "approved")
         self.assertEqual(self.stored(approval).status, "approved")
 
-    def test_an_admin_can_approve_a_pending_approval(self):
+    def test_a_pm_cannot_decide(self):
+        """R3: no PM-fallback tier for this decision, unlike task approval."""
         approval = self.make_approval()
-        self.act_as(self.admin_user())
+        self.act_as(self.pm_user())
         response = self.decide(approval, "approved")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.stored(approval).status, "approved")
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(self.stored(approval).status, "submitted")
 
-    def test_a_supervisor_cannot_approve(self):
+    def test_a_supervisor_cannot_decide(self):
         approval = self.make_approval()
         self.act_as(self.supervisor_user())
         response = self.decide(approval, "approved")
         self.assertEqual(response.status_code, 403, response.text)
-        self.assertEqual(self.stored(approval).status, "pending")
+        self.assertEqual(self.stored(approval).status, "submitted")
 
-    def test_an_internal_employee_cannot_approve(self):
+    def test_an_internal_employee_cannot_decide(self):
         approval = self.make_approval()
         self.act_as(self.internal_user())
         response = self.decide(approval, "approved")
         self.assertEqual(response.status_code, 403, response.text)
-        self.assertEqual(self.stored(approval).status, "pending")
+        self.assertEqual(self.stored(approval).status, "submitted")
+
+    # ---- state ------------------------------------------------------------
+
+    def test_deciding_an_unassigned_gate_is_refused(self):
+        approval = self.make_approval(status="unassigned", assigned_to_user_id=None)
+        self.act_as(self.admin_user())
+        response = self.decide(approval, "approved")
+        self.assertEqual(response.status_code, 409, response.text)
+
+    def test_deciding_an_assigned_but_not_yet_submitted_gate_is_refused(self):
+        approval = self.make_approval(status="assigned")
+        self.act_as(self.admin_user())
+        response = self.decide(approval, "approved")
+        self.assertEqual(response.status_code, 409, response.text)
 
     # ---- the decision itself --------------------------------------------
 
     def test_rejection_without_a_reason_is_refused(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         response = self.decide(approval, "rejected")
         self.assertEqual(response.status_code, 422, response.text)
-        self.assertEqual(self.stored(approval).status, "pending")
+        self.assertEqual(self.stored(approval).status, "submitted")
 
     def test_a_blank_reason_does_not_count_as_a_reason(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         response = self.decide(approval, "rejected", reason="   ")
         self.assertEqual(response.status_code, 422, response.text)
 
-    def test_rejection_with_a_reason_is_recorded(self):
+    def test_rejection_with_a_reason_loops_the_gate_back_to_assigned(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         response = self.decide(approval, "rejected", reason="Fire NOC refused by the authority.")
         self.assertEqual(response.status_code, 200, response.text)
         row = self.stored(approval)
-        self.assertEqual(row.status, "rejected")
-        self.assertEqual(row.decided_by, PM_ID)
+        self.assertEqual(row.status, "assigned")
+        self.assertEqual(row.assigned_to_user_id, INTERNAL_ID, "same assignee, per the resubmit-loop rule")
+        self.assertIsNone(row.decided_by, "decided_by resets - the row is no longer a completed decision")
+        self.assertIsNone(row.decided_at)
+        self.assertEqual(row.rejection_reason, "Fire NOC refused by the authority.", "survives the reset, unlike decided_by/decided_at")
 
-    def test_a_decision_records_the_deciding_user_and_the_time(self):
+    def test_a_rejected_gate_intermediate_state_is_actually_persisted(self):
+        """The doc-review-flagged gap: without the two-step write, `rejected`
+        was never a real row anyone could observe - the CHECK constraint's
+        rejected branch and the audit trail both depended on it existing."""
+        approval = self.make_approval()
+        self.act_as(self.admin_user())
+        self.decide(approval, "rejected", reason="Needs a signature.")
+        with self.Session() as session:
+            audit = {
+                event.action: event
+                for event in session.scalars(
+                    select(V2AuditEvent).where(V2AuditEvent.entity_id == approval["id"])
+                ).all()
+            }
+            # Both events share the same `decided_at` timestamp and a
+            # random-UUID `id`, so identified by action rather than insert
+            # order - occurred_at/id ordering is not guaranteed between them.
+            self.assertEqual(len(audit), 2, "one for the rejection, one for the reopen-to-assigned")
+            rejected_event = audit["PROJECT_EXTERNAL_APPROVAL_DECIDED"]
+            reopened_event = audit["PROJECT_EXTERNAL_APPROVAL_REOPENED_FOR_RESUBMISSION"]
+            self.assertEqual(rejected_event.after_json.get("status"), "rejected")
+            self.assertEqual(rejected_event.after_json.get("rejection_reason"), "Needs a signature.")
+            self.assertEqual(reopened_event.before_json.get("status"), "rejected")
+            self.assertEqual(reopened_event.after_json.get("status"), "assigned")
+
+    def test_a_decision_records_the_deciding_user_and_the_time_on_approval(self):
         approval = self.make_approval()
         before = datetime.now(timezone.utc)
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         self.assertEqual(self.decide(approval, "approved").status_code, 200)
 
         row = self.stored(approval)
-        self.assertEqual(row.decided_by, PM_ID)
+        self.assertEqual(row.decided_by, ADMIN_ID)
         self.assertIsNotNone(row.decided_at)
         decided_at = row.decided_at
         if decided_at.tzinfo is None:
@@ -369,18 +461,18 @@ class ProjectGateDecisionTests(unittest.TestCase):
 
     def test_a_decision_writes_an_audit_event_and_emits_an_outbox_event(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         self.assertEqual(self.decide(approval, "approved").status_code, 200)
 
         with self.Session() as session:
             audit = session.scalars(
                 select(V2AuditEvent).where(V2AuditEvent.entity_id == approval["id"])
             ).all()
-            self.assertEqual(len(audit), 1, "exactly one audit event per decision")
+            self.assertEqual(len(audit), 1, "exactly one audit event for an approval")
             self.assertEqual(audit[0].entity_type, "project_external_approval")
-            self.assertEqual(audit[0].actor_user_id, PM_ID)
+            self.assertEqual(audit[0].actor_user_id, ADMIN_ID)
             self.assertEqual(audit[0].project_id, self.project_id)
-            self.assertEqual(audit[0].before_json.get("status"), "pending")
+            self.assertEqual(audit[0].before_json.get("status"), "submitted")
             self.assertEqual(audit[0].after_json.get("status"), "approved")
 
             events = session.scalars(
@@ -389,11 +481,11 @@ class ProjectGateDecisionTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].event_type, "project_external_approval.decided")
             self.assertEqual(events[0].payload["decision"], "approved")
-            self.assertEqual(events[0].payload["decided_by"], str(PM_ID))
+            self.assertEqual(events[0].payload["decided_by"], str(ADMIN_ID))
 
-    def test_deciding_on_an_already_decided_approval_is_refused(self):
-        approval = self.make_approval(status="approved", decided_by=ADMIN_ID)
-        self.act_as(self.pm_user())
+    def test_deciding_on_an_already_approved_approval_is_refused(self):
+        approval = self.make_approval(status="approved", assigned_to_user_id=INTERNAL_ID, decided_by=ADMIN_ID)
+        self.act_as(self.admin_user())
         response = self.decide(approval, "rejected", reason="Changed my mind.")
         self.assertEqual(response.status_code, 409, response.text)
         row = self.stored(approval)
@@ -402,15 +494,15 @@ class ProjectGateDecisionTests(unittest.TestCase):
 
     def test_an_unknown_decision_is_refused(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         self.assertIn(self.decide(approval, "maybe").status_code, (400, 422))
 
     def test_an_approval_from_another_project_is_not_decidable_through_this_project(self):
         approval = self.make_approval(self.other_project_id)
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         response = self.decide(approval, "approved", project_id=self.project_id)
         self.assertEqual(response.status_code, 404, response.text)
-        self.assertEqual(self.stored(approval).status, "pending")
+        self.assertEqual(self.stored(approval).status, "submitted")
 
     def test_a_decision_does_not_touch_coverage(self):
         """`ck_v2_project_external_approvals_coverage_text` only permits prose
@@ -418,7 +510,7 @@ class ProjectGateDecisionTests(unittest.TestCase):
         approval = self.make_approval(
             coverage_state="unresolved", coverage_text="All procurement activities",
         )
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         self.assertEqual(self.decide(approval, "approved").status_code, 200)
         row = self.stored(approval)
         self.assertEqual(row.coverage_state, "unresolved")
@@ -426,9 +518,9 @@ class ProjectGateDecisionTests(unittest.TestCase):
 
     # ---- the listing ----------------------------------------------------
 
-    def test_the_listing_returns_status_coverage_state_and_covered_task_ids(self):
+    def test_the_listing_returns_status_coverage_state_assignment_and_covered_task_ids(self):
         approval = self.make_approval(covered_task_count=2)
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         response = self.listing()
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
@@ -437,10 +529,12 @@ class ProjectGateDecisionTests(unittest.TestCase):
         self.assertEqual(item["id"], str(approval["id"]))
         self.assertEqual(item["gate_code"], approval["gate_code"])
         self.assertEqual(item["gate_name"], approval["gate_name"])
-        self.assertEqual(item["status"], "pending")
+        self.assertEqual(item["status"], "submitted")
         self.assertTrue(item["blocking"])
         self.assertEqual(item["coverage_state"], "exact")
         self.assertIsNone(item["coverage_text"])
+        self.assertEqual(item["assigned_to_user_id"], str(INTERNAL_ID))
+        self.assertEqual(item["assigned_to_name"], "Internal")
         self.assertIsNone(item["decided_by"])
         self.assertIsNone(item["decided_at"])
         self.assertEqual(
@@ -449,7 +543,7 @@ class ProjectGateDecisionTests(unittest.TestCase):
 
     def test_the_listing_carries_unresolved_coverage_prose(self):
         self.make_approval(coverage_state="unresolved", coverage_text="Anything touching the facade")
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         item = self.listing().json()[0]
         self.assertEqual(item["coverage_state"], "unresolved")
         self.assertEqual(item["coverage_text"], "Anything touching the facade")
@@ -458,18 +552,60 @@ class ProjectGateDecisionTests(unittest.TestCase):
     def test_the_listing_does_not_leak_another_projects_approvals(self):
         mine = self.make_approval(self.project_id)
         self.make_approval(self.other_project_id)
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         body = self.listing(self.project_id).json()
         self.assertEqual([item["id"] for item in body], [str(mine["id"])])
 
     def test_the_listing_shows_a_recorded_decision(self):
         approval = self.make_approval()
-        self.act_as(self.pm_user())
+        self.act_as(self.admin_user())
         self.assertEqual(self.decide(approval, "approved").status_code, 200)
         item = self.listing().json()[0]
         self.assertEqual(item["status"], "approved")
-        self.assertEqual(item["decided_by"], str(PM_ID))
+        self.assertEqual(item["decided_by"], str(ADMIN_ID))
         self.assertIsNotNone(item["decided_at"])
+
+    def test_the_listing_shows_a_persisted_rejection_reason_after_the_loop_to_assigned(self):
+        approval = self.make_approval()
+        self.act_as(self.admin_user())
+        self.decide(approval, "rejected", reason="Missing an inspection photo.")
+        item = self.listing().json()[0]
+        self.assertEqual(item["status"], "assigned")
+        self.assertEqual(item["rejection_reason"], "Missing an inspection photo.")
+        self.assertIsNone(item["decided_by"])
+
+    def test_the_listing_carries_a_submission_with_its_evidence_for_review(self):
+        """The gap this closes: without this, Admin deciding a `submitted`
+        gate had no way to see what the assignee actually uploaded."""
+        approval = self.make_approval()
+        self.make_submission(approval, note="NOC attached.", filename="noc.pdf")
+        self.act_as(self.admin_user())
+        item = self.listing().json()[0]
+        self.assertEqual(len(item["submissions"]), 1)
+        submission = item["submissions"][0]
+        self.assertEqual(submission["note"], "NOC attached.")
+        self.assertEqual(submission["submitted_by"], str(INTERNAL_ID))
+        self.assertEqual(submission["submitted_by_name"], "Internal")
+        self.assertEqual(len(submission["evidence"]), 1)
+        self.assertEqual(submission["evidence"][0]["original_filename"], "noc.pdf")
+        self.assertEqual(submission["evidence"][0]["mime_type"], "application/pdf")
+
+    def test_a_decision_response_also_carries_the_submission_history(self):
+        approval = self.make_approval()
+        self.make_submission(approval)
+        self.act_as(self.admin_user())
+        body = self.decide(approval, "approved").json()
+        self.assertEqual(len(body["submissions"]), 1)
+
+    def test_multiple_submissions_across_a_reject_resubmit_loop_are_all_retained(self):
+        approval = self.make_approval()
+        self.make_submission(approval, note="First try.", filename="v1.pdf")
+        self.make_submission(approval, note="Fixed.", filename="v2.pdf")
+        self.act_as(self.admin_user())
+        item = self.listing().json()[0]
+        self.assertEqual(len(item["submissions"]), 2)
+        # Most recent first.
+        self.assertEqual(item["submissions"][0]["note"], "Fixed.")
 
     def test_a_supervisor_may_read_the_listing_even_though_they_cannot_decide(self):
         """Reading which approvals block the site is part of the Supervisor's
@@ -477,6 +613,26 @@ class ProjectGateDecisionTests(unittest.TestCase):
         self.make_approval()
         self.act_as(self.supervisor_user())
         self.assertEqual(self.listing().status_code, 200)
+
+    def test_a_pm_may_read_the_listing_even_though_they_cannot_decide(self):
+        self.make_approval()
+        self.act_as(self.pm_user())
+        self.assertEqual(self.listing().status_code, 200)
+
+    def test_an_internal_employee_sees_only_gates_assigned_to_them(self):
+        """Mirrors list_project_tasks' own scoping: an Internal Employee is
+        not a general project-wide reader like PM/Supervisor - they see only
+        what's assigned to them, not every other assignee's approval."""
+        mine = self.make_approval(status="assigned", assigned_to_user_id=INTERNAL_ID)
+        self.make_approval(status="assigned", assigned_to_user_id=PM_ID)
+        self.act_as(self.internal_user())
+        body = self.listing().json()
+        self.assertEqual([item["id"] for item in body], [str(mine["id"])])
+
+    def test_an_internal_employee_with_no_assigned_gates_sees_an_empty_listing(self):
+        self.make_approval(status="assigned", assigned_to_user_id=PM_ID)
+        self.act_as(self.internal_user())
+        self.assertEqual(self.listing().json(), [])
 
     def test_a_non_member_cannot_read_the_listing(self):
         self.make_approval()

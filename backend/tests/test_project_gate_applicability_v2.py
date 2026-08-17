@@ -297,7 +297,7 @@ class ProjectGateApplicabilityTests(unittest.TestCase):
                 select(ProjectExternalApproval).where(ProjectExternalApproval.project_gate_id == self.gate_id)
             )
             self.assertIsNotNone(approval, "an applicable gate on an active project must yield a runtime approval")
-            self.assertEqual(approval.status, "pending")
+            self.assertEqual(approval.status, "unassigned")
             self.assertEqual(approval.project_id, self.project_id)
 
     def test_deciding_the_same_gate_twice_creates_only_one_approval(self):
