@@ -1,21 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
-import { CalendarCheck, CalendarRange, ClipboardList, FastForward, FolderKanban, GitBranch, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CalendarCheck, CalendarRange, ClipboardList, FolderKanban, GitBranch, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
-import { EmptyState, LoadingSpinner, Pill, Select } from "../../components/ui";
-import { formatDateShort } from "../../utils/format";
-import { ExecutionMetric as Metric } from "./components/ExecutionOverview";
+import { EmptyState, LoadingSpinner, Select } from "../../components/ui";
+import { DependencyControlView } from "./components/DependencyControlView";
+import { ExecutionCalendarView } from "./components/ExecutionCalendarView";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
-import { ScheduleTimelinePanel } from "./components/ScheduleTimeline";
-import { TaskExecutionBoard } from "./components/TaskExecutionBoard";
-import { isReadyToAccelerate, READINESS_FILTERS, readinessCounts } from "./components/TaskReadinessPanel";
+import { MyAssignedWorkList } from "./components/MyAssignedWorkList";
+import { SupervisorOperationsBoard } from "./components/SupervisorOperationsBoard";
+import { TaskActionView } from "./components/TaskActionView";
 
-// U2 (Task Execution Engine, Phase 1): the "Tasks" tab is now the live
-// TaskExecutionBoard - status transitions, evidence, verification/approval,
-// blockers/delays and support assignment (U2-U6) all happen from here.
-//
-// U18: External Approvals is no longer a read-only planning view either. It
-// now reads the execution-layer approvals and can decide them, so an approval
-// that blocks tasks can actually be granted. Dependencies remains read-only.
+// U2 (Task Execution Engine, Phase 1) through this redesign: the old shared
+// "Tasks" + "Timeline" tabs are now one role-specific view - an Execution
+// Calendar for Admin/PM/Super Admin, a 3-Day Operations Board for
+// Supervisor, and a My Assigned Work list (+ its own Task Detail Action
+// View) for Internal Employee. Each owns its own task fetch, count tiles and
+// filters; this page only decides which one to mount and still owns the
+// Dependencies/External Approvals tabs and project-picker header, unchanged.
+
+function roleViewMeta(role) {
+  if (role === "internal_employee") return { key: "work", label: "My Work", Icon: ClipboardList };
+  if (role === "supervisor") return { key: "board", label: "3-Day Board", Icon: CalendarRange };
+  return { key: "calendar", label: "Execution Calendar", Icon: CalendarRange };
+}
 
 export function ExecutionPage({ user }) {
   const [projects, setProjects] = useState([]);
@@ -27,14 +33,16 @@ export function ExecutionPage({ user }) {
   // decision - the same fact the backend checks, rather than the actor's
   // global role.
   const [project, setProject] = useState(null);
-  const [activeTab, setActiveTab] = useState("tasks");
+  const viewMeta = roleViewMeta(user.role);
+  const [activeTab, setActiveTab] = useState(viewMeta.key);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [search, setSearch] = useState("");
   const [error, setError] = useState("");
-  // U19: the execution-layer tasks the board actually drew, handed up so the
-  // tiles below count the same rows the user can see (R26).
-  const [boardTasks, setBoardTasks] = useState([]);
-  const [readinessFilter, setReadinessFilter] = useState("all");
+  // Internal Employee only: which of their own tasks is open in the Task
+  // Detail Action View. `myTasks` is the list MyAssignedWorkList fetched,
+  // lifted up so TaskActionView can render the same row without a second
+  // fetch of the same task.
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [myTasks, setMyTasks] = useState([]);
 
   useEffect(() => {
     let active = true;
@@ -62,11 +70,11 @@ export function ExecutionPage({ user }) {
     setError("");
     if (user.role === "internal_employee") {
       // executionTasks/dependencies/the project record are whole-project
-      // baselines, not scoped to this actor - TaskExecutionBoard below
-      // already fetches their own (server-filtered) task list directly, so
-      // there's nothing project-wide for this role to load here. The
-      // approvals tab this project record would authorise is not offered to
-      // an Internal Employee either.
+      // baselines, not scoped to this actor - MyAssignedWorkList/
+      // TaskActionView already fetch their own (server-filtered) task list
+      // directly, so there's nothing project-wide for this role to load
+      // here. The Dependencies tab this project record would authorise is
+      // not offered to an Internal Employee either.
       setView(null);
       setDependencies({ items: [], total: 0, excluded_warning_count: 0 });
       setProject(null);
@@ -92,14 +100,12 @@ export function ExecutionPage({ user }) {
   }, [projectId, user.role]);
 
   const selectedProject = projects.find(project => project.id === projectId);
-  const counts = useMemo(() => readinessCounts(boardTasks), [boardTasks]);
-  // Wrapped, not passed by reference: `filter` supplies (element, index,
-  // array), and the index would land in this predicate's `today` parameter.
-  const accelerable = useMemo(() => boardTasks.filter(task => isReadyToAccelerate(task)), [boardTasks]);
 
-  // A project switch must not leave the previous project's tasks behind the
-  // new project's tiles for the moment before the board reloads.
-  useEffect(() => { setBoardTasks([]); setReadinessFilter("all"); }, [projectId]);
+  // A project switch must not leave the previous project's open task detail
+  // behind for the new project.
+  useEffect(() => { setSelectedTaskId(null); setMyTasks([]); setActiveTab(viewMeta.key); }, [projectId]);
+
+  const selectedMyTask = myTasks.find(task => task.id === selectedTaskId) || null;
 
   return (
     <section className="grid gap-5">
@@ -126,39 +132,12 @@ export function ExecutionPage({ user }) {
         <div className="rounded-2xl border border-slate-200 bg-white p-8"><LoadingSpinner label="Loading task baseline..."/></div>
       ) : (view || (user.role === "internal_employee" && selectedProject)) ? (
         <>
-          {/* U19 (R26): these count the EXECUTION rows the board below drew,
-              handed up by the board itself. They used to come from the
-              planning read model, which counts tasks excluded from the plan
-              and never instantiated into the execution layer - so the number
-              above the board did not describe the board, and no amount of
-              looking at it would tell you why. Only shown to a role that gets
-              the whole-project view; an Internal Employee's list is filtered
-              to their own assignments and a project-wide count would be a
-              claim about work they cannot see. */}
-          {view && <div className="grid grid-cols-2 gap-3 lg:grid-cols-3" role="group" aria-label="Readiness summary">
-            <Metric icon={<ClipboardList/>} label="Total tasks" value={counts.total} helper="In this project's execution layer" tone="blue"/>
-            <Metric icon={<ShieldCheck/>} label="Ready" value={counts.ready} helper="Dependencies and approvals met" tone="green"/>
-            <Metric icon={<ShieldAlert/>} label="Blocked" value={counts.blocked} helper={counts.blocked ? "Waiting on a task or approval" : "Nothing is held up"} tone={counts.blocked ? "red" : "green"}/>
-          </div>}
-          {/* No "could start early" tile: the section below already carries
-              that count in its own heading, and two numbers for one fact is
-              how a surface starts disagreeing with itself. */}
-
-          {/* An Internal Employee only ever sees their own assigned tasks in
-              the Tasks tab (server-filtered - see list_project_tasks), and
-              Dependencies stays a whole-project planning view they're not
-              offered. External Approvals is the one exception since a plan
-              U3/U5 change: an employee can now be the assignee of a gate and
-              needs to submit evidence for it - list_for_project scopes what
-              they see there to their own assigned gates, mirroring the same
-              "only what's assigned to me" rule the Tasks tab already uses. */}
           <div className="rounded-2xl border border-slate-200 bg-white p-2">
             <div className="flex flex-wrap gap-2">
               {(user.role === "internal_employee"
-                ? [["tasks", "Tasks", ClipboardList], ["approvals", "External Approvals", ShieldCheck]]
+                ? [[viewMeta.key, viewMeta.label, viewMeta.Icon], ["approvals", "External Approvals", ShieldCheck]]
                 : [
-                    ["tasks", "Tasks", ClipboardList],
-                    ["timeline", "Timeline", CalendarRange],
+                    [viewMeta.key, viewMeta.label, viewMeta.Icon],
                     ["dependencies", "Dependencies", GitBranch],
                     ["approvals", "External Approvals", ShieldCheck],
                   ]
@@ -170,80 +149,26 @@ export function ExecutionPage({ user }) {
             </div>
           </div>
 
-          {activeTab === "tasks" && <>
-          {/* U19 (R20): work that could be pulled forward - ready to start,
-              but not due to start yet. Shown above the board rather than as
-              another filter because it answers a question the board does not:
-              not "what is ready" but "what could we get ahead on". */}
-          {view && <section className="rounded-2xl border border-violet-200 bg-violet-50/60 p-4">
-            <h3 className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-violet-800">
-              <FastForward size={14}/> Could start early
-              {accelerable.length > 0 && <Pill tone="violet">{accelerable.length}</Pill>}
-            </h3>
-            {accelerable.length ? <div className="mt-3 grid gap-2">
-              {accelerable.map(task => <div key={task.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm">
-                <span className="font-mono text-xs font-black text-blue-700">{task.original_code}</span>
-                <span className="min-w-0 flex-1 truncate font-bold text-slate-900">{task.title}</span>
-                <span className="text-xs font-bold text-slate-500">Planned {formatDateShort(task.planned_start_date)}</span>
-              </div>)}
-            </div> : <p className="mt-2 text-sm text-slate-500">
-              Nothing can be pulled forward right now - every ready task is already due to start, or is waiting on something.
-            </p>}
-          </section>}
+          {activeTab === viewMeta.key && user.role === "internal_employee" && (
+            selectedMyTask
+              ? <TaskActionView
+                  key={selectedMyTask.id}
+                  projectId={projectId}
+                  project={project}
+                  task={selectedMyTask}
+                  user={user}
+                  candidates={[]}
+                  onBack={() => setSelectedTaskId(null)}
+                  onChanged={() => {}}
+                />
+              : <MyAssignedWorkList projectId={projectId} onOpenTask={setSelectedTaskId} onTasksLoaded={setMyTasks}/>
+          )}
 
-          <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-            <label className="relative block">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
-              <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-12 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
-            </label>
-            {/* Narrows the same list the search narrows - the two compose. */}
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by readiness">
-              {READINESS_FILTERS.map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  aria-pressed={readinessFilter === key}
-                  onClick={() => setReadinessFilter(key)}
-                  className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${readinessFilter === key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600"}`}
-                >{label}</button>
-              ))}
-            </div>
-          </div>
+          {activeTab === viewMeta.key && user.role === "supervisor" && <SupervisorOperationsBoard projectId={projectId} user={user}/>}
 
-          {/* U18: the tabs are mutually exclusive, so leaving Tasks unmounts
-              this board and returning remounts it - which is what refetches
-              the readiness an approval decision just changed. Nothing extra
-              is needed to recompute the view, and adding a refresh signal
-              alongside would be a second mechanism doing the same work. If
-              these tabs ever render together, that stops being true. */}
-          <TaskExecutionBoard
-            projectId={projectId}
-            user={user}
-            search={search}
-            readinessFilter={readinessFilter}
-            onTasksLoaded={setBoardTasks}
-          />
-          </>}
+          {activeTab === viewMeta.key && !["internal_employee", "supervisor"].includes(user.role) && <ExecutionCalendarView projectId={projectId} user={user}/>}
 
-          {activeTab === "timeline" && <ScheduleTimelinePanel projectId={projectId}/>}
-
-          {activeTab === "dependencies" && <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <h3 className="m-0 font-serif text-lg text-slate-950">Task dependencies</h3>
-            {dependencies.items?.length ? (
-              <div className="mt-4 grid gap-2">
-                {dependencies.items.map(dep => (
-                  <div key={dep.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-                    <span className="font-bold text-slate-900">{dep.predecessor_title}</span>
-                    <Pill tone={dep.blocking ? "orange" : "gray"}>{dep.dependency_type.replaceAll("_", " ")}</Pill>
-                    <span className="font-bold text-slate-900">{dep.successor_title}</span>
-                    {dep.excluded_task_warning && <Pill tone="red">References an excluded task</Pill>}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-3 text-sm text-slate-500">No dependencies were generated for this project.</p>
-            )}
-          </div>}
+          {activeTab === "dependencies" && <DependencyControlView projectId={projectId} project={project} user={user} dependencies={dependencies}/>}
 
           {activeTab === "approvals" && <ExternalApprovalsPanel projectId={projectId} project={project} user={user}/>}        </>
       ) : !error && (
