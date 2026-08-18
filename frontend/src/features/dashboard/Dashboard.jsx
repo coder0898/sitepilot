@@ -19,6 +19,10 @@ export function Dashboard({ initialUser, onLogout }) {
     setRoute({ tab: next, project: "", pane: "" });
   }
 
+  function openProject(code) {
+    setRoute({ tab: "projects", project: code, pane: "overview" });
+  }
+
   async function refresh() {
     setLoading(true);
     try {
@@ -75,7 +79,7 @@ export function Dashboard({ initialUser, onLogout }) {
       notice={notice}
       onClearNotice={() => setNotice("")}
     >
-      <DashboardTab tab={tab} loading={loading} data={data} user={user} action={action} />
+      <DashboardTab tab={tab} loading={loading} data={data} user={user} action={action} onOpenProject={openProject} />
     </AppLayout>
   );
 }

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Activity, Building2, ChevronRight, ClipboardList, FolderKanban, Mail, MapPin, MessageCircle, Pencil, Phone, Plus, ShieldAlert, ShieldCheck, Trash2, UserRound, UsersRound, Wrench } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Activity, Building2, ChevronRight, ClipboardList, FolderKanban, Mail, MapPin, MessageCircle, MoreVertical, Pencil, Phone, Plus, PowerOff, ShieldAlert, ShieldCheck, Trash2, UserRound, UsersRound, Wrench, X } from "lucide-react";
 import { Button, ConfirmModal, Pill } from "../../../components/ui";
 
 const cleanPhone = (value = "") => value.replace(/[^\d+]/g, "");
@@ -72,12 +72,37 @@ function VendorProjectMappingForm({ vendor, unmappedProjects, mapToProjects }) {
   </div>;
 }
 
-export function VendorDetailPanel({ vendor, parentVendor, subVendors = [], contacts = [], projects = [], unmappedProjects = [], mapToProjects, noteProjects = [], categories = [], logs = [], canManage, onClose, remove, edit, addContact, addSubcontractor, addNote, selectVendor }) {
+function HeaderMenu({ onDelete }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    function onClickOutside(event) { if (ref.current && !ref.current.contains(event.target)) setOpen(false); }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [open]);
+  return <div ref={ref} className="relative">
+    <button type="button" aria-label="More vendor actions" onClick={() => setOpen(v => !v)} className="grid size-10 shrink-0 place-items-center rounded-xl border border-slate-200 text-slate-500 transition hover:bg-slate-50"><MoreVertical size={17}/></button>
+    {open && <div className="absolute right-0 top-[calc(100%+6px)] z-20 grid w-44 gap-0.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
+      <button type="button" onClick={() => { setOpen(false); onDelete(); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-rose-700 transition hover:bg-rose-50">Delete vendor</button>
+    </div>}
+  </div>;
+}
+
+export function VendorDetailPanel({ vendor, parentVendor, subVendors = [], contacts = [], projects = [], unmappedProjects = [], mapToProjects, noteProjects = [], categories = [], logs = [], canManage, onClose, remove, edit, deactivate, addContact, addSubcontractor, addNote, selectVendor }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [showNoteForm, setShowNoteForm] = useState(false);
   useEffect(() => { setActiveTab("overview"); setShowNoteForm(false); setConfirmDelete(false); setDeleteError(""); }, [vendor.id]);
+
+  // The page behind the drawer must not scroll while it's open - same
+  // convention as TaskDetailDrawer, which this mirrors.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
 
   const primary = contacts.find(contact => contact.is_primary) || contacts[0];
   const isMain = vendor.engagement_type === "main";
@@ -99,31 +124,36 @@ export function VendorDetailPanel({ vendor, parentVendor, subVendors = [], conta
     { id: "activity", label: "Activity", icon: Activity, count: logs.length },
   ];
 
-  return <div className="min-h-[620px] min-w-0 max-w-full overflow-x-hidden bg-slate-50 max-[640px]:min-h-dvh">
-    <section className="border-b border-slate-200 bg-white p-4 sm:p-6">
-      <div className="flex min-w-0 items-center gap-4 rounded-2xl bg-slate-950 p-4 text-white sm:p-5 max-[560px]:items-start">
-        <div className="grid size-14 shrink-0 place-items-center rounded-2xl bg-blue-600 text-lg font-black shadow-[0_12px_28px_rgba(37,99,235,.28)]">{vendor.name.slice(0, 2).toUpperCase()}</div>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-xl font-black tracking-tight sm:text-2xl">{vendor.name}</h2>
-          <p className="mt-1 truncate text-sm text-slate-300">{parentVendor ? `Sub-vendor of ${parentVendor.name}` : pending ? "Parent vendor mapping required" : "Direct project vendor"}</p>
+  const effectiveStatus = vendor.effective_status || vendor.status;
+
+  return <>
+    <div className="fixed inset-0 z-40 bg-slate-950/40" onClick={onClose} aria-hidden="true"/>
+    <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col bg-white shadow-[-16px_0_50px_rgba(15,23,42,.18)] sm:w-[640px]" aria-label={`Vendor detail - ${vendor.name}`}>
+    <section className="shrink-0 border-b border-slate-200 p-4 sm:p-5">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-blue-600 text-base font-black text-white shadow-[0_10px_24px_rgba(37,99,235,.25)]">{vendor.name.slice(0, 2).toUpperCase()}</div>
+          <div className="min-w-0">
+            <h2 className="truncate text-lg font-black tracking-tight text-slate-950">{vendor.name}</h2>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              <Pill tone={pending ? "orange" : isMain ? "blue" : "green"}>{pending ? "Mapping required" : isMain ? "Main Vendor" : "Sub-vendor"}</Pill>
+              <Pill tone={effectiveStatus === "active" ? "green" : effectiveStatus === "on_hold" ? "orange" : "gray"}>{statusLabel(effectiveStatus)}</Pill>
+            </div>
+          </div>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-2 max-[560px]:max-w-28">
-          <Pill tone={pending ? "orange" : isMain ? "blue" : "green"}>{pending ? "Mapping required" : isMain ? "Main vendor" : "Sub-vendor"}</Pill>
-          <Pill tone={(vendor.effective_status || vendor.status) === "active" ? "green" : "orange"}>{statusLabel(vendor.effective_status || vendor.status)}</Pill>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {primary && <a aria-label="Call primary contact" href={`tel:${cleanPhone(primary.phone)}`} className="grid size-10 place-items-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"><Phone size={16}/></a>}
+          {primary && <a aria-label="WhatsApp primary contact" href={`https://wa.me/${cleanPhone(primary.whatsapp || primary.phone).replace("+", "")}`} target="_blank" rel="noreferrer" className="grid size-10 place-items-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700"><MessageCircle size={16}/></a>}
+          {vendor.email && <a aria-label="Email vendor" href={`mailto:${vendor.email}`} className="grid size-10 place-items-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"><Mail size={16}/></a>}
+          {canManage && <HeaderMenu onDelete={() => setConfirmDelete(true)}/>}
+          {onClose && <button type="button" aria-label="Close vendor details" onClick={onClose} className="grid size-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><X size={18}/></button>}
         </div>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 sm:px-4">
-        <ContactActions contact={primary}/>
-        {canManage && <div className="flex flex-wrap gap-2 max-[520px]:w-full max-[520px]:grid max-[520px]:grid-cols-2">
-          <Button type="button" size="sm" variant="secondary" onClick={edit}><Pencil size={16}/> Edit vendor</Button>
-          <Button type="button" size="sm" variant="danger" onClick={() => setConfirmDelete(true)}><Trash2 size={16}/> Delete vendor</Button>
-        </div>}
       </div>
       {pending && <div className="mt-3 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><ShieldAlert className="mt-0.5 shrink-0" size={18}/><span>This legacy record remains visible but cannot receive project or task assignments until its parent is approved.</span></div>}
     </section>
-    <nav className="grid grid-cols-3 gap-1 border-b border-slate-200 bg-white px-4 py-3 sm:flex sm:flex-wrap sm:px-5" aria-label="Vendor detail sections">{tabs.map(tab => { const Icon = tab.icon; return <button type="button" key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-xl px-3 text-sm font-black transition ${activeTab === tab.id ? "bg-slate-950 text-white shadow-sm" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}><Icon size={16}/>{tab.label}{tab.count !== undefined && <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${activeTab === tab.id ? "bg-white/15" : "bg-slate-100"}`}>{tab.count}</span>}</button>; })}</nav>
+    <nav className="grid shrink-0 grid-cols-3 gap-1 border-b border-slate-200 bg-white px-4 py-3 sm:flex sm:flex-wrap sm:px-5" aria-label="Vendor detail sections">{tabs.map(tab => { const Icon = tab.icon; return <button type="button" key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-xl px-3 text-sm font-black transition ${activeTab === tab.id ? "bg-slate-950 text-white shadow-sm" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}><Icon size={16}/>{tab.label}{tab.count !== undefined && <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${activeTab === tab.id ? "bg-white/15" : "bg-slate-100"}`}>{tab.count}</span>}</button>; })}</nav>
 
-    <main className="min-w-0 max-w-full overflow-hidden p-6 max-[640px]:p-4">
+    <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto bg-slate-50 p-6 max-[640px]:p-4">
       {activeTab === "overview" && <div className="grid gap-5">
         <CapabilityGroups vendor={vendor} categories={categories}/>
         <section className="grid grid-cols-2 gap-3 max-[720px]:grid-cols-1"><DetailItem icon={Building2} label="Engagement" value={pending ? "Parent mapping required" : isMain ? "Main vendor" : `Sub-vendor of ${parentVendor?.name || "approved parent"}`}/><DetailItem icon={ShieldCheck} label="GST number" value={vendor.gst_number}/><DetailItem icon={Mail} label="Email" value={vendor.email}/><DetailItem icon={MapPin} label="Address" value={vendor.address}/></section>
@@ -137,8 +167,17 @@ export function VendorDetailPanel({ vendor, parentVendor, subVendors = [], conta
       {activeTab === "subvendors" && <section className="grid gap-3"><header className="mb-1 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black text-slate-950">Sub-vendor network</h3><p className="mt-1 text-sm text-slate-500">Approved companies operating under this vendor.</p></div>{canManage && <button type="button" onClick={addSubcontractor} className="flex min-h-11 items-center gap-2 rounded-xl bg-blue-700 px-4 text-sm font-black text-white"><Plus size={17}/> Add sub-vendor</button>}</header>{subVendors.map(subVendor => <button type="button" key={subVendor.id} onClick={() => selectVendor?.(subVendor.id)} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-blue-300 hover:shadow-sm"><span className="grid size-11 place-items-center rounded-xl bg-emerald-50 font-black text-emerald-700">{subVendor.name.slice(0, 2).toUpperCase()}</span><div className="min-w-0"><strong className="block truncate text-slate-950">{subVendor.name}</strong><span className="mt-1 block truncate text-xs text-slate-500">{(subVendor.categories || [subVendor.category]).join(" - ")}</span></div><ChevronRight className="text-slate-400"/></button>)}{!subVendors.length && <EmptyPanel icon={UsersRound} title="No sub-vendors linked" text="Create sub-vendors only from this approved parent profile." action={canManage && <button type="button" onClick={addSubcontractor} className="mt-4 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white">Add sub-vendor</button>}/>}</section>}
 
       {activeTab === "activity" && <section className="grid gap-3"><header className="mb-1 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black text-slate-950">Communication activity</h3><p className="mt-1 text-sm text-slate-500">Manual follow-ups and site coordination notes.</p></div><button type="button" onClick={() => setShowNoteForm(value => !value)} className="flex min-h-11 items-center gap-2 rounded-xl bg-blue-700 px-4 text-sm font-black text-white"><Plus size={17}/> Add note</button></header>{showNoteForm && <form className="mb-2 grid grid-cols-2 gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 max-[640px]:grid-cols-1 [&_select]:min-h-11 [&_select]:rounded-xl [&_select]:border [&_select]:border-blue-200 [&_select]:bg-white [&_select]:px-3 [&_textarea]:col-span-full [&_textarea]:min-h-24 [&_textarea]:rounded-xl [&_textarea]:border [&_textarea]:border-blue-200 [&_textarea]:p-3 [&_button]:col-span-full [&_button]:min-h-11 [&_button]:rounded-xl [&_button]:bg-slate-950 [&_button]:font-black [&_button]:text-white" onSubmit={addNote}><select name="project_id"><option value="">General</option>{noteProjects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}</select><select name="contact_id"><option value="">Company</option>{contacts.map(contact => <option value={contact.id} key={contact.id}>{contact.name}</option>)}</select><input type="hidden" name="channel" value="note"/><textarea name="note" required placeholder="What was discussed or needs follow-up?"/><button>Add communication note</button></form>}{logs.map(log => <article key={log.id} className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-2xl border border-slate-200 bg-white p-4"><span className="grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-700"><MessageCircle size={17}/></span><div><div className="flex flex-wrap items-center justify-between gap-2"><strong className="capitalize text-slate-950">{log.channel.replace("_", " ")}</strong><time className="text-xs text-slate-400">{new Date(log.created_at).toLocaleString()}</time></div><p className="mt-2 text-sm leading-6 text-slate-600">{log.note}</p><small className="mt-2 block text-xs font-bold text-slate-400">Recorded by {log.created_by_name}</small></div></article>)}{!logs.length && !showNoteForm && <EmptyPanel icon={Activity} title="No activity recorded" text="Add the first communication note to keep project follow-ups visible to the team."/>}</section>}
-    </main>
+    </div>
 
-    {confirmDelete && <ConfirmModal title={deletionBlocked ? "Deletion blocked" : `Delete ${vendor.name}?`} message={deleteMessage} confirmLabel={deletionBlocked ? "Linked sub-vendors must be resolved" : "Delete permanently"} confirmDisabled={deletionBlocked} onClose={() => { setConfirmDelete(false); setDeleteError(""); }} onConfirm={confirmVendorDeletion}/>} 
-  </div>;
+    {canManage && <footer className="flex shrink-0 flex-wrap gap-2 border-t border-slate-200 bg-white p-4">
+      <Button type="button" size="sm" variant="secondary" onClick={() => setActiveTab("overview")}><ClipboardList size={16}/> View profile</Button>
+      <Button type="button" size="sm" variant="secondary" onClick={edit}><Pencil size={16}/> Edit vendor</Button>
+      {effectiveStatus === "active"
+        ? <Button type="button" size="sm" variant="danger" onClick={deactivate}><PowerOff size={16}/> Deactivate</Button>
+        : <Button type="button" size="sm" variant="danger" onClick={() => setConfirmDelete(true)}><Trash2 size={16}/> Delete vendor</Button>}
+    </footer>}
+
+    {confirmDelete && <ConfirmModal title={deletionBlocked ? "Deletion blocked" : `Delete ${vendor.name}?`} message={deleteMessage} confirmLabel={deletionBlocked ? "Linked sub-vendors must be resolved" : "Delete permanently"} confirmDisabled={deletionBlocked} onClose={() => { setConfirmDelete(false); setDeleteError(""); }} onConfirm={confirmVendorDeletion}/>}
+    </aside>
+  </>;
 }

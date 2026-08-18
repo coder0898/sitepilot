@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     # valid signature can ever be computed, so the route safely rejects
     # every inbound request until an operator configures this.
     whatsapp_webhook_secret: str = ""
+    # Real Meta WhatsApp Cloud API credentials (see
+    # backend/app/services/whatsapp_provider.py). Sourced from
+    # environment/`.env` only, mirroring `supabase_secret_key`'s pattern -
+    # never hardcoded. Empty by default: with no token/phone-number-id
+    # configured, `MetaCloudApiAdapter.send` fails fast with
+    # failure_code='not_configured' rather than attempting a doomed call.
+    whatsapp_access_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_api_version: str = "v21.0"
     # U3 (R18): the outbox dispatcher. `OutboxService.emit` has been writing
     # pending events since Phase 2 and nothing has ever drained them, so
     # every notification the system decided to send is still sitting in the
