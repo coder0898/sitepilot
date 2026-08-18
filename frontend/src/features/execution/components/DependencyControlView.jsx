@@ -75,6 +75,102 @@ function KpiCard({ icon: Icon, tone, value, label }) {
 const STATUS_FILTERS = [["all", "All"], ["blocking", "Blocking"], ["satisfied", "Satisfied"]];
 const TYPE_FILTERS = [["all", "All"], ["finish_to_start", "Finish-to-Start"], ["start_to_start", "Start-to-Start"]];
 
+const PAGE_SIZE = 6;
+
+// The dependency detail overlay - same large right-side drawer chrome as
+// TaskDetailDrawer (backdrop, fixed w-[820px] aside, body scroll lock), so a
+// dependency's detail no longer competes for space with the table in a small
+// sticky sidebar. Read-only for every role that reaches this tab (Admin, PM,
+// Super Admin, Supervisor) - the only actions are jumping to either task's
+// own TaskDetailDrawer, never duplicated here.
+function DependencyDetailDrawer({ dependency, onClose, onOpenTask }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
+
+  const chip = STATUS_CHIP[dependency.status];
+
+  return <>
+    <div className="fixed inset-0 z-40 bg-slate-950/40" onClick={onClose} aria-hidden="true"/>
+    <aside
+      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col rounded-l-2xl bg-white shadow-[-16px_0_50px_rgba(15,23,42,.18)] sm:w-[820px]"
+      aria-label={`Dependency detail - ${dependency.predecessor_code} to ${dependency.successor_code}`}
+    >
+      <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-6 py-5">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.2em] text-blue-700"><GitBranch size={14}/> Dependency Detail</div>
+          <h2 className="mt-1 text-lg font-black leading-snug text-slate-950">{dependency.predecessor_code} &rarr; {dependency.successor_code}</h2>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Pill tone={chip.tone}><chip.Icon size={11}/> {chip.label}</Pill>
+            <Pill tone={TYPE_CHIP_TONE[dependency.dependency_type] || "gray"}>{DEPENDENCY_TYPE_LABEL[dependency.dependency_type] || humanizeStatus(dependency.dependency_type)}</Pill>
+            {dependency.excluded_task_warning && <Pill tone="orange">Excluded task</Pill>}
+          </div>
+        </div>
+        <button type="button" aria-label="Close dependency detail" onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">
+          <X size={20}/>
+        </button>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/60 px-6 py-5">
+        <div className="grid gap-4">
+          <section>
+            <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Predecessor Task</h4>
+            <div className="mt-1 flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3">
+              <TaskRef code={dependency.predecessor_code} title={dependency.predecessor_title} task={dependency.predecessorTask}/>
+              <TaskStatusChip task={dependency.predecessorTask}/>
+            </div>
+          </section>
+
+          <section>
+            <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Successor Task</h4>
+            <div className="mt-1 flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3">
+              <TaskRef code={dependency.successor_code} title={dependency.successor_title} task={dependency.successorTask}/>
+              <TaskStatusChip task={dependency.successorTask}/>
+            </div>
+          </section>
+
+          <section>
+            <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Dependency Type</h4>
+            <Pill tone={TYPE_CHIP_TONE[dependency.dependency_type] || "gray"} className="mt-1">{DEPENDENCY_TYPE_LABEL[dependency.dependency_type] || humanizeStatus(dependency.dependency_type)}</Pill>
+          </section>
+
+          <section>
+            <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Impact</h4>
+            <p className="mt-1 text-sm text-slate-700">{dependency.impact ? `${dependency.impact} task${dependency.impact === 1 ? " is" : "s are"} waiting on this dependency.` : "Impact not calculated."}</p>
+          </section>
+
+          <section>
+            <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">{dependency.status === "satisfied" ? "Status" : "Why is this blocking?"}</h4>
+            {dependency.status === "satisfied" && <p className="mt-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">Dependency condition is satisfied.</p>}
+            {dependency.status === "blocking" && <p className="mt-1 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-800">{WHY_BLOCKING_TEXT[dependency.dependency_type] || "This dependency's condition has not been met yet."}</p>}
+            {dependency.status === "unknown" && <p className="mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-600">The predecessor task's current status isn't available, so this can't be determined yet.</p>}
+          </section>
+
+          <section>
+            <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Dates</h4>
+            <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+              <dt className="text-slate-400">Planned Start (Predecessor)</dt><dd className="text-right font-bold text-slate-700">{dependency.predecessorTask ? formatDateShort(dependency.predecessorTask.planned_start_date) : "—"}</dd>
+              <dt className="text-slate-400">Planned Finish (Predecessor)</dt><dd className="text-right font-bold text-slate-700">{dependency.predecessorTask ? formatDateShort(dependency.predecessorTask.planned_end_date) : "—"}</dd>
+              <dt className="text-slate-400">Planned Start (Successor)</dt><dd className="text-right font-bold text-slate-700">{dependency.successorTask ? formatDateShort(dependency.successorTask.planned_start_date) : "—"}</dd>
+              <dt className="text-slate-400">Planned Finish (Successor)</dt><dd className="text-right font-bold text-slate-700">{dependency.successorTask ? formatDateShort(dependency.successorTask.planned_end_date) : "—"}</dd>
+            </dl>
+          </section>
+        </div>
+      </div>
+
+      {/* Not a "View Both" button: only one task detail overlay can be open
+          at a time, so a button claiming to open both would be a UI that
+          doesn't do what it says. */}
+      <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-white px-6 py-4">
+        <Button size="sm" variant="secondary" disabled={!dependency.predecessorTask} title={!dependency.predecessorTask ? "This task hasn't been instantiated for execution yet." : undefined} onClick={() => onOpenTask("predecessor")}>View Predecessor Task</Button>
+        <Button size="sm" variant="secondary" disabled={!dependency.successorTask} title={!dependency.successorTask ? "This task hasn't been instantiated for execution yet." : undefined} onClick={() => onOpenTask("successor")}>View Successor Task</Button>
+      </footer>
+    </aside>
+  </>;
+}
+
 // Admin/PM/Super Admin/Supervisor: the "Task Dependencies" control view that
 // replaces the old flat "Task A | Finish To Start | Task B" list. Internal
 // Employee never reaches this component at all - ExecutionPage's own tab
@@ -94,6 +190,7 @@ export function DependencyControlView({ projectId, project, user, dependencies }
   const [phaseFilter, setPhaseFilter] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
   const [openDrawerTaskId, setOpenDrawerTaskId] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   async function load() {
     setLoading(true);
@@ -110,6 +207,7 @@ export function DependencyControlView({ projectId, project, user, dependencies }
 
   useEffect(() => { load(); }, [projectId]);
   useEffect(() => { setSelectedId(null); setOpenDrawerTaskId(null); }, [projectId]);
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [search, typeFilter, statusFilter, phaseFilter, projectId]);
 
   const candidates = (project?.memberships || []).filter(m => m.project_role === "internal_employee");
 
@@ -157,6 +255,9 @@ export function DependencyControlView({ projectId, project, user, dependencies }
 
   const selected = enriched.find(d => d.id === selectedId) || null;
   const drawerTask = openDrawerTaskId === "predecessor" ? selected?.predecessorTask : openDrawerTaskId === "successor" ? selected?.successorTask : null;
+  const visibleItems = filtered.slice(0, visibleCount);
+  const hasMore = filtered.length > visibleItems.length;
+  const canShowLess = visibleCount > PAGE_SIZE;
   const filtersActive = Boolean(search.trim()) || typeFilter !== "all" || statusFilter !== "all" || phaseFilter !== "all";
 
   function resetFilters() {
@@ -223,116 +324,51 @@ export function DependencyControlView({ projectId, project, user, dependencies }
       ))}
     </div>
 
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
-      {!filtered.length ? (
-        <EmptyState icon={<GitBranch size={21}/>} title={items.length ? "No dependencies match" : "No dependencies were generated for this project"} description={items.length ? "Try a different search or filter." : undefined}/>
-      ) : (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-[10px] font-black uppercase tracking-wide text-slate-400">
-                  <th className="px-4 py-3 font-black">Predecessor Task</th>
-                  <th className="px-4 py-3 font-black">Dependency Type</th>
-                  <th className="px-4 py-3 font-black">Successor Task</th>
-                  <th className="px-4 py-3 font-black">Predecessor Status</th>
-                  <th className="px-4 py-3 font-black">Dependency Status</th>
-                  <th className="px-4 py-3 font-black">Impact</th>
-                  <th className="px-4 py-3 font-black">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(dep => {
-                  const chip = STATUS_CHIP[dep.status];
-                  return <tr key={dep.id} onClick={() => setSelectedId(dep.id)} className={`cursor-pointer border-b border-slate-50 transition last:border-0 hover:bg-blue-50/40 ${selectedId === dep.id ? "bg-blue-50/70" : ""}`}>
-                    <td className="px-4 py-3 align-top"><TaskRef code={dep.predecessor_code} title={dep.predecessor_title} task={dep.predecessorTask}/></td>
-                    <td className="px-4 py-3 align-top"><Pill tone={TYPE_CHIP_TONE[dep.dependency_type] || "gray"}>{DEPENDENCY_TYPE_LABEL[dep.dependency_type] || humanizeStatus(dep.dependency_type)}</Pill></td>
-                    <td className="px-4 py-3 align-top"><TaskRef code={dep.successor_code} title={dep.successor_title} task={dep.successorTask}/></td>
-                    <td className="px-4 py-3 align-top"><TaskStatusChip task={dep.predecessorTask}/></td>
-                    <td className="px-4 py-3 align-top"><Pill tone={chip.tone}><chip.Icon size={11}/> {chip.label}</Pill>{dep.excluded_task_warning && <Pill tone="orange" className="ml-1">Excluded task</Pill>}</td>
-                    <td className="px-4 py-3 align-top font-bold text-slate-700">{dep.impact || "—"}</td>
-                    <td className="px-4 py-3 align-top">
-                      <button type="button" onClick={event => { event.stopPropagation(); setSelectedId(dep.id); }} aria-label={`View dependency between ${dep.predecessor_code} and ${dep.successor_code}`} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100">
-                        <Eye size={13}/> View
-                      </button>
-                    </td>
-                  </tr>;
-                })}
-              </tbody>
-            </table>
-          </div>
+    {!filtered.length ? (
+      <EmptyState icon={<GitBranch size={21}/>} title={items.length ? "No dependencies match" : "No dependencies were generated for this project"} description={items.length ? "Try a different search or filter." : undefined}/>
+    ) : (
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-100 text-[10px] font-black uppercase tracking-wide text-slate-400">
+                <th className="px-4 py-3 font-black">Predecessor Task</th>
+                <th className="px-4 py-3 font-black">Dependency Type</th>
+                <th className="px-4 py-3 font-black">Successor Task</th>
+                <th className="px-4 py-3 font-black">Predecessor Status</th>
+                <th className="px-4 py-3 font-black">Dependency Status</th>
+                <th className="px-4 py-3 font-black">Impact</th>
+                <th className="px-4 py-3 font-black">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleItems.map(dep => {
+                const chip = STATUS_CHIP[dep.status];
+                return <tr key={dep.id} onClick={() => setSelectedId(dep.id)} className={`cursor-pointer border-b border-slate-50 transition last:border-0 hover:bg-blue-50/40 ${selectedId === dep.id ? "bg-blue-50/70" : ""}`}>
+                  <td className="px-4 py-3 align-top"><TaskRef code={dep.predecessor_code} title={dep.predecessor_title} task={dep.predecessorTask}/></td>
+                  <td className="px-4 py-3 align-top"><Pill tone={TYPE_CHIP_TONE[dep.dependency_type] || "gray"}>{DEPENDENCY_TYPE_LABEL[dep.dependency_type] || humanizeStatus(dep.dependency_type)}</Pill></td>
+                  <td className="px-4 py-3 align-top"><TaskRef code={dep.successor_code} title={dep.successor_title} task={dep.successorTask}/></td>
+                  <td className="px-4 py-3 align-top"><TaskStatusChip task={dep.predecessorTask}/></td>
+                  <td className="px-4 py-3 align-top"><Pill tone={chip.tone}><chip.Icon size={11}/> {chip.label}</Pill>{dep.excluded_task_warning && <Pill tone="orange" className="ml-1">Excluded task</Pill>}</td>
+                  <td className="px-4 py-3 align-top font-bold text-slate-700">{dep.impact || "—"}</td>
+                  <td className="px-4 py-3 align-top">
+                    <button type="button" onClick={event => { event.stopPropagation(); setSelectedId(dep.id); }} aria-label={`View dependency between ${dep.predecessor_code} and ${dep.successor_code}`} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100">
+                      <Eye size={13}/> View
+                    </button>
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
         </div>
-      )}
+        {(hasMore || canShowLess) && <div className="flex items-center justify-center gap-3 border-t border-slate-100 px-4 py-3">
+          {hasMore && <Button size="sm" variant="secondary" onClick={() => setVisibleCount(count => count + PAGE_SIZE)}>Load More</Button>}
+          {canShowLess && <Button size="sm" variant="ghost" onClick={() => setVisibleCount(PAGE_SIZE)}>Show Less</Button>}
+        </div>}
+      </div>
+    )}
 
-      <aside className="sticky top-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        {!selected ? (
-          <EmptyState icon={<GitBranch size={20}/>} title="Select a dependency to view details."/>
-        ) : (
-          <div className="grid gap-4">
-            <div className="flex items-start justify-between gap-2">
-              <h3 className="m-0 font-serif text-base text-slate-950">Dependency Details</h3>
-              <div className="flex items-center gap-2">
-                <Pill tone={STATUS_CHIP[selected.status].tone}>{STATUS_CHIP[selected.status].label}</Pill>
-                <button type="button" aria-label="Close dependency details" onClick={() => setSelectedId(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X size={16}/></button>
-              </div>
-            </div>
-
-            <section>
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Predecessor Task</h4>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <TaskRef code={selected.predecessor_code} title={selected.predecessor_title} task={selected.predecessorTask}/>
-                <TaskStatusChip task={selected.predecessorTask}/>
-              </div>
-            </section>
-
-            <section>
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Successor Task</h4>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <TaskRef code={selected.successor_code} title={selected.successor_title} task={selected.successorTask}/>
-                <TaskStatusChip task={selected.successorTask}/>
-              </div>
-            </section>
-
-            <section>
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Dependency Type</h4>
-              <Pill tone={TYPE_CHIP_TONE[selected.dependency_type] || "gray"} className="mt-1">{DEPENDENCY_TYPE_LABEL[selected.dependency_type] || humanizeStatus(selected.dependency_type)}</Pill>
-            </section>
-
-            <section>
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Impact</h4>
-              <p className="mt-1 text-sm text-slate-700">{selected.impact ? `${selected.impact} task${selected.impact === 1 ? " is" : "s are"} waiting on this dependency.` : "Impact not calculated."}</p>
-            </section>
-
-            <section>
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">{selected.status === "satisfied" ? "Status" : "Why is this blocking?"}</h4>
-              {selected.status === "satisfied" && <p className="mt-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">Dependency condition is satisfied.</p>}
-              {selected.status === "blocking" && <p className="mt-1 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-800">{WHY_BLOCKING_TEXT[selected.dependency_type] || "This dependency's condition has not been met yet."}</p>}
-              {selected.status === "unknown" && <p className="mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-600">The predecessor task's current status isn't available, so this can't be determined yet.</p>}
-            </section>
-
-            <section>
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Dates</h4>
-              <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-                <dt className="text-slate-400">Planned Start (Predecessor)</dt><dd className="text-right font-bold text-slate-700">{selected.predecessorTask ? formatDateShort(selected.predecessorTask.planned_start_date) : "—"}</dd>
-                <dt className="text-slate-400">Planned Finish (Predecessor)</dt><dd className="text-right font-bold text-slate-700">{selected.predecessorTask ? formatDateShort(selected.predecessorTask.planned_end_date) : "—"}</dd>
-                <dt className="text-slate-400">Planned Start (Successor)</dt><dd className="text-right font-bold text-slate-700">{selected.successorTask ? formatDateShort(selected.successorTask.planned_start_date) : "—"}</dd>
-                <dt className="text-slate-400">Planned Finish (Successor)</dt><dd className="text-right font-bold text-slate-700">{selected.successorTask ? formatDateShort(selected.successorTask.planned_end_date) : "—"}</dd>
-              </dl>
-            </section>
-
-            <section className="grid gap-2 border-t border-slate-100 pt-3">
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-slate-400">Quick Actions</h4>
-              {/* Not a "View Both" button: TaskDetailDrawer is a single
-                  overlay by design, so it can only ever show one task at a
-                  time - offering a button that claims to open both would be
-                  a UI that doesn't do what it says. */}
-              <Button size="sm" variant="secondary" disabled={!selected.predecessorTask} title={!selected.predecessorTask ? "This task hasn't been instantiated for execution yet." : undefined} onClick={() => setOpenDrawerTaskId("predecessor")}>View Predecessor Task</Button>
-              <Button size="sm" variant="secondary" disabled={!selected.successorTask} title={!selected.successorTask ? "This task hasn't been instantiated for execution yet." : undefined} onClick={() => setOpenDrawerTaskId("successor")}>View Successor Task</Button>
-            </section>
-          </div>
-        )}
-      </aside>
-    </div>
+    {selected && <DependencyDetailDrawer key={selected.id} dependency={selected} onClose={() => setSelectedId(null)} onOpenTask={setOpenDrawerTaskId}/>}
 
     {drawerTask && <TaskDetailDrawer
       key={drawerTask.id}

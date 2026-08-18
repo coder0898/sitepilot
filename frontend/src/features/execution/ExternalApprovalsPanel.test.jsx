@@ -79,9 +79,12 @@ describe("ExternalApprovalsPanel", () => {
     expect(screen.getByText("Admin Review")).toBeInTheDocument();
   });
 
-  it("shows a placeholder in the review panel until a row is selected", async () => {
+  it("does not render the approval detail drawer until a row is selected, then opens it", async () => {
     renderPanel(admin);
-    expect(await screen.findByText("Select an approval to view details.")).toBeInTheDocument();
+    await screen.findByText(baseApproval.gate_code);
+    expect(screen.queryByText("Assignment summary")).not.toBeInTheDocument();
+    await openApproval(baseApproval.gate_code);
+    expect(await screen.findByText("Assignment summary")).toBeInTheDocument();
   });
 
   // ---- KPI cards -----------------------------------------------------------
@@ -444,5 +447,23 @@ describe("ExternalApprovalsPanel", () => {
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Assign" })).toBeInTheDocument();
     expect(screen.queryByText(/awaiting applicability review/i)).not.toBeInTheDocument();
+  });
+
+  it("shows 6 approval rows by default, then Load More/Show Less paginate the rest", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ ...baseApproval, id: `a${i}`, gate_code: `GATE-${i}`, gate_name: `Gate ${i}` })),
+    );
+    renderPanel(admin);
+
+    const bodyRows = () => screen.getAllByRole("row").filter(row => within(row).queryAllByRole("cell").length > 0);
+    await waitFor(() => expect(bodyRows()).toHaveLength(6));
+    expect(screen.queryByText("Show Less")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load More" }));
+    await waitFor(() => expect(bodyRows()).toHaveLength(8));
+    expect(screen.queryByRole("button", { name: "Load More" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Less" }));
+    await waitFor(() => expect(bodyRows()).toHaveLength(6));
   });
 });

@@ -5,7 +5,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
-import { Button, EmptyState, Field, IconButton, LoadingSpinner, Modal, Pill, Select, Textarea } from "../../../components/ui";
+import { Button, EmptyState, Field, LoadingSpinner, Modal, Pill, Select, Textarea } from "../../../components/ui";
 import { formatDateShort, initials } from "../../../utils/format";
 
 // Plan: External Approval Gate Assignment & Evidence Lifecycle (U6), redesigned
@@ -98,6 +98,8 @@ const COVERAGE_FILTERS = [
   ["none", "No covered tasks", a => a.coverage_state === "exact" && a.covered_task_ids.length === 0],
   ["unresolved", "Coverage unresolved", a => a.coverage_state === "unresolved"],
 ];
+
+const PAGE_SIZE = 6;
 
 const WORKFLOW_STEPS = [
   { title: "Admin Assigns", desc: "Admin assigns approval to an internal employee.", Icon: UserPlus },
@@ -227,7 +229,7 @@ function actionFor(approval, { mayManage, mine }) {
   return { label: "View", kind: "select" };
 }
 
-function ApprovalsTable({ approvals, mayManage, user, selectedId, onSelect, onAssign }) {
+function ApprovalsTable({ approvals, mayManage, user, selectedId, onSelect, onAssign, hasMore, canShowLess, onLoadMore, onShowLess }) {
   if (!approvals.length) return <EmptyState icon={<ClipboardList size={21}/>} title="No approvals match" description="Try a different search or filter."/>;
 
   return <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -282,6 +284,10 @@ function ApprovalsTable({ approvals, mayManage, user, selectedId, onSelect, onAs
         </tbody>
       </table>
     </div>
+    {(hasMore || canShowLess) && <div className="flex items-center justify-center gap-3 border-t border-slate-100 px-4 py-3">
+      {hasMore && <Button size="sm" variant="secondary" onClick={onLoadMore}>Load More</Button>}
+      {canShowLess && <Button size="sm" variant="ghost" onClick={onShowLess}>Show Less</Button>}
+    </div>}
   </div>;
 }
 
@@ -488,23 +494,28 @@ function CoveredTasks({ approval, tasksById }) {
   </div>;
 }
 
-// ---- right-side Approval Review panel ---------------------------------
+// ---- Approval Review overlay drawer ---------------------------------
+//
+// Same large right-side drawer chrome as TaskDetailDrawer (backdrop, fixed
+// w-[820px] aside, body scroll lock) - mounted with `key={approval.id}` by
+// the caller, so switching approvals remounts fresh (checklist/pending
+// decision reset for free, the same convention TaskDetailDrawer relies on).
+// Section visibility is unchanged from the old sidebar: Admin decision
+// controls stay behind `canDecide`/`mayManage`, the submit form stays
+// behind `mine` - a PM or Supervisor viewing this drawer only ever sees the
+// read-only sections and the "Only an Admin can..." notice at the bottom.
 
 function ReviewPanel({ projectId, approval, mayManage, user, candidates, tasksById, onClose, onAssign, onReassign, onUnassign, onDecide, onChanged }) {
   const [checklist, setChecklist] = useState({ documents: false, evidenceClear: false, matchesRequirement: false, coveredTasksConfirmed: false });
   const [pendingDecision, setPendingDecision] = useState(null); // "approved" | "rejected"
   const [unassignError, setUnassignError] = useState("");
-  // The checklist is a per-approval scratch pad, not a saved decision - reset
-  // whenever the selected approval changes so a stale tick never carries
-  // across two different approvals.
-  useEffect(() => { setChecklist({ documents: false, evidenceClear: false, matchesRequirement: false, coveredTasksConfirmed: false }); }, [approval?.id]);
 
-  if (!approval) {
-    return <aside className="sticky top-4 grid h-fit place-items-center rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
-      <ClipboardCheck className="mb-2 text-slate-300" size={28}/>
-      <p className="text-sm font-bold text-slate-500">Select an approval to view details.</p>
-    </aside>;
-  }
+  // The page behind the drawer must not scroll while it's open.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
 
   const meta = statusMeta(approval);
   const mine = isAssignee(approval, user);
@@ -521,22 +532,32 @@ function ReviewPanel({ projectId, approval, mayManage, user, candidates, tasksBy
     }
   }
 
-  return <aside className="sticky top-4 grid h-fit gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_12px_40px_rgba(15,23,42,0.06)]" style={{ width: "min(420px, 100%)" }}>
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <span className="font-mono text-xs font-black text-blue-700">{approval.gate_code}</span>
-        <h3 className="mt-0.5 font-serif text-lg leading-tight text-slate-950">{approval.gate_name}</h3>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          <Pill tone={meta.tone}>{meta.label}</Pill>
-          {stillBlocking(approval) && <Pill tone="red"><ShieldAlert size={12}/> Blocking</Pill>}
-          {approval.coverage_state === "unresolved" && <Pill tone="violet"><AlertTriangle size={12}/> Coverage Unresolved</Pill>}
+  return <>
+    <div className="fixed inset-0 z-40 bg-slate-950/40" onClick={onClose} aria-hidden="true"/>
+    <aside
+      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col rounded-l-2xl bg-white shadow-[-16px_0_50px_rgba(15,23,42,.18)] sm:w-[820px]"
+      aria-label={`External approval detail - ${approval.gate_code}`}
+    >
+      <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-6 py-5">
+        <div className="min-w-0">
+          <span className="font-mono text-xs font-black text-blue-700">{approval.gate_code}</span>
+          <h2 className="mt-0.5 text-lg font-black leading-snug text-slate-950">{approval.gate_name}</h2>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Pill tone={meta.tone}>{meta.label}</Pill>
+            {stillBlocking(approval) && <Pill tone="red"><ShieldAlert size={12}/> Blocking</Pill>}
+            {approval.coverage_state === "unresolved" && <Pill tone="violet"><AlertTriangle size={12}/> Coverage Unresolved</Pill>}
+          </div>
         </div>
-      </div>
-      <IconButton aria-label="Close approval detail" size="sm" variant="ghost" onClick={onClose}><X size={16}/></IconButton>
-    </div>
+        <button type="button" aria-label="Close approval detail" onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">
+          <X size={20}/>
+        </button>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/60 px-6 py-5">
+        <div className="grid gap-4">
 
     {/* A. Assignment Summary */}
-    <section className="grid gap-2 border-t border-slate-100 pt-3">
+    <section className="grid gap-2">
       <h4 className="text-[11px] font-black uppercase tracking-wide text-slate-400">Assignment summary</h4>
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-bold text-slate-500">Assigned Internal Employee</span>
@@ -615,13 +636,17 @@ function ReviewPanel({ projectId, approval, mayManage, user, candidates, tasksBy
 
     {!mayManage && !mine && <p className="border-t border-slate-100 pt-3 text-xs font-bold text-slate-500">Only an Admin can assign or decide this external approval.</p>}
 
+        </div>
+      </div>
+    </aside>
+
     {pendingDecision && <DecisionModal
       approval={approval}
       decision={pendingDecision}
       onConfirm={reason => onDecide(approval, pendingDecision, reason).then(() => setPendingDecision(null))}
       onClose={() => setPendingDecision(null)}
     />}
-  </aside>;
+  </>;
 }
 
 // ---- root ------------------------------------------------------------
@@ -644,6 +669,7 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [coverageFilter, setCoverageFilter] = useState("all");
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const mayManage = canManage(user);
   const employeeViewer = isEmployee(user);
@@ -674,6 +700,7 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
 
   useEffect(() => { load(); }, [projectId]);
   useEffect(() => { setSelectedId(null); setSearch(""); setStatusFilter("all"); setEmployeeFilter("all"); setCoverageFilter("all"); }, [projectId]);
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [search, statusFilter, employeeFilter, coverageFilter, projectId]);
 
   // Covered-task ids arrive as raw UUIDs (ProjectExternalApprovalOut has no
   // task code/title) - resolved here, best-effort, from the same task list
@@ -721,6 +748,9 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
     return true;
   });
   const selected = approvals.find(approval => approval.id === selectedId) || null;
+  const visibleApprovals = filtered.slice(0, visibleCount);
+  const hasMore = filtered.length > visibleApprovals.length;
+  const canShowLess = visibleCount > PAGE_SIZE;
   const filtersActive = Boolean(search.trim()) || statusFilter !== "all" || employeeFilter !== "all" || coverageFilter !== "all";
 
   function resetFilters() {
@@ -770,23 +800,34 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
         onReset={resetFilters} filtersActive={filtersActive}
       />
 
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-        <ApprovalsTable approvals={filtered} mayManage={mayManage} user={user} selectedId={selectedId} onSelect={setSelectedId} onAssign={approval => setAssigning({ approval, mode: "assign" })}/>
-        <ReviewPanel
-          projectId={projectId}
-          approval={selected}
-          mayManage={mayManage}
-          user={user}
-          candidates={candidates}
-          tasksById={tasksById}
-          onClose={() => setSelectedId(null)}
-          onAssign={approval => setAssigning({ approval, mode: "assign" })}
-          onReassign={approval => setAssigning({ approval, mode: "reassign" })}
-          onUnassign={unassign}
-          onDecide={decide}
-          onChanged={load}
-        />
-      </div>
+      <ApprovalsTable
+        approvals={visibleApprovals}
+        mayManage={mayManage}
+        user={user}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onAssign={approval => setAssigning({ approval, mode: "assign" })}
+        hasMore={hasMore}
+        canShowLess={canShowLess}
+        onLoadMore={() => setVisibleCount(count => count + PAGE_SIZE)}
+        onShowLess={() => setVisibleCount(PAGE_SIZE)}
+      />
+
+      {selected && <ReviewPanel
+        key={selected.id}
+        projectId={projectId}
+        approval={selected}
+        mayManage={mayManage}
+        user={user}
+        candidates={candidates}
+        tasksById={tasksById}
+        onClose={() => setSelectedId(null)}
+        onAssign={approval => setAssigning({ approval, mode: "assign" })}
+        onReassign={approval => setAssigning({ approval, mode: "reassign" })}
+        onUnassign={unassign}
+        onDecide={decide}
+        onChanged={load}
+      />}
     </>}
 
     {assigning && <AssignModal
