@@ -418,6 +418,39 @@ class ProjectExternalApprovalEvidence(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ProjectExternalApprovalStatusCheck(Base):
+    """Phase 3 (3c): an advisory, append-only self-reported health check
+    ('on_track'/'blocked'/'need_help') against a `ProjectExternalApproval`,
+    recorded by the approval's own assignee only
+    (`project_gate_status_check.py`).
+
+    The direct structural analog of `TaskBlocker`'s BLOCKED-overlay
+    decision, applied to gates: it must never become a lifecycle status,
+    never touches `ProjectExternalApproval.status`, and is never read by
+    the formal assign/submit/decide state machine
+    (`project_gate_assignment.py`, `project_gate_decision.py`). Point-in-
+    time like `TaskDelayEvent`: every check is kept as its own row.
+    """
+
+    __tablename__ = "project_external_approval_status_checks"
+    __table_args__ = (
+        CheckConstraint(
+            "health in ('on_track', 'blocked', 'need_help')",
+            name="ck_v2_project_external_approval_status_checks_health",
+        ),
+        Index("ix_v2_project_external_approval_status_checks_approval_recorded", "approval_id", "recorded_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approval_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    health: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class TaskProgressUpdate(Base):
     """U3: append-only progress note against an execution-layer task.
 
@@ -597,6 +630,66 @@ class TaskDelayEvent(Base):
     impact_days: Mapped[int] = mapped_column(Integer, nullable=False)
     recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskReadinessDeclaration(Base):
+    """Phase 3 (3a): an advisory, append-only self-reported readiness signal
+    against a task ('ready', 'issue', or 'need_help'), point-in-time like
+    `TaskDelayEvent` - a task may be declared 'issue' and later 'ready'
+    without either row being overwritten or deleted.
+
+    Deliberately NOT read by `task_readiness.py`, which stays a pure
+    derived projection over already-persisted facts (approvals,
+    dependencies) per that service's own docstring - a declaration is a
+    human's signal, not a fact the derived projection is computed from.
+    Never touches `Task.lifecycle_status`.
+    """
+
+    __tablename__ = "task_readiness_declarations"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('ready', 'issue', 'need_help')",
+            name="ck_v2_task_readiness_declarations_status",
+        ),
+        Index("ix_v2_task_readiness_declarations_task_declared", "task_id", "declared_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    declared_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    declared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TaskAttendanceEvent(Base):
+    """Phase 3 (3b): an advisory, append-only record of an internal
+    employee's presence ('present'/'absent') against a task, recorded
+    either by the employee themselves or by a Supervisor/PM/Admin on their
+    behalf (`task_attendance.py`). Point-in-time like `TaskDelayEvent`;
+    never touches `Task.lifecycle_status`.
+    """
+
+    __tablename__ = "task_attendance_events"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('present', 'absent')",
+            name="ck_v2_task_attendance_events_status",
+        ),
+        Index("ix_v2_task_attendance_events_task_recorded", "task_id", "recorded_at"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class TaskApprovalDecision(Base):

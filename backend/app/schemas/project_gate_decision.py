@@ -97,3 +97,27 @@ class ProjectGateSubmissionOut(BaseModel):
     approval: ProjectExternalApprovalOut
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectExternalApprovalStatusCheckIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    health: Literal["on_track", "blocked", "need_help"]
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class ProjectExternalApprovalStatusCheckOut(BaseModel):
+    id: uuid.UUID
+    approval_id: uuid.UUID
+    project_id: uuid.UUID
+    health: str
+    note: str | None
+    recorded_by: uuid.UUID
+    recorded_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

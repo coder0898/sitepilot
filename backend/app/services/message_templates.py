@@ -85,6 +85,16 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
     "task.vendor_assigned": TemplateSpec(
         "task_vendor_assigned", "en", ("task_id", "vendor_id"),
     ),
+    "task.readiness_declared": TemplateSpec(
+        # Non-doc event type (Phase 3 advisory overlay table, not a doc
+        # workflow) - mapped to the nearest doc-aligned name, flagged for
+        # later product review per the plan's Decisions section.
+        "task_readiness_declared", "en", ("task_id", "status", "note"),
+    ),
+    "task.attendance_recorded": TemplateSpec(
+        # Non-doc event type - see task.readiness_declared's note above.
+        "task_attendance_recorded", "en", ("task_id", "employee_id", "status", "note"),
+    ),
     # ---- project events -------------------------------------------------
     "project.role_change_requested": TemplateSpec(
         "project_role_change_requested", "en", ("project_id", "role_type", "reason_code"),
@@ -112,6 +122,12 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
     ),
     "project_external_approval.decided": TemplateSpec(
         "external_approval_decided", "en", ("approval_id", "decision", "reason"),
+    ),
+    "project_external_approval.status_checked": TemplateSpec(
+        # Non-doc event type (Phase 3 advisory overlay table, the gate
+        # analog of task.blocker_created) - mapped to the nearest
+        # doc-aligned name, flagged for later product review.
+        "external_approval_status_checked", "en", ("approval_id", "health", "note"),
     ),
 }
 

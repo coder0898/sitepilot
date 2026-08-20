@@ -178,6 +178,62 @@ class TaskDelayOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+ReadinessDeclarationStatus = Literal["ready", "issue", "need_help"]
+
+
+class TaskReadinessDeclarationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: ReadinessDeclarationStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskReadinessDeclarationOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    project_id: uuid.UUID
+    declared_by: uuid.UUID
+    status: str
+    note: str | None
+    declared_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+AttendanceStatus = Literal["present", "absent"]
+
+
+class TaskAttendanceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    employee_id: uuid.UUID
+    status: AttendanceStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskAttendanceOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    project_id: uuid.UUID
+    employee_id: uuid.UUID
+    status: str
+    note: str | None
+    recorded_by: uuid.UUID
+    recorded_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TaskSupportAssignmentCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employee_id: uuid.UUID
