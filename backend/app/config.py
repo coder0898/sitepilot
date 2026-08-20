@@ -90,6 +90,18 @@ class Settings(BaseSettings):
     # tick with an internal idempotency/cadence check doing the real
     # gating is the pattern every scheduler in this codebase already uses.
     weekly_summary_interval_seconds: float = 3600.0
+    # Plan Phase 9: the automated meeting-reminder pass
+    # (`meeting_reminder_scheduler.py`). Same enabled-by-default rationale as
+    # the schedulers above.
+    meeting_reminder_enabled: bool = True
+    # 5 minutes, deliberately SHORTER than the other schedulers' hourly
+    # default: a meeting reminder is time-sensitive to the actual clock in a
+    # way the daily/weekly cadences aren't - someone scheduling a reminder
+    # for "30 minutes before the meeting" needs better-than-hourly
+    # granularity for that reminder to fire anywhere close to on time,
+    # unlike a daily prompt or weekly report where being off by up to an
+    # hour is invisible to anyone.
+    meeting_reminder_interval_seconds: float = 300.0
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""
