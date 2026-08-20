@@ -12,13 +12,19 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.services.message_dispatch as message_dispatch_module
-from app.execution_models import MessageDelivery, OutboxEvent, ProjectExternalApproval, Task
+from app.execution_models import (
+    MessageDelivery,
+    OutboxEvent,
+    ProjectExternalApproval,
+    Task,
+    TaskSupportAssignment,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.message_dispatch import MessageDispatchService
 from app.services.message_templates import DEFAULT_TEMPLATE, TemplateSpec, render_components, resolve
 from app.template_models import V2Template, V2TemplateVersion
-from app.vendor_models import V2Vendor, V2VendorContact
+from app.vendor_models import TaskVendorAssignment, V2Vendor, V2VendorContact
 
 
 @compiles(JSONB, "sqlite")
@@ -73,6 +79,8 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             MessageDelivery.__table__,
             V2Vendor.__table__,
             V2VendorContact.__table__,
+            TaskVendorAssignment.__table__,
+            TaskSupportAssignment.__table__,
         ):
             table.create(self.engine)
 
@@ -225,6 +233,29 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             user.phone = phone
             session.add(user)
             session.commit()
+
+    def _make_vendor_assignment(self, *, status: str = "pending_ack") -> uuid.UUID:
+        with self.Session.begin() as session:
+            assignment = TaskVendorAssignment(
+                task_id=self.task_id, project_id=self.project_id, vendor_id=self.vendor_id,
+                status=status, assigned_by=PM_ID,
+            )
+            session.add(assignment)
+            session.flush()
+            return assignment.id
+
+    def _make_support_assignment(self, *, status: str = "active") -> uuid.UUID:
+        from datetime import datetime, timezone
+
+        with self.Session.begin() as session:
+            assignment = TaskSupportAssignment(
+                task_id=self.task_id, project_id=self.project_id, employee_id=self.internal_employee_employee_id,
+                responsibility="Assist supervisor", status=status, assigned_by=PM_ID,
+                ends_at=datetime.now(timezone.utc) if status == "ended" else None,
+            )
+            session.add(assignment)
+            session.flush()
+            return assignment.id
 
     # ---- 1. happy path: task event -> PM + Supervisor both dispatched -----
 
@@ -556,6 +587,160 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         recipient_employee_ids = {d.recipient_employee_id for d in deliveries}
         self.assertEqual(recipient_employee_ids, {self.pm_employee_id, self.supervisor_employee_id})
         self.assertNotIn(self.admin_employee_id, recipient_employee_ids)
+
+    # ---- 9. Phase 7: vendor + internal-employee resolution on daily prompts
+
+    def _daily_prompt_payload(self) -> dict:
+        return {
+            "task_id": str(self.task_id),
+            "project_id": str(self.project_id),
+            "lifecycle_status": "planned",
+            "planned_start_date": None,
+        }
+
+    def test_vendor_eligible_daily_prompts_resolve_vendor_when_assignment_active(self):
+        # Covers all three vendor-eligible daily-prompt event types on a
+        # task WITH an active (non-declined) TaskVendorAssignment - each
+        # must resolve the vendor's primary contact alongside PM/Supervisor.
+        self._make_vendor_assignment(status="pending_ack")
+
+        for idx, event_type in enumerate(
+            ("task.readiness_check", "task.start_check", "task.midday_check")
+        ):
+            with self.subTest(event_type=event_type):
+                with self.Session() as session:
+                    event_id = self._create_event(
+                        session, event_type=event_type, aggregate_type="task",
+                        aggregate_id=self.task_id, payload=self._daily_prompt_payload(),
+                        key=f"test:9-vendor-{idx}",
+                    )
+                    session.commit()
+
+                with self.Session() as session:
+                    processed = MessageDispatchService(session).process_pending()
+                self.assertEqual(processed, 1)
+
+                deliveries = self._deliveries_for(event_id)
+                vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
+                self.assertEqual(len(vendor_rows), 1, f"{event_type} should resolve exactly one vendor contact")
+                self.assertEqual(vendor_rows[0].recipient_vendor_contact_id, self.vendor_contact_id)
+
+                employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+                self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
+                                  {self.pm_employee_id, self.supervisor_employee_id})
+
+    def test_vendor_eligible_daily_prompts_resolve_no_vendor_when_no_assignment(self):
+        # Same three event types, no TaskVendorAssignment at all - PM/
+        # Supervisor still resolve, but no vendor recipient.
+        for idx, event_type in enumerate(
+            ("task.readiness_check", "task.start_check", "task.midday_check")
+        ):
+            with self.subTest(event_type=event_type):
+                with self.Session() as session:
+                    event_id = self._create_event(
+                        session, event_type=event_type, aggregate_type="task",
+                        aggregate_id=self.task_id, payload=self._daily_prompt_payload(),
+                        key=f"test:9-novendor-{idx}",
+                    )
+                    session.commit()
+
+                with self.Session() as session:
+                    processed = MessageDispatchService(session).process_pending()
+                self.assertEqual(processed, 1)
+
+                deliveries = self._deliveries_for(event_id)
+                vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
+                self.assertEqual(vendor_rows, [])
+
+                employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+                self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
+                                  {self.pm_employee_id, self.supervisor_employee_id})
+
+    def test_vendor_eligible_daily_prompts_ignore_declined_assignment(self):
+        # A declined assignment means the vendor is no longer involved -
+        # must resolve to no vendor recipient, same as "no assignment".
+        self._make_vendor_assignment(status="declined")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.readiness_check", aggregate_type="task",
+                aggregate_id=self.task_id, payload=self._daily_prompt_payload(), key="test:9-declined",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
+        self.assertEqual(vendor_rows, [])
+
+    def test_eod_check_never_resolves_vendor_even_with_active_assignment(self):
+        self._make_vendor_assignment(status="acknowledged")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.eod_check", aggregate_type="task",
+                aggregate_id=self.task_id, payload=self._daily_prompt_payload(), key="test:9-eod",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
+        self.assertEqual(vendor_rows, [], "task.eod_check must never resolve a vendor recipient")
+
+        # PM/Supervisor and the Internal Employee (EOD is in
+        # _EMPLOYEE_ELIGIBLE_TASK_EVENTS too) should still resolve normally.
+        employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+        self.assertIn(self.pm_employee_id, employee_ids)
+        self.assertIn(self.supervisor_employee_id, employee_ids)
+
+    def test_internal_employee_resolves_for_readiness_check(self):
+        # First real coverage of `_resolve_internal_employee_recipient`
+        # actually firing - `_EMPLOYEE_ELIGIBLE_TASK_EVENTS` was empty
+        # before Phase 7.
+        self._make_support_assignment(status="active")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.readiness_check", aggregate_type="task",
+                aggregate_id=self.task_id, payload=self._daily_prompt_payload(), key="test:9-employee",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+        self.assertIn(self.internal_employee_employee_id, employee_ids)
+        # PM/Supervisor still resolve alongside the support-assigned employee.
+        self.assertIn(self.pm_employee_id, employee_ids)
+        self.assertIn(self.supervisor_employee_id, employee_ids)
+
+    def test_ended_support_assignment_does_not_resolve_internal_employee(self):
+        self._make_support_assignment(status="ended")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.readiness_check", aggregate_type="task",
+                aggregate_id=self.task_id, payload=self._daily_prompt_payload(), key="test:9-ended",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+        self.assertNotIn(self.internal_employee_employee_id, employee_ids)
 
 
 if __name__ == "__main__":

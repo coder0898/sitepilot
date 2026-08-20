@@ -129,12 +129,26 @@ _SUCCEEDED_STATUSES = ("sent", "delivered", "read")
 # authority" rationale as the Class A decision above.
 _ADMIN_CC_TASK_EVENTS = {"task.approval_recorded", "task.escalated_to_admin"}
 
-# Phase 7 will populate this with the readiness/start/midday/EOD event types
-# that daily_task_prompts_scheduler.py emits - those event types don't exist
-# yet, so this stays empty for Phase 1. The call site below
-# (`_resolve_internal_employee_recipient`) is scaffolded now so Phase 7 only
-# has to add event-type strings here, not touch `_resolve_recipients` again.
-_EMPLOYEE_ELIGIBLE_TASK_EVENTS: set[str] = set()
+# Phase 7: the four daily-prompt event types `daily_task_prompts.py` emits.
+# Per the doc's own §5-§6 readiness/start/midday/EOD templates, the assigned
+# Internal Employee is a receiver on all four - unlike the vendor-eligible
+# set below, this one is not narrowed to exclude the EOD check.
+_EMPLOYEE_ELIGIBLE_TASK_EVENTS: set[str] = {
+    "task.readiness_check",
+    "task.start_check",
+    "task.midday_check",
+    "task.eod_check",
+}
+
+# Phase 7: three of the four daily-prompt event types - the doc's own tables
+# mark readiness/start/midday as "Vendor if involved" but the EOD check's
+# receiver list is PM/Supervisor/Internal Employee only, no vendor -
+# `task.eod_check` is deliberately excluded here.
+_VENDOR_ELIGIBLE_TASK_EVENTS: set[str] = {
+    "task.readiness_check",
+    "task.start_check",
+    "task.midday_check",
+}
 
 
 @dataclass(frozen=True)
@@ -211,6 +225,26 @@ class MessageDispatchService:
             for employee_id, phone in rows
         ]
 
+    def _primary_vendor_contact_recipient(self, vendor_id: uuid.UUID) -> Recipient | None:
+        """Shared tail of vendor recipient resolution: given a `vendor_id`,
+        find its primary `V2VendorContact` and build a `Recipient`. Used by
+        both `_resolve_vendor_recipient` (payload-driven, `task.
+        vendor_assigned`) and `_resolve_vendor_recipient_for_task`
+        (lookup-driven, Phase 7's readiness/start/midday checks)."""
+        contact = self.db.scalar(
+            select(V2VendorContact).where(
+                V2VendorContact.vendor_id == vendor_id,
+                V2VendorContact.is_primary.is_(True),
+            )
+        )
+        if contact is None:
+            return None
+        # As with PM/Supervisor resolution: resolve regardless of phone,
+        # using phone falling back to whatsapp, falling back to "" - a
+        # missing number surfaces as a failed delivery, not a silent skip.
+        phone = contact.phone or contact.whatsapp or ""
+        return Recipient(employee_id=None, vendor_contact_id=contact.id, phone=phone)
+
     def _resolve_vendor_recipient(self, event: OutboxEvent) -> Recipient | None:
         """Only called for `event_type == 'task.vendor_assigned'`. Reads
         `vendor_id` directly off the payload (the shape
@@ -229,19 +263,41 @@ class MessageDispatchService:
         if not vendor_id_raw:
             return None
 
-        contact = self.db.scalar(
-            select(V2VendorContact).where(
-                V2VendorContact.vendor_id == uuid.UUID(vendor_id_raw),
-                V2VendorContact.is_primary.is_(True),
+        return self._primary_vendor_contact_recipient(uuid.UUID(vendor_id_raw))
+
+    def _resolve_vendor_recipient_for_task(self, task: Task) -> Recipient | None:
+        """Phase 7: lookup-driven vendor resolution for the readiness/start/
+        midday daily-prompt events (`_VENDOR_ELIGIBLE_TASK_EVENTS`). Unlike
+        `_resolve_vendor_recipient`, these events' payloads (written by
+        `DailyTaskPromptsService._emit_for_tasks` - `task_id`, `project_id`,
+        `lifecycle_status`, `planned_start_date`) carry no vendor info at
+        all, since a prompt sweep doesn't know per-task vendor assignment
+        without querying for it.
+
+        "Active" here mirrors `vendor_acknowledgement.py`'s
+        `RESOLVED_ASSIGNMENT_STATUSES` framing in reverse: a
+        `TaskVendorAssignment` is still "the vendor is involved" as long as
+        it hasn't been explicitly `declined` - `pending_ack` (not yet
+        responded) and `acknowledged` (accepted) both count. When more than
+        one non-declined assignment exists on the same task (e.g. a re-
+        delegation), the most recently created one wins.
+
+        Returns `None` (not an error) when the task has no active vendor
+        assignment or that vendor has no primary contact - "vendor not
+        involved" is the normal case for most tasks, per the doc's "if
+        involved" language."""
+        assignment = self.db.scalar(
+            select(TaskVendorAssignment)
+            .where(
+                TaskVendorAssignment.task_id == task.id,
+                TaskVendorAssignment.status != "declined",
             )
+            .order_by(TaskVendorAssignment.created_at.desc())
+            .limit(1)
         )
-        if contact is None:
+        if assignment is None:
             return None
-        # As with PM/Supervisor resolution: resolve regardless of phone,
-        # using phone falling back to whatsapp, falling back to "" - a
-        # missing number surfaces as a failed delivery, not a silent skip.
-        phone = contact.phone or contact.whatsapp or ""
-        return Recipient(employee_id=None, vendor_contact_id=contact.id, phone=phone)
+        return self._primary_vendor_contact_recipient(assignment.vendor_id)
 
     def _resolve_admin_recipients(self) -> list[Recipient]:
         """All active users with `role in (admin, super_admin)`. Deliberately
@@ -291,10 +347,9 @@ class MessageDispatchService:
 
     def _resolve_internal_employee_recipient(self, task: Task) -> list[Recipient]:
         """Resolves every active `TaskSupportAssignment` on `task` to its
-        employee's `Recipient`. Scaffolding for Phase 7 (readiness/start/
-        midday/EOD prompts) - see `_EMPLOYEE_ELIGIBLE_TASK_EVENTS`, which is
-        empty in Phase 1 since none of those event types exist yet. Not
-        called from `_resolve_recipients` for any event type today."""
+        employee's `Recipient`. Scaffolded in Phase 1, wired up in Phase 7 -
+        called for every event type in `_EMPLOYEE_ELIGIBLE_TASK_EVENTS`
+        (the four daily-prompt events: readiness/start/midday/EOD)."""
         rows = self.db.execute(
             select(EmployeeProfile.id, User.phone)
             .join(User, User.id == EmployeeProfile.user_id)
@@ -321,6 +376,10 @@ class MessageDispatchService:
                 recipients.extend(self._resolve_admin_recipients())
             if event.event_type in _EMPLOYEE_ELIGIBLE_TASK_EVENTS:
                 recipients.extend(self._resolve_internal_employee_recipient(task))
+            if event.event_type in _VENDOR_ELIGIBLE_TASK_EVENTS:
+                vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
+                if vendor_task_recipient is not None:
+                    recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
             recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
         elif event.aggregate_type == "project_external_approval":
