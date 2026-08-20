@@ -122,7 +122,12 @@ _SUCCEEDED_STATUSES = ("sent", "delivered", "read")
 # task_approval.py is unchanged; this only widens who is *notified* of the
 # outcome it already decided. Deliberately narrow - do not add every task
 # event here.
-_ADMIN_CC_TASK_EVENTS = {"task.approval_recorded"}
+#
+# Phase 6 adds `task.escalated_to_admin` (`EscalationService.
+# sweep_task_escalations`): a task that reaches the admin-escalation stage
+# is, by definition, an Admin-visibility event - the same "visibility, not
+# authority" rationale as the Class A decision above.
+_ADMIN_CC_TASK_EVENTS = {"task.approval_recorded", "task.escalated_to_admin"}
 
 # Phase 7 will populate this with the readiness/start/midday/EOD event types
 # that daily_task_prompts_scheduler.py emits - those event types don't exist

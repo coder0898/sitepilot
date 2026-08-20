@@ -699,6 +699,53 @@ class TaskAttendanceEvent(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class EscalationTracking(Base):
+    """Phase 6 (first half): sweep-idempotency tracking for the escalation
+    engine (`services/escalation.py`). One row per (entity_type, entity_id,
+    stage) - unlike the three Phase 3 overlay tables just above, this table
+    is NOT append-only: its whole purpose is to stop every sweep pass from
+    double-tracking/double-emitting the same in-flight escalation, not to
+    log a history of signals.
+
+    `entity_id` deliberately carries no foreign key: it names a row in
+    `Task` when `entity_type = 'task'`, or a row in `ProjectExternalApproval`
+    when `entity_type = 'project_external_approval'`, and one column cannot
+    hold two different real FKs at once. `TaskEvidence`'s docstring records
+    this codebase's default of real, typed FKs over polymorphic
+    entity_type/entity_id references; this is the one deliberate exception,
+    forced by this table legitimately needing to watch two unrelated
+    aggregate types with no shared parent to FK against instead.
+    `EscalationService` never trusts a tracking row alone as truth - every
+    sweep re-derives the referenced entity's live state (via its own FK'd
+    query) before escalating further, so a stale row here without an
+    explicit `resolved_at` is harmless.
+
+    Only one OPEN row (`resolved_at is null`) may exist per (entity_type,
+    entity_id, stage) - enforced by a PARTIAL unique index in the migration
+    (`uq_v2_escalation_tracking_entity_stage_open`, `where resolved_at is
+    null`), not a table-wide `UniqueConstraint` here: an entity that
+    escalates, resolves, and later stalls again must be able to get a second
+    row for the same stage. Same "DB-level partial index, service-layer
+    check enforces it in SQLite tests" split already used by
+    `TaskSupportAssignment`'s `uq_v2_task_support_assignments_active_task_employee`.
+    """
+
+    __tablename__ = "escalation_tracking"
+    __table_args__ = (
+        CheckConstraint("entity_type in ('task', 'project_external_approval')", name="ck_v2_escalation_tracking_entity_type"),
+        CheckConstraint("stage in ('followup', 'admin_escalation')", name="ck_v2_escalation_tracking_stage"),
+        Index("ix_v2_escalation_tracking_entity", "entity_type", "entity_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class TaskApprovalDecision(Base):
     """U4: a PM's (or audited Admin fallback's) approval decision (BR-008).
 
