@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
-from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, ProjectExternalApproval, ProjectExternalApprovalTask
+from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskSupportAssignment, ProjectExternalApproval, ProjectExternalApprovalTask
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -55,8 +55,10 @@ ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
+INTERNAL_EMPLOYEE_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
 
 SUPERVISOR_PHONE = "9000000011"
+INTERNAL_EMPLOYEE_PHONE = "9000000012"
 UNKNOWN_PHONE = "9999999999"
 VENDOR_ELECTRICAL_CONTACT_PHONE = "9100000001"
 VENDOR_OTHER_CONTACT_PHONE = "9100000002"
@@ -103,6 +105,7 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             ProjectExternalApproval.__table__,
             ProjectExternalApprovalTask.__table__,
             TaskDependency.__table__,
+            TaskSupportAssignment.__table__,
             V2Vendor.__table__,
             V2CapabilityCategory.__table__,
             V2VendorCapability.__table__,
@@ -175,8 +178,15 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
                 id=OUTSIDER_ID, name="Outsider", email="outsider@example.com",
                 role=UserRole.supervisor, active=True, phone=AMBIGUOUS_PHONE,
             )
-            session.add_all([admin, pm, supervisor, outsider])
+            internal_employee = User(
+                id=INTERNAL_EMPLOYEE_ID, name="Internal Employee", email="internal@example.com",
+                role=UserRole.internal_employee, active=True, phone=INTERNAL_EMPLOYEE_PHONE,
+            )
+            session.add_all([admin, pm, supervisor, outsider, internal_employee])
             session.flush()
+            internal_employee_profile = EmployeeProfile(
+                user_id=INTERNAL_EMPLOYEE_ID, employee_code="INT-001", designation="Internal Employee", availability="available",
+            )
             session.add_all([
                 EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
                 EmployeeProfile(
@@ -185,7 +195,10 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
                 EmployeeProfile(
                     user_id=OUTSIDER_ID, employee_code="OUT-001", designation="Supervisor", availability="available",
                 ),
+                internal_employee_profile,
             ])
+            session.flush()
+            self.internal_employee_profile_id = internal_employee_profile.id
             template = V2Template(code="WORKVED-45", name="Workved 45 Day")
             session.add(template)
             session.flush()
@@ -366,6 +379,50 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
                 select(OutboxEvent).where(OutboxEvent.aggregate_id == task.id)
             ).all()
             self.assertTrue(len(outbox_rows) >= 1)
+
+    def test_internal_employee_support_assigned_can_drive_status_command(self):
+        """Phase 1b: `_STATUS_DRIVING_ROLES` now includes `internal_employee`
+        - brings the WhatsApp STATUS path in line with what
+        `TaskLifecycleService._require_role_for_transition` already permits
+        on the portal: an Internal Employee actively support-assigned to a
+        task may drive its `in_progress`/`submitted` transitions."""
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+
+        # Move the task to 'ready' first (Supervisor-driven) so
+        # 'in_progress' - an executor-driven target - is a legal next step.
+        ready_response = self.post_inbound({
+            "provider_message_id": "wamid.pre-ready",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"STATUS {task.original_code} ready",
+        })
+        self.assertEqual(ready_response.status_code, 200, ready_response.text)
+
+        with self.Session.begin() as session:
+            session.add(V2ProjectMembership(
+                project_id=uuid.UUID(project["id"]), employee_id=self.internal_employee_profile_id,
+                project_role="internal_employee", assigned_by=PM_ID, assignment_reason="seed",
+            ))
+            session.add(TaskSupportAssignment(
+                task_id=task.id, project_id=uuid.UUID(project["id"]), employee_id=self.internal_employee_profile_id,
+                responsibility="Executes the work.", status="active", assigned_by=PM_ID,
+            ))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.internal-status-1",
+            "sender_phone": INTERNAL_EMPLOYEE_PHONE,
+            "message_text": f"STATUS {task.original_code} in_progress",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        latest = rows[-1]
+        self.assertEqual(latest.processing_status, "processed", latest.rejection_reason)
+        self.assertEqual(latest.matched_identity_type, "employee")
+
+        with self.Session() as session:
+            refreshed = session.get(Task, task.id)
+            self.assertEqual(refreshed.lifecycle_status, "in_progress")
 
     # ---- the signature gate -----------------------------------------------
 
