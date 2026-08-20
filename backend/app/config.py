@@ -62,6 +62,23 @@ class Settings(BaseSettings):
     # time-sensitive path - polling more often than daily costs a query for
     # no one who could ever perceive the difference.
     evidence_retention_interval_seconds: float = 86400.0
+    # Plan Phase 6 (second half): the merged daily task-prompt + task-side
+    # escalation sweep (`daily_task_prompts_scheduler.py`). Enabled by
+    # default for the same reason as the two schedulers above - a prompt
+    # cadence nobody runs is not a cadence. The switch exists for an
+    # operator who needs to pause it without redeploying.
+    daily_task_prompts_enabled: bool = True
+    # Hourly: frequent enough to catch a "morning of start" or "midday"
+    # window without needing precise wall-clock scheduling. Per-calendar-day
+    # idempotency (see `DailyTaskPromptsService`) makes ticking more often
+    # than once a day harmless - it just means a task's prompt fires closer
+    # to whichever hour it first becomes eligible.
+    daily_task_prompts_interval_seconds: float = 3600.0
+    # Plan Phase 6 (second half): the gate due-date reminder + approval-side
+    # escalation sweep (`gate_reminder_scheduler.py`). Same enabled-by-
+    # default rationale as above.
+    gate_reminder_enabled: bool = True
+    gate_reminder_interval_seconds: float = 3600.0
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""

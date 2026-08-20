@@ -119,6 +119,30 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
         # `message_dispatch.py`'s `_ADMIN_CC_TASK_EVENTS`.
         "task_escalated_to_admin", "en", ("task_id", "lifecycle_status", "update_sla_hours"),
     ),
+    "task.readiness_check": TemplateSpec(
+        # Plan Phase 6 (second half): emitted by
+        # `DailyTaskPromptsService.emit_readiness_checks` the day before
+        # `planned_start_date` for a task not yet started.
+        "task_readiness_check", "en", ("task_id", "planned_start_date"),
+    ),
+    "task.start_check": TemplateSpec(
+        # Plan Phase 6 (second half): emitted by
+        # `DailyTaskPromptsService.emit_start_checks` on `planned_start_date`
+        # itself for a task still not started.
+        "task_start_check", "en", ("task_id", "planned_start_date"),
+    ),
+    "task.midday_check": TemplateSpec(
+        # Plan Phase 6 (second half): emitted by
+        # `DailyTaskPromptsService.emit_midday_checks` for every
+        # `in_progress` task.
+        "task_midday_check", "en", ("task_id", "lifecycle_status"),
+    ),
+    "task.eod_check": TemplateSpec(
+        # Plan Phase 6 (second half): emitted by
+        # `DailyTaskPromptsService.emit_eod_checks` for every `in_progress`
+        # task.
+        "task_eod_check", "en", ("task_id", "lifecycle_status"),
+    ),
     # ---- project events -------------------------------------------------
     "project.role_change_requested": TemplateSpec(
         "project_role_change_requested", "en", ("project_id", "role_type", "reason_code"),

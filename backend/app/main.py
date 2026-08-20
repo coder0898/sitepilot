@@ -8,7 +8,9 @@ from app.config import settings
 from app.database import SessionLocal
 from app.routes import access_requests, admin_visibility_v2, auth, broadcasts, communication, dashboard, execution_tasks_v2, permissions, project_dashboard_v2, project_read_models_v2, project_vendors_v2, projects_v2, reports_v2, templates_v2, users, vendors, dependencies_v2, whatsapp_webhook_v2
 from app.seed import ensure_seed_data
+from app.services.daily_task_prompts_scheduler import start_daily_task_prompts_scheduler, stop_daily_task_prompts_scheduler
 from app.services.evidence_retention_scheduler import start_retention_scheduler, stop_retention_scheduler
+from app.services.gate_reminder_scheduler import start_gate_reminder_scheduler, stop_gate_reminder_scheduler
 from app.services.outbox_scheduler import start_dispatcher, stop_dispatcher
 
 
@@ -79,6 +81,25 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def stop_evidence_retention_scheduler() -> None:
         await stop_retention_scheduler(app)
+
+    # Plan Phase 6 (second half): same rationale as the outbox dispatcher
+    # above - async startup task, started/stopped alongside it but
+    # independent of it.
+    @app.on_event("startup")
+    async def start_daily_task_prompts() -> None:
+        start_daily_task_prompts_scheduler(app)
+
+    @app.on_event("shutdown")
+    async def stop_daily_task_prompts() -> None:
+        await stop_daily_task_prompts_scheduler(app)
+
+    @app.on_event("startup")
+    async def start_gate_reminder() -> None:
+        start_gate_reminder_scheduler(app)
+
+    @app.on_event("shutdown")
+    async def stop_gate_reminder() -> None:
+        await stop_gate_reminder_scheduler(app)
 
     return app
 

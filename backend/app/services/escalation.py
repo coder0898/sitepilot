@@ -28,6 +28,14 @@ than reinventing it - see `_stale_tasks`/`_is_task_stale` below. Approval-
 side staleness is "assigned but not yet submitted, at or past `due_at`"
 (Phase 5's `ProjectExternalApproval.due_at`), the execution-layer's own
 "expected update not received" condition for a gate.
+
+A fifth method, `emit_gate_due_reminders`, lives here too (added in this
+same phase's second half) rather than in the new
+`app.services.daily_task_prompts` module: it operates on
+`ProjectExternalApproval`, the same aggregate every other method in this
+file already handles, so it belongs here for cohesion even though it is a
+one-shot day-before reminder rather than a followup/escalation sweep - see
+its own docstring for how it differs from the four sweeps above.
 """
 
 from __future__ import annotations
@@ -305,3 +313,46 @@ class EscalationService:
             self._commit()
             escalated.append(approval)
         return escalated
+
+    # ---- gate due-date reminder --------------------------------------------
+
+    def emit_gate_due_reminders(self, now: datetime) -> list[ProjectExternalApproval]:
+        """Tracks nothing and emits `project_external_approval.due_reminder`
+        for every `assigned` approval whose `due_at` is tomorrow - the doc's
+        "1 day before due" gate reminder. No `EscalationTracking` row: that
+        table exists to answer "is a followup/escalation stage already
+        open", which a one-shot day-before reminder does not need.
+
+        Idempotent PER CALENDAR DAY rather than per exact timestamp - the
+        idempotency key incorporates `now.date()`, not the full timestamp,
+        so however often `gate_reminder_scheduler.py` ticks in one day, an
+        approval gets at most one reminder that day. Mirrors
+        `DailyTaskPromptsService`'s identical per-day convention
+        (`app.services.daily_task_prompts`)."""
+        reminded: list[ProjectExternalApproval] = []
+        tomorrow = now.date() + timedelta(days=1)
+        candidates = list(
+            self.db.scalars(
+                select(ProjectExternalApproval).where(
+                    ProjectExternalApproval.due_at == tomorrow,
+                    ProjectExternalApproval.status == "assigned",
+                )
+            ).all()
+        )
+        for approval in candidates:
+            event = OutboxService(self.db).emit(
+                event_type="project_external_approval.due_reminder",
+                aggregate_type="project_external_approval",
+                aggregate_id=approval.id,
+                payload={
+                    "approval_id": str(approval.id),
+                    "project_id": str(approval.project_id),
+                    "assigned_to_user_id": str(approval.assigned_to_user_id) if approval.assigned_to_user_id else None,
+                    "due_at": approval.due_at.isoformat(),
+                },
+                idempotency_key=f"project_external_approval:{approval.id}:project_external_approval.due_reminder:{now.date().isoformat()}",
+            )
+            self._commit()
+            if event is not None:
+                reminded.append(approval)
+        return reminded
