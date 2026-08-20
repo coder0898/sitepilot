@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     # 30s: this is a notification queue, not a transaction path. Polling
     # faster costs a query per interval for no benefit anyone can perceive.
     outbox_dispatch_interval_seconds: float = 30.0
+    # Evidence retention sweep (app.services.evidence_retention): deletes
+    # evidence bytes N months after a project's actual completion
+    # (V2Project.completed_at), so multi-project evidence storage does not
+    # grow forever. Enabled by default for the same reason as
+    # outbox_dispatch_enabled above - a policy nobody runs is not a policy.
+    # The switch exists for an operator who needs to pause deletion without
+    # redeploying (e.g. while validating the sweep against real data).
+    evidence_retention_enabled: bool = True
+    evidence_retention_months: int = 6
+    # Once a day: this is housekeeping against a 6-month window, not a
+    # time-sensitive path - polling more often than daily costs a query for
+    # no one who could ever perceive the difference.
+    evidence_retention_interval_seconds: float = 86400.0
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""

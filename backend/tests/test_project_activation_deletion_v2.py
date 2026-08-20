@@ -330,6 +330,26 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("Completed", response.json()["detail"])
 
+    def test_completed_transition_stamps_completed_at(self):
+        """Feeds app.services.evidence_retention's clock - must be the
+        actual completion moment, never target_handover_date, or a delayed
+        project could have live evidence swept while still active."""
+        project = self.create_draft()
+        self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        with self.Session() as session:
+            self.assertIsNone(session.get(V2Project, uuid.UUID(project["id"])).completed_at)
+
+        status_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/status", json={"status": "completed", "reason": "Marked complete for test."},
+        )
+
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        completed_at = status_response.json()["completed_at"]
+        self.assertIsNotNone(completed_at)
+        datetime.fromisoformat(completed_at)  # parseable, whatever the harness's tz-naive sqlite round-trip yields
+        with self.Session() as session:
+            self.assertIsNotNone(session.get(V2Project, uuid.UUID(project["id"])).completed_at)
+
     def test_delete_blocked_for_already_archived_project(self):
         project = self.create_draft()
         archive_response = self.client.post(

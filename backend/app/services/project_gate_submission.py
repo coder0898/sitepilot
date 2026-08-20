@@ -42,6 +42,7 @@ from app.execution_models import (
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.services.evidence_image import compress_evidence_image
 from app.services.outbox import OutboxService
 
 ALLOWED_EVIDENCE_MIME_TYPES: dict[str, str] = {
@@ -139,6 +140,11 @@ class ProjectGateSubmissionService:
                 raise HTTPException(422, "Evidence file is empty.")
             if len(evidence_bytes) > MAX_EVIDENCE_SIZE_BYTES:
                 raise HTTPException(422, "Evidence must be 10 MB or smaller.")
+
+            # See task_progress.py's identical call - mobile evidence
+            # photos are shrunk before checksum/storage_key/write. No-op
+            # for a PDF.
+            evidence_bytes, evidence_content_type = compress_evidence_image(evidence_bytes, evidence_content_type)
 
             extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
             storage_key = f"{approval.id}-{uuid.uuid4().hex}{extension}"
