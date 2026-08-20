@@ -327,6 +327,13 @@ class ProjectExternalApproval(Base):
     that model records a decision that has already happened, whereas this row
     exists from activation onward and spends its early life undecided. The
     completeness CHECK keeps the two columns moving together."""
+    due_at: Mapped[date | None] = mapped_column(Date)
+    """Phase 5: resolved at activation (`project_baseline.py`) from the
+    gate's `required_by_type`/`required_by_value`
+    (`app.services.project_gate_due_date.resolve_gate_due_at`). Nullable with
+    no CHECK: a gate with no `required_by_type` set, or a `project_day` gate
+    activated before `project.start_date` existed, legitimately has no due
+    date - never invented."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

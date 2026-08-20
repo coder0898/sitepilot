@@ -31,6 +31,7 @@ from app.execution_models import (
     TaskDependency,
 )
 from app.models import User
+from app.services.project_gate_due_date import resolve_gate_due_at
 from app.services.project_schedule_dates import resolve_planned_dates
 from app.project_models import (
     V2AuditEvent,
@@ -305,6 +306,12 @@ class ProjectApprovalInstantiationService:
                 blocking=gate.blocking,
                 coverage_state="exact" if resolved else "unresolved",
                 coverage_text=None if resolved else gate.broad_mapping_text,
+                # Phase 5: resolved from the gate's required_by_type/value -
+                # "date" direct, "project_day" via the same day-offset
+                # resolver used for Task.planned_start_date/end_date above.
+                # None (never invented) when the gate carries no rule, or a
+                # project_day rule with no project.start_date yet.
+                due_at=resolve_gate_due_at(gate.required_by_type, gate.required_by_value, project.start_date),
             )
             self.db.add(approval)
             self.db.flush()
