@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     # default rationale as above.
     gate_reminder_enabled: bool = True
     gate_reminder_interval_seconds: float = 3600.0
+    # Plan Phase 8: the automated weekly report-summary pass
+    # (`weekly_summary_scheduler.py`). Same enabled-by-default rationale as
+    # the schedulers above.
+    weekly_summary_enabled: bool = True
+    # Hourly, same as `daily_task_prompts_interval_seconds`/
+    # `gate_reminder_interval_seconds`: the real cadence gate is the 7-day
+    # check inside the pass itself (against the latest weekly
+    # `ReportSnapshot.period_start`), not this tick interval - a frequent
+    # tick with an internal idempotency/cadence check doing the real
+    # gating is the pattern every scheduler in this codebase already uses.
+    weekly_summary_interval_seconds: float = 3600.0
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""

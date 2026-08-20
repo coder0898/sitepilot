@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import (
     TASK_LIFECYCLE_STATUSES,
+    ProjectExternalApproval,
     Task,
     TaskApprovalDecision,
     TaskBlocker,
@@ -94,6 +95,7 @@ class ProjectVisibilityService:
         approval_gates_at_risk = self._approval_gates_at_risk(tasks, now)
 
         reassignment = ProjectRoleChangeService(self.db).reassignment_required(project.id, actor)
+        gate_pending_approvals = self._gate_pending_approvals(project.id)
 
         return ProjectVisibilitySummary(
             project_id=project.id,
@@ -113,9 +115,40 @@ class ProjectVisibilityService:
             approval_gates_at_risk=approval_gates_at_risk,
             schedule_variance=self._schedule_variance(tasks, now),
             reassignment_required=[ReassignmentRequiredOut(**row) for row in reassignment],
+            gate_pending_approvals=gate_pending_approvals,
         )
 
     # ---- derived conditions ---------------------------------------------
+
+    def _gate_pending_approvals(self, project_id: uuid.UUID) -> int:
+        """Plan Phase 8: count of `ProjectExternalApproval` rows awaiting an
+        Admin decision (`status == 'submitted'`) - the same count
+        `ProjectGateDecisionService.list_for_project` would let a caller
+        derive by filtering its result to `status == 'submitted'`.
+
+        Deliberately a direct query rather than calling
+        `ProjectGateDecisionService.list_for_project(project_id, actor)`:
+        that method does three extra flat queries (covered-task links,
+        decider/assignee name lookups, batched submission+evidence views)
+        to build a full `ExternalApprovalView` per approval - real work for
+        the Execution tab's detail list, but wasted work here where only a
+        count is needed. It would also re-run its own `_require_access`
+        check redundantly, since `summarize()` above already resolved
+        access via `get_project`. `project_visibility.py` does not
+        currently import from `project_gate_decision.py` (nor vice versa),
+        so either choice would introduce a new cross-service import; a
+        plain `select(func.count())` avoids introducing one at all."""
+        return (
+            self.db.scalar(
+                select(func.count())
+                .select_from(ProjectExternalApproval)
+                .where(
+                    ProjectExternalApproval.project_id == project_id,
+                    ProjectExternalApproval.status == "submitted",
+                )
+            )
+            or 0
+        )
 
     def _blocked_tasks(self, project_id: uuid.UUID, tasks: list[Task]) -> list[Task]:
         blocked_task_ids = set(

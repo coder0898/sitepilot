@@ -588,6 +588,52 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         self.assertEqual(recipient_employee_ids, {self.pm_employee_id, self.supervisor_employee_id})
         self.assertNotIn(self.admin_employee_id, recipient_employee_ids)
 
+    def test_weekly_summary_generated_event_resolves_admin_alongside_pm_supervisor(self):
+        # Plan Phase 8: report.weekly_summary_generated is aggregate_type
+        # "project", which _resolve_pm_supervisor_recipients already reaches
+        # PM/Supervisor through unchanged - this test is about the new
+        # _ADMIN_CC_PROJECT_EVENTS allowlist widening that same branch to
+        # also resolve Admin, mirroring _ADMIN_CC_TASK_EVENTS's pattern.
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="report.weekly_summary_generated", aggregate_type="project",
+                aggregate_id=self.project_id,
+                payload={"project_id": str(self.project_id), "report_snapshot_id": str(uuid.uuid4())},
+                key="test:8e",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        recipient_employee_ids = {d.recipient_employee_id for d in deliveries}
+        self.assertEqual(
+            recipient_employee_ids,
+            {self.pm_employee_id, self.supervisor_employee_id, self.admin_employee_id},
+        )
+
+    def test_role_change_requested_event_does_not_resolve_admin(self):
+        # project.role_change_requested is NOT in _ADMIN_CC_PROJECT_EVENTS -
+        # only PM/Supervisor are resolved, proving the allowlist is narrow
+        # rather than a blanket "every project.* event reaches Admin" widening.
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project.role_change_requested", aggregate_type="project",
+                aggregate_id=self.project_id, payload={}, key="test:8f",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        recipient_employee_ids = {d.recipient_employee_id for d in deliveries}
+        self.assertEqual(recipient_employee_ids, {self.pm_employee_id, self.supervisor_employee_id})
+        self.assertNotIn(self.admin_employee_id, recipient_employee_ids)
+
     # ---- 9. Phase 7: vendor + internal-employee resolution on daily prompts
 
     def _daily_prompt_payload(self) -> dict:

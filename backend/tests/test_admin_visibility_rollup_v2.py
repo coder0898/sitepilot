@@ -18,6 +18,7 @@ from app.execution_models import (
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
+    ProjectExternalApproval,
     Task,
     TaskApprovalDecision,
     TaskBlocker,
@@ -84,6 +85,7 @@ class AdminVisibilityRollupTests(unittest.TestCase):
             TaskApprovalDecision.__table__,
             TaskSupportAssignment.__table__,
             OutboxEvent.__table__,
+            ProjectExternalApproval.__table__,
         ):
             table.create(self.engine)
 

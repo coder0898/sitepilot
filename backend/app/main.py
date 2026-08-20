@@ -12,6 +12,7 @@ from app.services.daily_task_prompts_scheduler import start_daily_task_prompts_s
 from app.services.evidence_retention_scheduler import start_retention_scheduler, stop_retention_scheduler
 from app.services.gate_reminder_scheduler import start_gate_reminder_scheduler, stop_gate_reminder_scheduler
 from app.services.outbox_scheduler import start_dispatcher, stop_dispatcher
+from app.services.weekly_summary_scheduler import start_weekly_summary_scheduler, stop_weekly_summary_scheduler
 
 
 def create_app() -> FastAPI:
@@ -100,6 +101,16 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def stop_gate_reminder() -> None:
         await stop_gate_reminder_scheduler(app)
+
+    # Plan Phase 8: same rationale as the outbox dispatcher above - async
+    # startup task, started/stopped alongside it but independent of it.
+    @app.on_event("startup")
+    async def start_weekly_summary() -> None:
+        start_weekly_summary_scheduler(app)
+
+    @app.on_event("shutdown")
+    async def stop_weekly_summary() -> None:
+        await stop_weekly_summary_scheduler(app)
 
     return app
 

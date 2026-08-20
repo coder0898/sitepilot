@@ -18,6 +18,7 @@ from app.execution_models import (
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
+    ProjectExternalApproval,
     SupportAssignmentChange,
     Task,
     TaskApprovalDecision,
@@ -90,6 +91,7 @@ class ReportGenerationTests(unittest.TestCase):
             SupportAssignmentChange.__table__,
             OutboxEvent.__table__,
             ReportSnapshot.__table__,
+            ProjectExternalApproval.__table__,
         ):
             table.create(self.engine)
 

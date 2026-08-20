@@ -199,6 +199,18 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
         # `gate_reminder_scheduler.py`, not by anything in this dispatch.
         "external_approval_due_reminder", "en", ("approval_id", "assigned_to_user_id", "due_at"),
     ),
+    # ---- report events ---------------------------------------------------
+    "report.weekly_summary_generated": TemplateSpec(
+        # Plan Phase 8: emitted by `weekly_summary_scheduler.py` after
+        # `ReportGenerationService.generate` produces a new weekly
+        # `ReportSnapshot` on its 7-day cadence. No doc template names a
+        # "weekly summary ready" notice specifically - the closest
+        # doc-aligned name is used, flagged for later product review per
+        # the plan's Decisions section. `aggregate_type="project"` routes
+        # this through `_resolve_pm_supervisor_recipients` unchanged, plus
+        # Admin via `message_dispatch.py`'s `_ADMIN_CC_PROJECT_EVENTS`.
+        "weekly_project_summary", "en", ("project_id", "report_snapshot_id"),
+    ),
 }
 
 

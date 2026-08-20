@@ -31,8 +31,9 @@ This is narrower than a claim about `_resolve_recipients` as a whole,
 though: `_resolve_admin_recipients` (Phase 1b) is a second, deliberately
 separate resolver that DOES query `User.role in (admin, super_admin)`
 directly - it is invoked only for an explicit allowlist of event types
-(every `project_external_approval.*` event, plus `task.approval_recorded`
-via `_ADMIN_CC_TASK_EVENTS`), never as a blanket widening of the PM/
+(every `project_external_approval.*` event, `task.approval_recorded` via
+`_ADMIN_CC_TASK_EVENTS`, and `report.weekly_summary_generated` via Phase 8's
+`_ADMIN_CC_PROJECT_EVENTS`), never as a blanket widening of the PM/
 Supervisor path, and never changes what `_ACCOUNTABLE_ROLES` itself means.
 Admin becomes a WhatsApp *recipient* on those specific events (visibility),
 never an approver - BR-008's PM-primary approval authority in
@@ -128,6 +129,14 @@ _SUCCEEDED_STATUSES = ("sent", "delivered", "read")
 # is, by definition, an Admin-visibility event - the same "visibility, not
 # authority" rationale as the Class A decision above.
 _ADMIN_CC_TASK_EVENTS = {"task.approval_recorded", "task.escalated_to_admin"}
+
+# Plan Phase 8: mirrors `_ADMIN_CC_TASK_EVENTS`'s exact pattern for the
+# `project` aggregate branch. Deliberately a narrow allowlist, not a
+# blanket "every project.* event reaches Admin" widening - the plan's own
+# framing is that Admin is pushed the weekly summary specifically, not
+# every project-aggregate event `_resolve_pm_supervisor_recipients` already
+# reaches PM/Supervisor for.
+_ADMIN_CC_PROJECT_EVENTS = {"report.weekly_summary_generated"}
 
 # Phase 7: the four daily-prompt event types `daily_task_prompts.py` emits.
 # Per the doc's own §5-§6 readiness/start/midday/EOD templates, the assigned
@@ -382,6 +391,8 @@ class MessageDispatchService:
                     recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
             recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
+            if event.event_type in _ADMIN_CC_PROJECT_EVENTS:
+                recipients.extend(self._resolve_admin_recipients())
         elif event.aggregate_type == "project_external_approval":
             approval = self.db.get(ProjectExternalApproval, event.aggregate_id)
             if approval is None:

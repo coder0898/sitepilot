@@ -14,6 +14,7 @@ from app.execution_models import (
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
+    ProjectExternalApproval,
     Task,
     TaskApprovalDecision,
     TaskBlocker,
@@ -28,6 +29,7 @@ from app.project_models import (
     ProjectRoleChange,
     V2AuditEvent,
     V2Project,
+    V2ProjectExternalGate,
     V2ProjectMembership,
     V2ProjectTask,
     V2ProjectTaskDependency,
@@ -65,6 +67,11 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
         @event.listens_for(self.engine, "connect")
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+            # V2ProjectExternalGate's broad_mapping_text CHECK constraint
+            # calls btrim() (a Postgres-ism) - SQLite has no such builtin, so
+            # it must be registered here, same as
+            # test_message_delivery_dispatch_v2.py.
+            dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
         for table in (
             User.__table__,
@@ -90,6 +97,8 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
             TaskApprovalDecision.__table__,
             TaskSupportAssignment.__table__,
             OutboxEvent.__table__,
+            V2ProjectExternalGate.__table__,
+            ProjectExternalApproval.__table__,
         ):
             table.create(self.engine)
 
@@ -125,6 +134,26 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
     def summarize(self):
         with self.Session() as session:
             return ProjectVisibilityService(session).summarize(self.project_id, self.admin)
+
+    def make_gate_approval(self, session, code: str, status: str = "submitted") -> ProjectExternalApproval:
+        gate = V2ProjectExternalGate(
+            project_id=self.project_id, original_code=code, template_sequence=1,
+            approval_name=f"Gate {code}", mapping_classification="exact",
+            applicability_state="applicable", blocking=True,
+            accountable_pm_user_id=PM_ID, source_type="project_manual",
+        )
+        session.add(gate)
+        session.flush()
+        decided = status in ("approved", "rejected")
+        approval = ProjectExternalApproval(
+            project_id=self.project_id, project_gate_id=gate.id, status=status,
+            assigned_to_user_id=PM_ID if status != "unassigned" else None,
+            assigned_by=ADMIN_ID if status != "unassigned" else None,
+            decided_by=ADMIN_ID if decided else None,
+            decided_at=datetime.now(timezone.utc) if decided else None,
+        )
+        session.add(approval)
+        return approval
 
     # ---- happy paths -----------------------------------------------------
 
@@ -351,6 +380,23 @@ class ProjectVisibilitySummaryTests(unittest.TestCase):
 
         summary = self.summarize()
         self.assertEqual(summary.approval_gates_at_risk, [])
+
+    # ---- Plan Phase 8: gate_pending_approvals ------------------------------
+
+    def test_gate_pending_approvals_counts_submitted_external_approvals(self):
+        with self.Session.begin() as session:
+            self.make_gate_approval(session, "E001", status="submitted")
+            self.make_gate_approval(session, "E002", status="submitted")
+            # Not 'submitted' - must not be counted.
+            self.make_gate_approval(session, "E003", status="assigned")
+            self.make_gate_approval(session, "E004", status="approved")
+
+        summary = self.summarize()
+        self.assertEqual(summary.gate_pending_approvals, 2)
+
+    def test_gate_pending_approvals_is_zero_with_no_external_approvals(self):
+        summary = self.summarize()
+        self.assertEqual(summary.gate_pending_approvals, 0)
 
     # ---- integration -------------------------------------------------------
 
