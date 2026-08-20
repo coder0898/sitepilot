@@ -1,34 +1,72 @@
-import { useEffect, useMemo, useState } from "react";
-import { Building2, Clock3, ContactRound, Filter, FolderKanban, Link2, MessageCircle, Plus, Search, UserPlus, UsersRound } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronDown, ChevronLeft, ChevronRight, ClipboardList, ContactRound, FolderKanban,
+  LayoutGrid, List, Plus, Search, SlidersHorizontal, Tag, UsersRound,
+} from "lucide-react";
 import { communicationApi } from "../../api/communicationApi";
 import { vendorAssignmentApi } from "../../api/vendorAssignmentApi";
 import { vendorsApi } from "../../api/vendorsApi";
-import { Modal } from "../../components/ui";
+import { ConfirmModal, EmptyState, LoadingSpinner, Modal } from "../../components/ui";
+import { cn } from "../../utils/cn";
+import { paginationItems } from "../../utils/pagination";
 
 const emptyHub = { vendors: [], contacts: [], categories: [], projects: [], note_projects: [], project_vendors: [], relationships: [], logs: [] };
-import { CompanyModal, ContractorGroup, FlatContractor, Metric, ProfileModal, QuickCard } from "./components/CommunicationDirectory";
+import { CategoryChip, CompanyModal, Metric, ProfileModal, VendorRow } from "./components/CommunicationDirectory";
 import { VendorDetailPanel } from "./components/VendorDetailPanel";
+
+const SORT_OPTIONS = [
+  ["name_asc", "Name (A-Z)"],
+  ["name_desc", "Name (Z-A)"],
+  ["newest", "Newest first"],
+  ["projects_desc", "Most projects"],
+];
+const PAGE_SIZE_OPTIONS = [6, 12, 25];
+const TYPE_OPTIONS = [["all", "All types"], ["main", "Main vendors"], ["sub", "Sub-vendors"]];
 
 export function CommunicationHubPage({ user, action }) {
   const [hub, setHub] = useState(emptyHub);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [projectId, setProjectId] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [status, setStatus] = useState("");
   const [type, setType] = useState("all");
+  const [sortBy, setSortBy] = useState("name_asc");
+  const [viewMode, setViewMode] = useState("list");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(6);
   const [selected, setSelected] = useState(null);
-  const [expanded, setExpanded] = useState(new Set());
   const [form, setForm] = useState(null);
-  const [showFilters, setShowFilters] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [confirmDeleteVendor, setConfirmDeleteVendor] = useState(null);
+  const [deleteError, setDeleteError] = useState("");
   const canManage = user.role !== "supervisor";
-  const canCategories = ["super_admin", "admin", "project_manager"].includes(user.role);
+
+  const filtersRef = useRef(null);
+  const addMenuRef = useRef(null);
 
   async function load() {
-    const data = await communicationApi.get();
-    setHub({ ...emptyHub, ...data });
-    setExpanded(current => current.size ? current : new Set(data.relationships.map(item => item.main_contractor_id)));
+    setLoading(true);
+    try {
+      const data = await communicationApi.get();
+      setHub({ ...emptyHub, ...data });
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load().catch(() => {}); }, []);
+
+  useEffect(() => {
+    function onClickOutside(event) {
+      if (filtersRef.current && !filtersRef.current.contains(event.target)) setFiltersOpen(false);
+      if (addMenuRef.current && !addMenuRef.current.contains(event.target)) setAddMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  useEffect(() => { setPage(1); }, [query, projectId, categoryId, status, type, sortBy, pageSize]);
 
   async function perform(fn, message) {
     let saved = false;
@@ -40,6 +78,12 @@ export function CommunicationHubPage({ user, action }) {
     const result = await perform(() => vendorsApi.remove(vendor.id), `${vendor.engagement_type === "main" ? "Main vendor" : "Sub-vendor"} deleted`);
     if (result?.ok) setSelected(null);
     return result;
+  }
+  async function confirmVendorDeletion() {
+    setDeleteError("");
+    const result = await deleteCompany(confirmDeleteVendor);
+    if (result?.ok) setConfirmDeleteVendor(null);
+    else setDeleteError(result?.error || "This vendor cannot be deleted while linked records remain.");
   }
   async function submit(event, fn, message) {
     event.preventDefault();
@@ -62,12 +106,6 @@ export function CommunicationHubPage({ user, action }) {
       await communicationApi.addContact({ ...contact, vendor_id: company.id });
     }, mode === "main" ? "Main vendor added" : "Sub-vendor added");
   }
-  async function performPersistent(fn, message) {
-    let saved = false;
-    const result = await action(async () => { await fn(); saved = true; }, message);
-    if (saved) await load();
-    return result;
-  }
   async function mapToProjects(vendor, projectIds) {
     return perform(async () => {
       for (const targetProjectId of projectIds) {
@@ -80,11 +118,15 @@ export function CommunicationHubPage({ user, action }) {
     const data = new FormData(event.currentTarget);
     await perform(() => communicationApi.updateContractor(vendorId, { name: data.get("name"), engagement_type: vendorById[vendorId]?.engagement_type || "main", status: data.get("status"), category_ids: data.getAll("category_ids"), email: data.get("email") || null, address: data.get("address") || null, gst_number: data.get("gst_number") || null, notes: data.get("notes") || null }), "Vendor updated");
   }
+  async function deactivateVendor(vendor) {
+    return perform(() => communicationApi.updateContractor(vendor.id, {
+      name: vendor.name, engagement_type: vendor.engagement_type, status: "inactive",
+      category_ids: vendor.category_ids || [], email: vendor.email || null,
+      address: vendor.address || null, gst_number: vendor.gst_number || null, notes: vendor.notes || null,
+    }), "Vendor deactivated");
+  }
 
   const vendorById = useMemo(() => Object.fromEntries(hub.vendors.map(vendor => [vendor.id, vendor])), [hub.vendors]);
-
-  const mainContractors = hub.vendors.filter(vendor => vendor.engagement_type === "main");
-  const subcontractors = hub.vendors.filter(vendor => vendor.engagement_type !== "main");
   const contactsFor = id => hub.contacts.filter(contact => contact.vendor_id === id);
   const primaryFor = id => contactsFor(id).find(contact => contact.is_primary) || contactsFor(id)[0];
   const childrenFor = id => {
@@ -100,37 +142,193 @@ export function CommunicationHubPage({ user, action }) {
     return text.includes(query.toLowerCase()) && (!status || vendor.status === status) && (!categoryId || vendor.category_ids?.includes(categoryId));
   };
   const projectMatches = vendor => { if (!projectId || projectVendorIds.has(vendor.id)) return true; if (vendor.engagement_type === "sub_vendor") return Boolean(vendor.parent_vendor_id && projectVendorIds.has(vendor.parent_vendor_id)); return false; };
-  const visibleMains = mainContractors.filter(main => {
-    const children = childrenFor(main.id).map(item => item.vendor);
-    return (projectMatches(main) || children.some(projectMatches)) && (matches(main) || children.some(matches));
-  });
-  const visibleSubs = subcontractors.filter(vendor => projectMatches(vendor) && matches(vendor));
+  const typeMatches = vendor => (type === "all" ? true : type === "main" ? vendor.engagement_type === "main" : vendor.engagement_type !== "main");
+
+  const filtered = useMemo(
+    () => hub.vendors.filter(vendor => typeMatches(vendor) && projectMatches(vendor) && matches(vendor)),
+    [hub.vendors, hub.contacts, type, projectId, projectVendorIds, query, status, categoryId],
+  );
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    if (sortBy === "name_desc") arr.sort((a, b) => b.name.localeCompare(a.name));
+    else if (sortBy === "newest") arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    else if (sortBy === "projects_desc") arr.sort((a, b) => projectsFor(b.id).length - projectsFor(a.id).length);
+    else arr.sort((a, b) => a.name.localeCompare(b.name));
+    return arr;
+  }, [filtered, sortBy, hub.project_vendors]);
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const pageSafe = Math.min(page, totalPages);
+  const pageVendors = sorted.slice((pageSafe - 1) * pageSize, pageSafe * pageSize);
+
   const selectedVendor = vendorById[selected];
-  const toggle = id => setExpanded(current => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const activeProjects = hub.projects.filter(project => project.status === "active").length;
+  const thisMonthVendors = useMemo(() => {
+    const now = new Date();
+    return hub.vendors.filter(vendor => {
+      const created = new Date(vendor.created_at);
+      return created.getFullYear() === now.getFullYear() && created.getMonth() === now.getMonth();
+    }).length;
+  }, [hub.vendors]);
+  const categoriesInUse = hub.categories.filter(category => (category.vendor_count || 0) > 0).length;
+  const pendingFollowups = hub.vendors.filter(vendor => vendor.status === "on_hold").length;
+  const topCategories = useMemo(() => [...hub.categories].sort((a, b) => (b.vendor_count || 0) - (a.vendor_count || 0)).slice(0, 8), [hub.categories]);
 
-  return <div className="hub-v2 grid gap-5">
-    <section className="hub-intro flex items-end justify-between gap-5 max-[720px]:grid [&_p]:m-0 [&_p]:text-xs [&_p]:font-black [&_p]:uppercase [&_p]:tracking-[0.18em] [&_p]:text-violet-700 [&_h2]:my-2 [&_h2]:font-serif [&_h2]:text-4xl [&_span]:text-slate-500 [&>button]:flex [&>button]:items-center [&>button]:gap-2 [&>button]:rounded-xl [&>button]:bg-blue-700 [&>button]:px-5 [&>button]:py-3 [&>button]:font-black [&>button]:text-white"><div><p>Vendor Hub</p><h2>Vendors, contacts and site communication</h2><span>A mobile-first directory for every company and team working across your projects.</span></div>{canManage && <button onClick={() => setForm("main")}><Plus size={18}/> Add main vendor</button>}</section>
+  function clearFilters() { setCategoryId(""); setType("all"); setStatus(""); setProjectId(""); }
 
-    <section className="hub-stat-grid grid grid-cols-4 gap-4 max-[900px]:grid-cols-2 max-[520px]:grid-cols-1"><Metric icon={<Building2/>} value={mainContractors.length} label="Main vendors" tone="blue"/><Metric icon={<UsersRound/>} value={subcontractors.length} label="Sub-vendors" tone="green"/><Metric icon={<ContactRound/>} value={hub.contacts.length} label="Contacts" tone="violet"/><Metric icon={<FolderKanban/>} value={activeProjects} label="Active projects" tone="orange"/></section>
+  if (loading) return <div className="grid min-h-40 place-items-center"><LoadingSpinner label="Loading vendor hub..." /></div>;
 
-    <section className="hub-controls relative flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 max-[720px]:grid"><label className="hub-search flex min-h-12 flex-1 items-center gap-3 rounded-xl border border-slate-200 px-4 text-slate-500 [&_input]:w-full [&_input]:border-0 [&_input]:bg-transparent [&_input]:outline-none"><Search size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search vendor, capability or contact"/></label><button className={`filter-toggle flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 font-black text-slate-700 [&.active]:border-blue-300 [&.active]:bg-blue-50 [&.active]:text-blue-700 ${showFilters ? "active" : ""}`} onClick={() => setShowFilters(value => !value)}><Filter size={17}/> Filters</button>{showFilters && <div className="hub-filters absolute left-4 right-4 top-[calc(100%+8px)] z-20 grid grid-cols-3 gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl max-[720px]:grid-cols-1 [&_select]:rounded-xl [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-4 [&_select]:py-3"><select value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{hub.projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}</select><select value={categoryId} onChange={event => setCategoryId(event.target.value)}><option value="">All capabilities</option>{hub.categories.map(category => <option value={category.id} key={category.id}>{category.parent_id ? "↳ " : ""}{category.name}</option>)}</select><select value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="inactive">Inactive</option></select></div>}</section>
+  return <div className="grid gap-6">
+    <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,.06)]">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[.18em] text-blue-700">Vendor Hub</p>
+          <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Vendors, contacts & site communication</h2>
+          <span className="mt-2 block text-sm text-slate-500">Centralized directory of vendors and contacts across all projects.</span>
+        </div>
+        {canManage && <div ref={addMenuRef} className="relative shrink-0">
+          <button type="button" onClick={() => setAddMenuOpen(v => !v)}
+            className="flex min-h-11 items-center gap-2 rounded-xl bg-blue-700 px-4 text-sm font-black text-white shadow-[0_10px_24px_rgba(29,78,216,0.22)] transition hover:bg-blue-800">
+            <Plus size={17}/> Add vendor <ChevronDown size={15}/>
+          </button>
+          {addMenuOpen && <div className="absolute right-0 top-[calc(100%+8px)] z-20 grid w-52 gap-0.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
+            <button type="button" onClick={() => { setAddMenuOpen(false); setForm("main"); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50">Add main vendor</button>
+            <button type="button" onClick={() => { setAddMenuOpen(false); setForm("contact"); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50">Add contact</button>
+          </div>}
+        </div>}
+      </div>
 
-    <div className="hub-content grid grid-cols-1 gap-4"><section className="hub-directory overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="hub-tabs flex gap-2 overflow-x-auto border-b border-slate-200 p-4 [&_button]:shrink-0 [&_button]:rounded-xl [&_button]:bg-slate-100 [&_button]:px-4 [&_button]:py-3 [&_button]:font-black [&_button]:text-slate-600 [&_button.active]:bg-slate-950 [&_button.active]:text-white"><button className={type === "all" ? "active" : ""} onClick={() => setType("all")}>All</button><button className={type === "main" ? "active" : ""} onClick={() => setType("main")}>Main vendors</button><button className={type === "sub" ? "active" : ""} onClick={() => setType("sub")}>Sub-vendors</button></div>
-      {type !== "sub" && visibleMains.map(main => <ContractorGroup key={main.id} main={main} children={childrenFor(main.id).filter(({ vendor }) => matches(vendor) && projectMatches(vendor))} primaryFor={primaryFor} isOpen={expanded.has(main.id)} toggle={toggle} select={setSelected} showChildren={type === "all"}/>) }
-      {type === "sub" && visibleSubs.map(sub => <FlatContractor key={sub.id} vendor={sub} primary={primaryFor(sub.id)} select={setSelected} />)}
-      {((type === "sub" && !visibleSubs.length) || (type !== "sub" && !visibleMains.length)) && <div className="comm-empty p-10 text-center text-slate-500">No vendors match these filters.</div>}
-    </section>{selectedVendor && !form && <Modal className="max-w-6xl rounded-[28px]" title="Vendor details" subtitle="Company identity, capabilities and activity" onClose={() => setSelected(null)}><VendorDetailPanel vendor={selectedVendor} parentVendor={vendorById[selectedVendor.parent_vendor_id]} subVendors={childrenFor(selectedVendor.id).map(item => item.vendor)} contacts={contactsFor(selectedVendor.id)} projects={projectsFor(selectedVendor.id)} unmappedProjects={hub.projects.filter(project => project.status === "active" && !projectsFor(selectedVendor.id).some(mapped => mapped.id === project.id))} mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} noteProjects={hub.note_projects} categories={hub.categories} logs={hub.logs.filter(log => log.vendor_id === selectedVendor.id)} canManage={canManage} onClose={() => setSelected(null)} remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected} addNote={(event) => submit(event, payload => communicationApi.addLog({ ...payload, vendor_id: selectedVendor.id, project_id: payload.project_id || null, contact_id: payload.contact_id || null }), "Communication note added")}/></Modal>}</div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <Metric icon={<UsersRound size={20}/>} label="Total Vendors" value={hub.vendors.length} hint={thisMonthVendors > 0 ? `+${thisMonthVendors} this month` : "Across all sites"} tone="border-blue-200 bg-blue-50"/>
+        <Metric icon={<Tag size={20}/>} label="Active Categories" value={categoriesInUse} hint={`of ${hub.categories.length} total`} tone="border-emerald-200 bg-emerald-50"/>
+        <Metric icon={<ContactRound size={20}/>} label="Site Contacts" value={hub.contacts.length} hint="Across all vendors" tone="border-violet-200 bg-violet-50"/>
+        <Metric icon={<FolderKanban size={20}/>} label="Active Projects" value={activeProjects} hint={`of ${hub.projects.length} total`} tone="border-amber-200 bg-amber-50"/>
+        <Metric icon={<ClipboardList size={20}/>} label="Pending Follow-ups" value={pendingFollowups} tone="border-rose-200 bg-rose-50"
+          action={<button type="button" onClick={() => setStatus("on_hold")} className="text-[11px] font-black text-blue-700 hover:underline">See all</button>}/>
+      </div>
+    </section>
 
-    {canManage && <section className="hub-quick rounded-2xl border border-slate-200 bg-white p-5 [&>h3]:m-0 [&>h3]:font-serif [&>h3]:text-xl [&>div]:mt-4 [&>div]:grid [&>div]:grid-cols-5 [&>div]:gap-3 max-[1000px]:[&>div]:grid-cols-2 max-[520px]:[&>div]:grid-cols-1 [&_button]:grid [&_button]:gap-2 [&_button]:rounded-xl [&_button]:border [&_button]:border-slate-200 [&_button]:bg-slate-50 [&_button]:p-4 [&_button]:text-left [&_button]:text-slate-900 [&_button_span]:text-blue-700 [&_button_small]:text-slate-500"><h3>Quick actions</h3><div><QuickCard icon={<Plus/>} title="Add main vendor" text="Create a structured company" onClick={() => setForm("main")}/><QuickCard icon={<UserPlus/>} title="Add contact" text="Add a person to a company" onClick={() => setForm("contact")}/></div></section>}
+    <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_40px_rgba(15,23,42,.06)]">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-56 flex-1">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
+          <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search vendor or contact..."
+            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-medium text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10"/>
+        </div>
+        <select value={projectId} onChange={event => setProjectId(event.target.value)}
+          className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          <option value="">All Projects</option>{hub.projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
+        </select>
+        <select value={status} onChange={event => setStatus(event.target.value)}
+          className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          <option value="">All Status</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="inactive">Inactive</option>
+        </select>
+        <div ref={filtersRef} className="relative">
+          <button type="button" onClick={() => setFiltersOpen(v => !v)}
+            className={cn("flex min-h-11 items-center gap-2 rounded-xl border px-3.5 text-sm font-bold transition", (categoryId || type !== "all") ? "border-blue-600 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>
+            <SlidersHorizontal size={16}/> More filters
+          </button>
+          {filtersOpen && <div className="absolute right-0 top-[calc(100%+8px)] z-20 grid w-64 gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
+            <div>
+              <p className="px-1 pb-1.5 text-[10px] font-black uppercase tracking-wide text-slate-400">Type</p>
+              <div className="grid gap-0.5">{TYPE_OPTIONS.map(([value, label]) => <button key={value} type="button" onClick={() => setType(value)}
+                className={cn("rounded-lg px-2.5 py-1.5 text-left text-sm font-bold transition", type === value ? "bg-blue-700 text-white" : "text-slate-700 hover:bg-slate-50")}>{label}</button>)}</div>
+            </div>
+            <div>
+              <p className="px-1 pb-1.5 text-[10px] font-black uppercase tracking-wide text-slate-400">Category</p>
+              <div className="grid max-h-48 gap-0.5 overflow-y-auto">
+                <button type="button" onClick={() => setCategoryId("")} className={cn("rounded-lg px-2.5 py-1.5 text-left text-sm font-bold transition", !categoryId ? "bg-blue-700 text-white" : "text-slate-700 hover:bg-slate-50")}>All categories</button>
+                {hub.categories.map(category => <button key={category.id} type="button" onClick={() => setCategoryId(category.id)}
+                  className={cn("flex items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm font-bold transition", categoryId === category.id ? "bg-blue-700 text-white" : "text-slate-700 hover:bg-slate-50")}>
+                  {category.name}<span className={cn("text-xs", categoryId === category.id ? "text-blue-100" : "text-slate-400")}>{category.vendor_count || 0}</span>
+                </button>)}
+              </div>
+            </div>
+            {(categoryId || type !== "all" || status || projectId) && <button type="button" onClick={clearFilters} className="rounded-lg border border-slate-200 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-50">Clear filters</button>}
+          </div>}
+        </div>
+        <select value={sortBy} onChange={event => setSortBy(event.target.value)}
+          className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10">
+          {SORT_OPTIONS.map(([value, label]) => <option key={value} value={value}>Sort: {label}</option>)}
+        </select>
+        <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1">
+          <button type="button" onClick={() => setViewMode("list")} aria-pressed={viewMode === "list"} aria-label="List view"
+            className={cn("grid size-9 place-items-center rounded-lg transition", viewMode === "list" ? "bg-blue-700 text-white" : "text-slate-500 hover:bg-slate-50")}><List size={16}/></button>
+          <button type="button" onClick={() => setViewMode("grid")} aria-pressed={viewMode === "grid"} aria-label="Grid view"
+            className={cn("grid size-9 place-items-center rounded-lg transition", viewMode === "grid" ? "bg-blue-700 text-white" : "text-slate-500 hover:bg-slate-50")}><LayoutGrid size={16}/></button>
+        </div>
+      </div>
 
-    <section className="hub-activity rounded-2xl border border-slate-200 bg-white p-5 [&>header]:flex [&>header]:items-center [&>header]:justify-between [&>header]:border-b [&>header]:border-slate-100 [&>header]:pb-4 [&>header>div]:flex [&>header>div]:items-center [&>header>div]:gap-2 [&_h3]:m-0 [&_h3]:font-serif [&_h3]:text-xl [&>div>article]:grid [&>div>article]:grid-cols-[auto_1fr] [&>div>article]:gap-3 [&>div>article]:border-b [&>div>article]:border-slate-100 [&>div>article]:py-3 [&_p]:m-0 [&_p]:text-sm [&_p]:text-slate-600 [&_small]:text-xs [&_small]:text-slate-400"><header><div><Clock3/><h3>Recent communication</h3></div><span>Manual site records</span></header><div>{hub.logs.slice(0, 5).map(log => { const vendor = vendorById[log.vendor_id]; return <article key={log.id}><span className={`activity-icon grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-700 ${log.channel}`}><MessageCircle size={17}/></span><div><strong>{vendor?.name || "Vendor"}</strong><p>{log.note}</p><small>{log.created_by_name} - {new Date(log.created_at).toLocaleString()}</small></div></article>})}{!hub.logs.length && <p className="no-history py-4 text-sm text-slate-500">No communication notes have been added.</p>}</div></section>
+      <div className="flex flex-wrap items-center gap-2 overflow-x-auto pb-0.5">
+        <CategoryChip label="All" count={hub.vendors.length} active={!categoryId} onClick={() => setCategoryId("")}/>
+        {topCategories.map(category => <CategoryChip key={category.id} label={category.name} count={category.vendor_count || 0} active={categoryId === category.id} onClick={() => setCategoryId(current => current === category.id ? "" : category.id)}/>)}
+        {hub.categories.length > topCategories.length && <CategoryChip label="More" count={hub.categories.length - topCategories.length} active={filtersOpen} onClick={() => setFiltersOpen(true)}/>}
+      </div>
+    </section>
+
+    {/* VendorDetailPanel is a fixed-position overlay drawer (same chrome as
+        Execution's TaskDetailDrawer) - no grid-cols split needed to host it. */}
+    <div className="grid gap-3">
+      {pageVendors.length === 0
+        ? <EmptyState title="No vendors match" description="Try a different search term or clear your filters."/>
+        : <div className={viewMode === "grid" ? "grid gap-3 sm:grid-cols-2" : "grid gap-3"}>
+            {pageVendors.map(vendor => <VendorRow key={vendor.id} vendor={vendor} primary={primaryFor(vendor.id)} projectCount={projectsFor(vendor.id).length}
+              selected={vendor.id === selected} layout={viewMode} onSelect={() => setSelected(vendor.id)}
+              onEdit={() => { setSelected(vendor.id); setForm("edit"); }} onDeactivate={() => deactivateVendor(vendor)} onDelete={() => setConfirmDeleteVendor(vendor)}/>)}
+          </div>}
+
+      {sorted.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <span className="text-xs font-semibold text-slate-500">Showing {(pageSafe - 1) * pageSize + 1} to {Math.min(pageSafe * pageSize, sorted.length)} of {sorted.length} vendors</span>
+        <div className="flex items-center gap-1">
+          <button type="button" disabled={pageSafe === 1} onClick={() => setPage(pageSafe - 1)} className="grid size-8 place-items-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-40"><ChevronLeft size={15}/></button>
+          {paginationItems(pageSafe, totalPages).map((item, i) => item === "..."
+            ? <span key={`ellipsis-${i}`} className="px-1 text-xs font-bold text-slate-400">...</span>
+            : <button key={item} type="button" onClick={() => setPage(item)} className={cn("grid size-8 place-items-center rounded-lg text-xs font-black transition", item === pageSafe ? "bg-blue-700 text-white" : "text-slate-600 hover:bg-slate-50")}>{item}</button>)}
+          <button type="button" disabled={pageSafe === totalPages} onClick={() => setPage(pageSafe + 1)} className="grid size-8 place-items-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-40"><ChevronRight size={15}/></button>
+        </div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">Rows per page:
+          <select value={pageSize} onChange={event => setPageSize(Number(event.target.value))} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none focus:border-blue-600">
+            {PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </label>
+      </div>}
+    </div>
+
+    {selectedVendor && <VendorDetailPanel vendor={selectedVendor} parentVendor={vendorById[selectedVendor.parent_vendor_id]} subVendors={childrenFor(selectedVendor.id).map(item => item.vendor)}
+      contacts={contactsFor(selectedVendor.id)} projects={projectsFor(selectedVendor.id)}
+      unmappedProjects={hub.projects.filter(project => project.status === "active" && !projectsFor(selectedVendor.id).some(mapped => mapped.id === project.id))}
+      mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} noteProjects={hub.note_projects} categories={hub.categories}
+      logs={hub.logs.filter(log => log.vendor_id === selectedVendor.id)} canManage={canManage} onClose={() => setSelected(null)}
+      remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} deactivate={() => deactivateVendor(selectedVendor)}
+      addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected}
+      addNote={event => submit(event, payload => communicationApi.addLog({ ...payload, vendor_id: selectedVendor.id, project_id: payload.project_id || null, contact_id: payload.contact_id || null }), "Communication note added")}/>}
 
     {form === "main" && <CompanyModal title="Add main vendor" categories={hub.categories} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "main")}/>}
     {form === "sub" && selectedVendor?.engagement_type === "main" && <CompanyModal title="Add sub-vendor" categories={hub.categories} fixedMainContractor={selectedVendor} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "sub")}/>}
     {form === "edit" && selectedVendor && <ProfileModal vendor={selectedVendor} categories={hub.categories} onClose={() => setForm(null)} onSubmit={event => updateCompany(event, selectedVendor.id)}/>}
-    {form === "contact" && <Modal title="Add vendor contact" subtitle="Add a person under a main vendor or sub-vendor" onClose={() => setForm(null)}><form className="modal-form grid gap-3 [&_label]:grid [&_label]:gap-2 [&_label]:text-sm [&_label]:font-extrabold [&_label]:text-slate-700 [&_input]:min-h-11 [&_input]:w-full [&_input]:rounded-xl [&_input]:border [&_input]:border-slate-200 [&_input]:bg-white [&_input]:px-4 [&_input]:py-3 [&_input]:outline-none [&_select]:min-h-11 [&_select]:w-full [&_select]:rounded-xl [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-4 [&_select]:py-3 [&_select]:outline-none [&_textarea]:min-h-24 [&_textarea]:w-full [&_textarea]:resize-y [&_textarea]:rounded-xl [&_textarea]:border [&_textarea]:border-slate-200 [&_textarea]:bg-white [&_textarea]:px-4 [&_textarea]:py-3 [&_textarea]:outline-none focus-within:[&_input]:border-blue-600 focus-within:[&_select]:border-blue-600 focus-within:[&_textarea]:border-blue-600 [&>button]:min-h-12 [&>button]:rounded-xl [&>button]:bg-blue-700 [&>button]:px-5 [&>button]:font-black [&>button]:text-white two-col grid-cols-2 max-[720px]:grid-cols-1" onSubmit={event => submit(event, payload => communicationApi.addContact({ ...payload, is_primary: false }), "Contact added")}><label className="full-field col-span-full max-[720px]:col-span-1">Vendor<select name="vendor_id" defaultValue={selectedVendor?.id || ""} required>{hub.vendors.map(vendor => <option value={vendor.id} key={vendor.id}>{vendor.name}</option>)}</select></label><label>Name<input name="name" required/></label><label>Designation<input name="designation"/></label><label>Phone<input name="phone" required/></label><label>WhatsApp<input name="whatsapp"/></label><button>Add contact</button></form></Modal>}
-    {canManage && <button className="mobile-add fixed bottom-24 right-4 z-30 grid size-14 place-items-center rounded-full bg-blue-700 p-0 text-white shadow-xl min-[721px]:hidden" aria-label="Add main vendor" onClick={() => setForm("main")}><Plus/></button>}
+    {form === "contact" && <Modal title="Add vendor contact" subtitle="Add a person under a main vendor or sub-vendor" onClose={() => setForm(null)}>
+      <form className="modal-form grid gap-3 [&_label]:grid [&_label]:gap-2 [&_label]:text-sm [&_label]:font-extrabold [&_label]:text-slate-700 [&_input]:min-h-11 [&_input]:w-full [&_input]:rounded-xl [&_input]:border [&_input]:border-slate-200 [&_input]:bg-white [&_input]:px-4 [&_input]:py-3 [&_input]:outline-none [&_select]:min-h-11 [&_select]:w-full [&_select]:rounded-xl [&_select]:border [&_select]:border-slate-200 [&_select]:bg-white [&_select]:px-4 [&_select]:py-3 [&_select]:outline-none focus-within:[&_input]:border-blue-600 focus-within:[&_select]:border-blue-600 [&>button]:min-h-12 [&>button]:rounded-xl [&>button]:bg-blue-700 [&>button]:px-5 [&>button]:font-black [&>button]:text-white two-col grid-cols-2 max-[720px]:grid-cols-1" onSubmit={event => submit(event, payload => communicationApi.addContact({ ...payload, is_primary: false }), "Contact added")}>
+        <label className="full-field col-span-full max-[720px]:col-span-1">Vendor<select name="vendor_id" defaultValue={selectedVendor?.id || ""} required>{hub.vendors.map(vendor => <option value={vendor.id} key={vendor.id}>{vendor.name}</option>)}</select></label>
+        <label>Name<input name="name" required/></label>
+        <label>Designation<input name="designation"/></label>
+        <label>Phone<input name="phone" required/></label>
+        <label>WhatsApp<input name="whatsapp"/></label>
+        <button>Add contact</button>
+      </form>
+    </Modal>}
+    {canManage && <button className="fixed bottom-24 right-4 z-30 grid size-14 place-items-center rounded-full bg-blue-700 p-0 text-white shadow-xl min-[721px]:hidden" aria-label="Add vendor" onClick={() => setForm("main")}><Plus/></button>}
+
+    {confirmDeleteVendor && (() => {
+      const blocked = confirmDeleteVendor.engagement_type === "main" && childrenFor(confirmDeleteVendor.id).length > 0;
+      return <ConfirmModal
+        title={blocked ? "Deletion blocked" : `Delete ${confirmDeleteVendor.name}?`}
+        message={deleteError || (blocked
+          ? `This main vendor has ${childrenFor(confirmDeleteVendor.id).length} linked sub-vendor(s). Transfer or delete them first, or edit this vendor and mark it inactive.`
+          : "This permanently removes the company, its contacts and relationships, and unassigns it from current tasks.")}
+        confirmLabel={blocked ? "Linked sub-vendors must be resolved" : "Delete permanently"}
+        confirmDisabled={blocked}
+        onClose={() => { setConfirmDeleteVendor(null); setDeleteError(""); }}
+        onConfirm={confirmVendorDeletion}/>;
+    })()}
   </div>;
 }
-

@@ -77,7 +77,8 @@ describe("ExecutionPage - Internal Employee scoping", () => {
     await screen.findByText("Freeze approved architectural layout");
     fireEvent.click(screen.getByRole("button", { name: /external approvals/i }));
     expect(await screen.findByText("Fire NOC")).toBeInTheDocument();
-    expect(screen.getByText("Submit evidence")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Fire NOC"));
+    expect(await screen.findByText("Update / submit evidence")).toBeInTheDocument();
   });
 
   it("opens the Task Detail Action View from a row and can go back", async () => {
@@ -157,6 +158,7 @@ describe("ExecutionPage - external approval decisions", () => {
     expect(within(row).getByText("Blocked")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /external approvals/i }));
+    fireEvent.click(await screen.findByText("Fire NOC"));
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
     fireEvent.click(await screen.findByRole("button", { name: "Confirm approval" }));
     await waitFor(() => expect(taskExecutionApi.decideExternalApproval).toHaveBeenCalledWith(

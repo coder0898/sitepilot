@@ -142,6 +142,32 @@ class AdminVisibilityRollupTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in body}, {"PRJ-1", "PRJ-2"})
         self.assertEqual(next(row for row in body if row["code"] == "PRJ-1")["total_count"], 1)
 
+    def test_rollup_surfaces_pm_health_and_progress(self):
+        project_id = self.add_project("PRJ-1", "Project 1", with_task=False)
+        with self.Session.begin() as session:
+            session.add(V2ProjectMembership(
+                project_id=project_id, employee_id=session.query(EmployeeProfile).filter_by(user_id=PM_ID).one().id,
+                project_role="project_manager", assigned_by=ADMIN_ID, assignment_reason="Initial assignment.",
+            ))
+            session.add(Task(
+                id=uuid.uuid4(), project_id=project_id, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
+                original_code="T001", template_sequence=1, title="Task T001",
+                schedule_classification="execution", applicability="mandatory", lifecycle_status="completed",
+            ))
+            session.add(Task(
+                id=uuid.uuid4(), project_id=project_id, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
+                original_code="T002", template_sequence=2, title="Task T002",
+                schedule_classification="execution", applicability="mandatory", lifecycle_status="in_progress",
+            ))
+
+        response = self.client.get("/api/v2/admin/projects-overview")
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()[0]
+        self.assertEqual(row["pm_name"], "PM")
+        self.assertEqual(row["site"], "Site")
+        self.assertEqual(row["health"], "on_track")
+        self.assertEqual(row["progress_percent"], 50)
+
     def test_admin_retrieves_cross_project_activity(self):
         project_a = self.add_project("PRJ-1", "Project 1")
         project_b = self.add_project("PRJ-2", "Project 2")

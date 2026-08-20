@@ -1,4 +1,4 @@
-import { BookOpenCheck, BriefcaseBusiness, CalendarCheck, FolderKanban, Gauge, UsersRound } from "lucide-react";
+import { BookOpenCheck, BriefcaseBusiness, CalendarCheck, FolderKanban, Gauge, Megaphone, UsersRound } from "lucide-react";
 
 export const TAB_REGISTRY = {
   projects: { label: "Projects", help: "Project setup, ownership and lifecycle", icon: FolderKanban },
@@ -6,6 +6,7 @@ export const TAB_REGISTRY = {
   templates: { label: "Templates", help: "Approved project schedule library", icon: BookOpenCheck },
   execution: { label: "Execution", help: "Drive task execution on activated projects", icon: CalendarCheck },
   communication: { label: "Vendor Hub", help: "Vendors, contacts & quick actions", icon: BriefcaseBusiness },
+  broadcasts: { label: "Communication", help: "Project messages & broadcasts", icon: Megaphone },
   users: { label: "Users & Access", help: "People, access and your account", icon: UsersRound },
 };
 

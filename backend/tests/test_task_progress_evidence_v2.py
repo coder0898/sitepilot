@@ -310,7 +310,10 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
         self.assertEqual(body["update_type"], "evidence")
         self.assertEqual(body["note"], "Formwork complete for bay 3.")
         self.assertEqual(len(body["evidence"]), 1)
-        self.assertEqual(body["evidence"][0]["mime_type"], "image/png")
+        # Compressed on upload (app.services.evidence_image): every
+        # accepted image is standardized to JPEG, so an uploaded PNG comes
+        # back as image/jpeg, not the original mime type.
+        self.assertEqual(body["evidence"][0]["mime_type"], "image/jpeg")
         self.assertEqual(body["evidence"][0]["original_filename"], "bay3.png")
 
         with self.Session() as session:
@@ -322,7 +325,10 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             self.assertEqual(len(evidence_rows), 1)
             stored_path = Path(self.evidence_dir) / files[0].storage_key
             self.assertTrue(stored_path.is_file())
-            self.assertEqual(stored_path.read_bytes(), TINY_PNG_BYTES)
+            # Bytes on disk are the compressed JPEG re-encode, not a byte-
+            # for-byte copy of the uploaded PNG.
+            self.assertNotEqual(stored_path.read_bytes(), TINY_PNG_BYTES)
+            self.assertTrue(stored_path.name.endswith(".jpg"))
 
     def test_submit_text_only_progress_without_evidence_succeeds(self):
         project = self.activate_project()
@@ -503,7 +509,9 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
         # Authorized: the submitting Supervisor can download.
         download = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/evidence/{file_id}")
         self.assertEqual(download.status_code, 200, download.text)
-        self.assertEqual(download.content, TINY_PNG_BYTES)
+        # Compressed on upload - downloaded bytes are the stored JPEG
+        # re-encode, not the originally-uploaded PNG.
+        self.assertNotEqual(download.content, TINY_PNG_BYTES)
         self.assertEqual(download.headers["x-content-type-options"], "nosniff")
         self.assertIn("attachment", download.headers["content-disposition"])
 

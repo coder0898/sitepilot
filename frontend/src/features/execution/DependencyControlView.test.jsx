@@ -127,13 +127,14 @@ describe("DependencyControlView", () => {
     expect(screen.getByText("Freeze layout")).toBeInTheDocument();
   });
 
-  it("opens the Dependency Details panel on row click and shows the blocking explanation", async () => {
+  it("opens the dependency detail drawer on row click and shows the blocking explanation", async () => {
     taskExecutionApi.list.mockResolvedValue([execTask({ lifecycle_status: "planned" }), execTask({ id: "e2", original_code: "T002", title: "Start framing" })]);
     const dependencies = { items: [dep()], total: 1, excluded_warning_count: 0 };
     render(<DependencyControlView projectId="p1" project={project} user={admin} dependencies={dependencies}/>);
-    expect(await screen.findByText("Select a dependency to view details.")).toBeInTheDocument();
-    fireEvent.click(await screen.findByText("Freeze layout"));
-    expect(await screen.findByText("Dependency Details")).toBeInTheDocument();
+    await screen.findByText("Freeze layout");
+    expect(screen.queryByText("Dependency Detail")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Freeze layout"));
+    expect(await screen.findByText("Dependency Detail")).toBeInTheDocument();
     expect(screen.getByText("The successor task cannot start until the predecessor task is completed.")).toBeInTheDocument();
   });
 
@@ -147,7 +148,7 @@ describe("DependencyControlView", () => {
     const dependencies = { items: [dep()], total: 1, excluded_warning_count: 0 };
     render(<DependencyControlView projectId="p1" project={project} user={admin} dependencies={dependencies}/>);
     fireEvent.click(await screen.findByText("Freeze layout"));
-    await screen.findByText("Dependency Details");
+    await screen.findByText("Dependency Detail");
     expect(screen.getByRole("button", { name: /view successor task/i })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /view predecessor task/i }));
     expect(await screen.findByText("Freeze the layout.")).toBeInTheDocument();
@@ -157,5 +158,26 @@ describe("DependencyControlView", () => {
     taskExecutionApi.list.mockResolvedValue([]);
     render(<DependencyControlView projectId="p1" project={project} user={admin} dependencies={{ items: [], total: 0, excluded_warning_count: 0 }}/>);
     expect(await screen.findByText("No dependencies were generated for this project")).toBeInTheDocument();
+  });
+
+  it("shows 6 dependency rows by default, then Load More/Show Less paginate the rest", async () => {
+    taskExecutionApi.list.mockResolvedValue([]);
+    const items = Array.from({ length: 8 }, (_, i) => dep({
+      id: `d${i}`,
+      predecessor_code: `P${i}`, predecessor_title: `Predecessor ${i}`,
+      successor_code: `S${i}`, successor_title: `Successor ${i}`,
+    }));
+    render(<DependencyControlView projectId="p1" project={project} user={admin} dependencies={{ items, total: 8, excluded_warning_count: 0 }}/>);
+
+    const bodyRows = () => screen.getAllByRole("row").filter(row => within(row).queryAllByRole("cell").length > 0);
+    await waitFor(() => expect(bodyRows()).toHaveLength(6));
+    expect(screen.queryByText("Show Less")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load More" }));
+    await waitFor(() => expect(bodyRows()).toHaveLength(8));
+    expect(screen.queryByRole("button", { name: "Load More" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Less" }));
+    await waitFor(() => expect(bodyRows()).toHaveLength(6));
   });
 });

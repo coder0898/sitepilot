@@ -86,12 +86,25 @@ export function taskOccupiesDay(task, day, today) {
 // `blocked` stay sourced from `task.readiness.state` exactly as before -
 // nothing here re-derives readiness, only tallies it alongside two more facts
 // the payload already carries (`lifecycle_status`, `variance.status`).
+// A task sitting in any of these statuses has left execution and is
+// waiting on a Supervisor verification or PM/Admin approval decision - the
+// "needs review" bucket every review-side view (Admin/PM calendar,
+// Supervisor board, employee work list) filters and counts by, so a task a
+// Supervisor or employee submits doesn't just vanish into the "all" list
+// with nothing surfacing that it needs someone else's decision.
+const NEEDS_REVIEW_STATUSES = ["submitted", "verified", "approval_pending"];
+
+export function needsReview(task) {
+  return NEEDS_REVIEW_STATUSES.includes(task.lifecycle_status);
+}
+
 export function executionCounts(tasks) {
-  const counts = { total: tasks.length, ready: 0, in_progress: 0, completed: 0, delayed: 0, blocked: 0 };
+  const counts = { total: tasks.length, ready: 0, in_progress: 0, needs_review: 0, completed: 0, delayed: 0, blocked: 0 };
   for (const task of tasks) {
     if (task.readiness?.state === "ready") counts.ready += 1;
     if (task.readiness?.state === "blocked") counts.blocked += 1;
     if (task.lifecycle_status === "in_progress") counts.in_progress += 1;
+    if (needsReview(task)) counts.needs_review += 1;
     if (task.lifecycle_status === "completed") counts.completed += 1;
     if (task.variance?.status === "late") counts.delayed += 1;
   }
@@ -104,6 +117,7 @@ export const STATUS_BUCKETS = [
   ["all", "All"],
   ["ready", "Ready to Start"],
   ["in_progress", "In Progress"],
+  ["needs_review", "Needs Review"],
   ["completed", "Completed"],
   ["delayed", "Delayed"],
   ["blocked", "Blocked"],
@@ -114,6 +128,7 @@ export function matchesStatusBucket(task, bucket) {
   if (bucket === "ready") return task.readiness?.state === "ready";
   if (bucket === "blocked") return task.readiness?.state === "blocked";
   if (bucket === "in_progress") return task.lifecycle_status === "in_progress";
+  if (bucket === "needs_review") return needsReview(task);
   if (bucket === "completed") return task.lifecycle_status === "completed";
   if (bucket === "delayed") return task.variance?.status === "late";
   return true;

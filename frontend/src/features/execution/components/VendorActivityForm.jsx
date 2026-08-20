@@ -73,7 +73,10 @@ export function VendorActivityForm({ projectId, task, assignment, canManage = tr
         <Field label="Responsibility decision (optional)"><Input value={responsibilityDecision} onChange={event => setResponsibilityDecision(event.target.value)} placeholder="e.g. Vendor responsible"/></Field>
       </div>
       <Field label="Description"><Textarea className="min-h-16" value={description} onChange={event => setDescription(event.target.value)} placeholder="What happened?" required/></Field>
-      <label className="grid gap-1 text-xs font-bold text-slate-700">Evidence photo or PDF (optional)<input className="w-full cursor-pointer rounded-lg border border-slate-200 bg-white text-xs font-normal text-slate-600 file:mr-3 file:border-0 file:bg-slate-700 file:px-2 file:py-1.5 file:font-bold file:text-white hover:file:bg-slate-800" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={event => setFile(event.target.files?.[0] || null)}/></label>
+      {/* capture="environment" biases the mobile OS picker to the rear
+          camera - PDFs still reachable via the same picker's "Files"
+          option. */}
+      <label className="grid gap-1 text-xs font-bold text-slate-700">Evidence photo or PDF (optional)<input className="w-full cursor-pointer rounded-lg border border-slate-200 bg-white text-xs font-normal text-slate-600 file:mr-3 file:border-0 file:bg-slate-700 file:px-2 file:py-1.5 file:font-bold file:text-white hover:file:bg-slate-800" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" capture="environment" onChange={event => setFile(event.target.files?.[0] || null)}/></label>
       {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
       <Button type="submit" size="sm" loading={submitting} disabled={!description.trim()}>Log activity</Button>
     </form>}

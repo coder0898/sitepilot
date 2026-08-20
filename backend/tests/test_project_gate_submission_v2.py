@@ -334,7 +334,10 @@ class ProjectGateSubmissionTests(unittest.TestCase):
         file_object, content = self.service.get_evidence_file(
             self.project_id, approval.id, evidence.file_id, self.pm_user(),
         )
-        self.assertEqual(content, TINY_PNG_BYTES)
+        # Compressed on upload (app.services.evidence_image) - content is
+        # the stored JPEG re-encode, not the originally-uploaded PNG.
+        self.assertNotEqual(content, TINY_PNG_BYTES)
+        self.assertEqual(file_object.mime_type, "image/jpeg")
         self.assertEqual(file_object.original_filename, "noc.png")
 
     def test_get_evidence_file_refuses_a_file_id_from_a_different_approval(self):

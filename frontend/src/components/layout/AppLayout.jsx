@@ -1,4 +1,6 @@
-import { LogOut, RefreshCw, UserRoundCog } from "lucide-react";
+import { LogOut, MoreHorizontal, RefreshCw, UserRoundCog } from "lucide-react";
+import { useState } from "react";
+import { createPortal } from "react-dom";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
 import { getTabDefinition } from "../../config/tabs";
@@ -25,15 +27,62 @@ function DesktopNav({ tabs, activeTab, onTabChange }) {
   </nav>;
 }
 
+// Beyond this many items, an equal-width single row squeezes every label
+// down to 2-3 letters ("Pro...", "Por...") on a real phone - the crowded
+// bottom nav a wide-permission role (Admin/Super Admin, up to 7 tabs) hits.
+// Standard mobile nav guidance caps a bottom bar at 5 slots; past that, the
+// last slot becomes "More" instead of a 6th/7th squeezed button.
+const MAX_VISIBLE_MOBILE_TABS = 5;
+
+function MobileTabButton({ tab, label, active, onClick }) {
+  return <button type="button" onClick={onClick} aria-current={active ? "page" : undefined} className={`grid min-h-[58px] min-w-0 place-items-center content-center gap-1 rounded-2xl px-1 text-[10px] font-black transition ${active ? "bg-slate-950 text-white shadow-lg" : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"}`}>
+    <TabIcon tab={tab} size={20}/><span className="max-w-full truncate">{label}</span>
+  </button>;
+}
+
+function MoreTabsSheet({ tabs, activeTab, onSelect, onClose }) {
+  return createPortal(
+    <div className="fixed inset-0 z-40 bg-slate-950/40 lg:hidden" role="presentation" onClick={onClose}>
+      <div
+        role="menu"
+        aria-label="More navigation"
+        className="fixed inset-x-2 bottom-[calc(6rem+env(safe-area-inset-bottom))] z-50 grid gap-1 rounded-[22px] border border-slate-200/80 bg-white p-2 shadow-[0_18px_55px_rgba(15,23,42,.25)]"
+        onClick={event => event.stopPropagation()}
+      >
+        {tabs.map(([key, label]) => {
+          const active = activeTab === key;
+          return <button type="button" key={key} role="menuitem" onClick={() => onSelect(key)} aria-current={active ? "page" : undefined} className={`flex min-h-14 min-w-0 items-center gap-3 rounded-2xl px-3 text-left transition ${active ? "bg-slate-950 text-white" : "text-slate-700 hover:bg-slate-100"}`}>
+            <span className={`grid size-10 shrink-0 place-items-center rounded-xl ${active ? "bg-white/10" : "bg-slate-100"}`}><TabIcon tab={key} size={19}/></span>
+            <span className="min-w-0"><b className="block truncate text-sm">{label}</b><small className={`mt-0.5 block truncate text-[11px] ${active ? "text-slate-300" : "text-slate-400"}`}>{tabHelp(key)}</small></span>
+          </button>;
+        })}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function MobileNavigation({ tabs, activeTab, onTabChange }) {
-  return <nav aria-label="Mobile navigation" className="fixed inset-x-2 bottom-2 z-40 grid grid-flow-col auto-cols-fr gap-1 rounded-[22px] border border-slate-200/80 bg-white/95 p-1.5 pb-[max(.375rem,env(safe-area-inset-bottom))] shadow-[0_18px_55px_rgba(15,23,42,.2)] backdrop-blur-xl lg:hidden">
-    {tabs.map(([key, label]) => {
-      const active = activeTab === key;
-      return <button type="button" key={key} onClick={() => onTabChange(key)} aria-current={active ? "page" : undefined} className={`grid min-h-[58px] min-w-0 place-items-center content-center gap-1 rounded-2xl px-1 text-[10px] font-black transition ${active ? "bg-slate-950 text-white shadow-lg" : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"}`}>
-        <TabIcon tab={key} size={20}/><span className="max-w-full truncate">{label.replace("Vendor Hub", "Vendors").replace("Role Permissions", "Roles")}</span>
-      </button>;
-    })}
-  </nav>;
+  const [showMore, setShowMore] = useState(false);
+  const hasOverflow = tabs.length > MAX_VISIBLE_MOBILE_TABS;
+  const primaryTabs = hasOverflow ? tabs.slice(0, MAX_VISIBLE_MOBILE_TABS - 1) : tabs;
+  const overflowTabs = hasOverflow ? tabs.slice(MAX_VISIBLE_MOBILE_TABS - 1) : [];
+  const overflowActive = overflowTabs.some(([key]) => key === activeTab);
+
+  function selectOverflowTab(key) {
+    setShowMore(false);
+    onTabChange(key);
+  }
+
+  return <>
+    <nav aria-label="Mobile navigation" className="fixed inset-x-2 bottom-2 z-40 grid grid-flow-col auto-cols-fr gap-1 rounded-[22px] border border-slate-200/80 bg-white/95 p-1.5 pb-[max(.375rem,env(safe-area-inset-bottom))] shadow-[0_18px_55px_rgba(15,23,42,.2)] backdrop-blur-xl lg:hidden">
+      {primaryTabs.map(([key, label]) => <MobileTabButton key={key} tab={key} label={label.replace("Vendor Hub", "Vendors").replace("Role Permissions", "Roles")} active={activeTab === key} onClick={() => onTabChange(key)}/>)}
+      {hasOverflow && <button type="button" onClick={() => setShowMore(true)} aria-haspopup="true" aria-expanded={showMore} className={`grid min-h-[58px] min-w-0 place-items-center content-center gap-1 rounded-2xl px-1 text-[10px] font-black transition ${overflowActive ? "bg-slate-950 text-white shadow-lg" : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"}`}>
+        <MoreHorizontal aria-hidden="true" size={20}/><span>More</span>
+      </button>}
+    </nav>
+    {hasOverflow && showMore && <MoreTabsSheet tabs={overflowTabs} activeTab={activeTab} onSelect={selectOverflowTab} onClose={() => setShowMore(false)}/>}
+  </>;
 }
 
 function SidebarIconButton({ label, onClick, children }) {

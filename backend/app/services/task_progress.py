@@ -27,6 +27,7 @@ from app.config import settings
 from app.execution_models import FileObject, Task, TaskEvidence, TaskProgressUpdate, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.evidence_image import compress_evidence_image
 from app.services.outbox import OutboxService
 
 # MIME allowlist and size-cap pattern carried over from the legacy
@@ -147,6 +148,12 @@ class TaskProgressService:
                 raise HTTPException(422, "Evidence file is empty.")
             if len(evidence_bytes) > MAX_EVIDENCE_SIZE_BYTES:
                 raise HTTPException(422, "Evidence must be 10 MB or smaller.")
+
+            # Mobile evidence photos arrive several MB uncompressed; shrink
+            # before checksum/storage_key/write so what is persisted (and
+            # what MAX_EVIDENCE_SIZE_BYTES effectively caps long-term) is
+            # always the compressed result. No-op for a PDF.
+            evidence_bytes, evidence_content_type = compress_evidence_image(evidence_bytes, evidence_content_type)
 
             extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
             storage_key = f"{task.id}-{uuid.uuid4().hex}{extension}"

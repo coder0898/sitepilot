@@ -30,6 +30,18 @@ class V2Project(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     activated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    # Anchors the evidence retention clock (app.services.evidence_retention)
+    # to when the project was ACTUALLY marked complete, never to
+    # target_handover_date - that field is a plan, not a fact, and a
+    # delayed project must never have live evidence swept while it is
+    # still active. Set once, on the draft/on_hold/active -> completed
+    # transition (routes/projects_v2.py); there is no path back out of
+    # 'completed' except 'archived', so it is never cleared once set.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by the retention sweep once it has purged this project's evidence
+    # bytes, so a later sweep pass never rescans (and re-no-ops against) the
+    # same project forever.
+    evidence_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

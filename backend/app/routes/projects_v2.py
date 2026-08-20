@@ -182,6 +182,7 @@ def project_json(db: Session, project: V2Project, include_history: bool = False)
         "id": str(project.id),
         **project_snapshot(project),
         "activated_at": project.activated_at.isoformat() if project.activated_at else None,
+        "completed_at": project.completed_at.isoformat() if project.completed_at else None,
         "created_by": str(project.created_by),
         "created_at": project.created_at.isoformat(),
         "updated_at": project.updated_at.isoformat(),
@@ -1046,6 +1047,11 @@ def change_status(project_id: uuid.UUID, payload: ProjectStatusIn, actor: User =
         project.activated_by = actor.id
     before = project_snapshot(project)
     project.status = target
+    if target == "completed":
+        # Anchors app.services.evidence_retention's 6-month clock - see
+        # V2Project.completed_at's docstring for why this must be the
+        # actual completion moment, not target_handover_date.
+        project.completed_at = datetime.now(timezone.utc)
     try:
         add_audit(db, actor, project, "PROJECT_STATUS_CHANGED", payload.reason.strip(), before, project_snapshot(project))
         db.commit()

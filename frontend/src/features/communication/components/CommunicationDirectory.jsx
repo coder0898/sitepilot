@@ -1,6 +1,7 @@
-import { useState } from "react";
-import { Building2, ChevronDown, ChevronRight, Link2, MessageCircle, Phone, ShieldCheck, UserRound } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Building2, MessageCircle, MoreVertical, Phone, ShieldCheck, UserRound } from "lucide-react";
 import { Modal, Pill } from "../../../components/ui";
+import { cn } from "../../../utils/cn";
 import { CategorySelector } from "./CategorySelector";
 
 const cleanPhone = (value = "") => value.replace(/[^\d+]/g, "");
@@ -15,32 +16,93 @@ export function QuickActions({ contact, compact = false }) {
   </div>;
 }
 
-export function Metric({ icon, value, label, tone }) {
-  return <article className={`grid min-h-28 grid-cols-[auto_1fr] items-center gap-x-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm [&>span]:row-span-2 [&>span]:grid [&>span]:size-11 [&>span]:place-items-center [&>span]:rounded-xl [&>span]:bg-blue-50 [&>span]:text-blue-700 [&>strong]:text-3xl [&>small]:font-bold [&>small]:text-slate-500 ${tone}`}><span>{icon}</span><strong>{value}</strong><small>{label}</small></article>;
+export function Metric({ icon, value, label, hint, action, tone = "border-slate-200 bg-slate-50" }) {
+  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone)}>
+    <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/70 text-blue-700">{icon}</span>
+    <div className="min-w-0 flex-1">
+      <p className="text-xs font-bold text-slate-500">{label}</p>
+      <p className="text-2xl font-black leading-tight text-slate-950">{value}</p>
+      {action ? action : hint && <p className="truncate text-[11px] font-semibold text-slate-500">{hint}</p>}
+    </div>
+  </div>;
 }
 
-export function QuickCard({ icon, title, text, onClick }) {
-  return <button onClick={onClick}><span>{icon}</span><strong>{title}</strong><small>{text}</small></button>;
+export function CategoryChip({ label, count, active, onClick }) {
+  return <button type="button" onClick={onClick} aria-pressed={active}
+    className={cn("flex shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-black transition", active ? "border-blue-700 bg-blue-700 text-white" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>
+    {label}
+    <span className={cn("rounded-full px-1.5 py-0.5 text-xs font-black", active ? "bg-white/20" : "bg-slate-100 text-slate-500")}>{count}</span>
+  </button>;
 }
 
 function CategoryPills({ vendor }) {
-  return <div className="mt-2 flex flex-wrap gap-1">{(vendor.categories || [vendor.category]).slice(0, 3).map(category => <Pill key={category}>{category}</Pill>)}</div>;
+  return <div className="mt-1.5 flex flex-wrap gap-1">{(vendor.categories || [vendor.category]).slice(0, 2).map(category => <Pill key={category} tone="gray">{category}</Pill>)}</div>;
 }
 
-export function ContractorGroup({ main, children, primaryFor, isOpen, toggle, select, showChildren }) {
-  return <article className="border-b border-slate-100 last:border-0">
-    <div className="grid cursor-pointer grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3 p-4 transition hover:bg-blue-50/60 max-[720px]:grid-cols-[auto_minmax(0,1fr)]" onClick={() => select(main.id)}>
-      <button className="grid size-9 place-items-center rounded-lg bg-slate-100 p-0 text-slate-600 shadow-none" onClick={event => { event.stopPropagation(); toggle(main.id); }} aria-label={isOpen ? "Collapse sub-vendors" : "Expand sub-vendors"}>{isOpen ? <ChevronDown/> : <ChevronRight/>}</button>
-      <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-blue-100 font-black text-blue-700">{main.name.slice(0, 2).toUpperCase()}</div>
-      <div className="min-w-0 [&>div]:flex [&>div]:flex-wrap [&>div]:items-center [&>div]:gap-2 [&_h3]:m-0 [&_h3]:text-base [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-slate-500"><div><h3>{main.name}</h3><Pill tone="blue">Main vendor</Pill><Pill tone={main.status === "active" ? "green" : "orange"}>{statusLabel(main.status)}</Pill></div><CategoryPills vendor={main}/><small>{children.length} sub-vendor{children.length === 1 ? "" : "s"} · {primaryFor(main.id)?.name || "No primary contact"}</small></div>
-      <QuickActions contact={primaryFor(main.id)} compact/>
+function RowMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClickOutside(event) { if (ref.current && !ref.current.contains(event.target)) setOpen(false); }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [open]);
+
+  return <div ref={ref} className="relative" onClick={event => event.stopPropagation()}>
+    <button type="button" aria-label="Vendor row actions" onClick={() => setOpen(v => !v)}
+      className="grid size-9 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><MoreVertical size={17}/></button>
+    {open && <div className="absolute right-0 top-[calc(100%+4px)] z-20 grid w-44 gap-0.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
+      {items.map(item => <button key={item.label} type="button" onClick={() => { setOpen(false); item.onClick(); }}
+        className={cn("rounded-lg px-3 py-2 text-left text-sm font-bold transition hover:bg-slate-50", item.danger ? "text-rose-700" : "text-slate-700")}>{item.label}</button>)}
+    </div>}
+  </div>;
+}
+
+export function VendorRow({ vendor, primary, projectCount, selected, layout = "list", onSelect, onEdit, onDeactivate, onDelete }) {
+  const isMain = vendor.engagement_type === "main";
+  const effectiveStatus = vendor.effective_status || vendor.status;
+  const menuItems = [
+    { label: "Edit vendor", onClick: onEdit },
+    ...(effectiveStatus === "active" ? [{ label: "Deactivate", onClick: onDeactivate }] : []),
+    { label: "Delete vendor", onClick: onDelete, danger: true },
+  ];
+
+  return <article onClick={onSelect}
+    className={cn("grid cursor-pointer gap-3 rounded-2xl border p-4 transition hover:border-blue-200 hover:shadow-[0_12px_30px_rgba(15,23,42,.06)]",
+      selected ? "border-blue-300 bg-blue-50/40 ring-2 ring-blue-500/40" : "border-slate-200 bg-white",
+      layout === "list" && "sm:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto_auto] sm:items-center")}>
+    <div className="flex items-center gap-3">
+      <div className={cn("grid size-11 shrink-0 place-items-center rounded-xl font-black", isMain ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700")}>{vendor.name.slice(0, 2).toUpperCase()}</div>
+      <div className="min-w-0 flex-1">
+        <h3 className="truncate text-sm font-black text-slate-950">{vendor.name}</h3>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <Pill tone={isMain ? "blue" : "green"}>{isMain ? "Main Vendor" : "Sub-vendor"}</Pill>
+          <CategoryPills vendor={vendor}/>
+        </div>
+      </div>
     </div>
-    {showChildren && isOpen && <div className="border-t border-slate-100 bg-slate-50/60 pl-10 max-[720px]:pl-3">{children.map(({ relation, vendor }) => <div className="grid cursor-pointer grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3 p-4 transition hover:bg-blue-50/60 max-[720px]:grid-cols-[auto_minmax(0,1fr)]" key={relation.id} onClick={() => select(vendor.id)}><span className="text-slate-400"><Link2/></span><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-emerald-100 font-black text-emerald-700">{vendor.name.slice(0, 2).toUpperCase()}</div><div className="min-w-0 [&>div]:flex [&>div]:flex-wrap [&>div]:items-center [&>div]:gap-2 [&_h4]:m-0 [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-slate-500"><div><h4>{vendor.name}</h4><Pill tone="green">Sub-vendor</Pill><Pill tone={(vendor.effective_status || vendor.status) === "active" ? "green" : "orange"}>{statusLabel(vendor.effective_status || vendor.status)}</Pill></div><CategoryPills vendor={vendor}/><small>{primaryFor(vendor.id)?.name || "No primary contact"}</small></div><QuickActions contact={primaryFor(vendor.id)} compact/></div>)}{!children.length && <p className="m-0 p-4 text-sm text-slate-500">No linked sub-vendors.</p>}</div>}
-  </article>;
-}
 
-export function FlatContractor({ vendor, primary, select }) {
-  return <article className="border-b border-slate-100 last:border-0"><div className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 p-4 transition hover:bg-blue-50/60 max-[720px]:grid-cols-[auto_minmax(0,1fr)]" onClick={() => select(vendor.id)}><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-emerald-100 font-black text-emerald-700">{vendor.name.slice(0, 2).toUpperCase()}</div><div className="min-w-0 [&>div]:flex [&>div]:flex-wrap [&>div]:items-center [&>div]:gap-2 [&_h3]:m-0 [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-slate-500"><div><h3>{vendor.name}</h3><Pill tone={vendor.engagement_type === "migration_pending" ? "orange" : "green"}>{vendor.engagement_type === "migration_pending" ? "Parent required" : "Sub-vendor"}</Pill><Pill tone={(vendor.effective_status || vendor.status) === "active" ? "green" : "orange"}>{statusLabel(vendor.effective_status || vendor.status)}</Pill></div><CategoryPills vendor={vendor}/><small>{primary?.name || "No primary contact"}</small></div><QuickActions contact={primary} compact/></div></article>;
+    <div className="min-w-0">
+      <strong className="block truncate text-sm text-slate-800">{primary?.name || "No primary contact"}</strong>
+      <span className="block truncate text-xs text-slate-500">{primary?.designation || "Contact person"}</span>
+      {primary && <a href={`tel:${cleanPhone(primary.phone)}`} onClick={event => event.stopPropagation()} className="mt-0.5 block truncate text-xs font-bold text-slate-600 hover:text-blue-700">{primary.phone}</a>}
+    </div>
+
+    <div className="flex shrink-0 items-center gap-2" onClick={event => event.stopPropagation()}>
+      <QuickActions contact={primary} compact/>
+    </div>
+
+    <div className="flex shrink-0 items-center gap-3">
+      <div className="text-right">
+        <strong className="block text-sm font-black text-slate-950">{projectCount}</strong>
+        <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Projects</span>
+      </div>
+      <Pill tone={effectiveStatus === "active" ? "green" : effectiveStatus === "on_hold" ? "orange" : "gray"}>{statusLabel(effectiveStatus)}</Pill>
+      <RowMenu items={menuItems}/>
+    </div>
+  </article>;
 }
 
 function SectionHeading({ icon: Icon, eyebrow, title, text }) {

@@ -1,4 +1,4 @@
-import { ArrowUpDown, CheckCircle2, ClipboardList, Clock3, PlayCircle, ShieldCheck } from "lucide-react";
+import { ArrowUpDown, CheckCircle2, ClipboardCheck, ClipboardList, Clock3, PlayCircle, Search, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
@@ -7,11 +7,12 @@ import { formatDateShort } from "../../../utils/format";
 import { STATUS_TONE } from "./TaskDetailContent";
 import { executionCounts, matchesStatusBucket, plannedDayLabel } from "./executionViewHelpers";
 
-const FILTER_CHIPS = [["all", "All"], ["in_progress", "In Progress"], ["ready", "Ready"], ["delayed", "Delayed"], ["completed", "Completed"]];
+const FILTER_CHIPS = [["all", "All"], ["in_progress", "In Progress"], ["ready", "Ready"], ["needs_review", "Needs Review"], ["delayed", "Delayed"], ["completed", "Completed"]];
 const TILES = [
   ["total", "Total Assigned", ClipboardList, "blue"],
   ["in_progress", "In Progress", PlayCircle, "blue"],
   ["ready", "Ready", ShieldCheck, "green"],
+  ["needs_review", "Needs Review", ClipboardCheck, "orange"],
   ["delayed", "Delayed", Clock3, "orange"],
   ["completed", "Completed", CheckCircle2, "green"],
 ];
@@ -61,6 +62,7 @@ export function MyAssignedWorkList({ projectId, onOpenTask, onTasksLoaded }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [sortAsc, setSortAsc] = useState(true);
 
   async function load() {
@@ -80,7 +82,12 @@ export function MyAssignedWorkList({ projectId, onOpenTask, onTasksLoaded }) {
   useEffect(() => { load(); }, [projectId]);
 
   const counts = executionCounts(tasks);
-  const filtered = tasks.filter(task => matchesStatusBucket(task, filter));
+  const term = search.trim().toLowerCase();
+  const filtered = tasks.filter(task => {
+    if (!matchesStatusBucket(task, filter)) return false;
+    if (!term) return true;
+    return [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term));
+  });
   const sorted = [...filtered].sort((a, b) => {
     const left = a.planned_start_date || a.planned_end_date || "9999-12-31";
     const right = b.planned_start_date || b.planned_end_date || "9999-12-31";
@@ -92,14 +99,21 @@ export function MyAssignedWorkList({ projectId, onOpenTask, onTasksLoaded }) {
   if (!tasks.length) return <EmptyState icon={<ClipboardList size={21}/>} title="No tasks assigned" description="No task is currently assigned to you on this project."/>;
 
   return <div className="grid gap-4">
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5" role="group" aria-label="My work summary">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6" role="group" aria-label="My work summary">
       {TILES.map(([key, label, Icon, tone]) => <article key={key} className="rounded-2xl border border-slate-200 bg-white p-4">
         <div className="flex items-center gap-2 text-slate-500"><Icon size={16}/><small className="text-xs font-black uppercase tracking-wide">{label}</small></div>
         <strong className="mt-2 block font-serif text-2xl text-slate-950">{counts[key]}</strong>
       </article>)}
     </div>
 
-    <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+    <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="relative min-w-[200px] flex-1">
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
+          <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
+        </label>
+        <Button size="sm" variant="ghost" onClick={() => setSortAsc(value => !value)}><ArrowUpDown size={14}/> Due date {sortAsc ? "↑" : "↓"}</Button>
+      </div>
       <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by status">
         {FILTER_CHIPS.map(([key, label]) => <button
           key={key}
@@ -109,11 +123,10 @@ export function MyAssignedWorkList({ projectId, onOpenTask, onTasksLoaded }) {
           className={`min-h-9 rounded-xl px-3 text-sm font-bold transition ${filter === key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600"}`}
         >{label}</button>)}
       </div>
-      <Button size="sm" variant="ghost" onClick={() => setSortAsc(value => !value)}><ArrowUpDown size={14}/> Due date {sortAsc ? "↑" : "↓"}</Button>
     </div>
 
     {sorted.length ? <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
       {sorted.map(task => <Row key={task.id} task={task} onOpen={onOpenTask}/>)}
-    </div> : <EmptyState icon={<ClipboardList size={21}/>} title={`No ${filter.replaceAll("_", " ")} tasks`} description="Try a different filter."/>}
+    </div> : <EmptyState icon={<ClipboardList size={21}/>} title={`No ${filter.replaceAll("_", " ")} tasks`} description="Try a different filter or search term."/>}
   </div>;
 }

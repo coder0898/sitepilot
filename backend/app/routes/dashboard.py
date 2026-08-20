@@ -47,7 +47,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
     if user.role in {UserRole.super_admin, UserRole.admin}:
         # Phase 3 U4: cross-project rollup (R7) is Admin-only, per BR-003 -
         # no new Management role, reuses the existing admin bypass pattern.
-        modules = ["projects", "admin_overview", "execution", "communication", "users"]
+        modules = ["projects", "admin_overview", "execution", "communication", "broadcasts", "users"]
     elif user.role in {UserRole.project_manager, UserRole.supervisor}:
         modules = ["projects", "execution", "communication", "users"]
     elif user.role == UserRole.internal_employee:

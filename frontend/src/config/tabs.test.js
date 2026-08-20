@@ -36,3 +36,24 @@ describe("Phase 3 Portfolio (admin_overview) navigation visibility", () => {
     },
   );
 });
+
+describe("Communication (broadcasts) navigation visibility", () => {
+  // Admin-only, same rationale and backend contract as admin_overview above.
+  const adminModules = ["projects", "admin_overview", "execution", "communication", "broadcasts", "users"];
+
+  it.each(["super_admin", "admin"])("shows Communication for %s when the backend grants it", role => {
+    expect(visibleTabs(adminModules, role).map(([key]) => key)).toContain("broadcasts");
+  });
+
+  it("labels the broadcasts tab \"Communication\"", () => {
+    const entry = visibleTabs(adminModules, "admin").find(([key]) => key === "broadcasts");
+    expect(entry?.[1]).toBe("Communication");
+  });
+
+  it.each(["project_manager", "supervisor", "internal_employee"])(
+    "hides Communication for %s, whose module_permissions never include it",
+    role => {
+      expect(keysFor(role)).not.toContain("broadcasts");
+    },
+  );
+});
