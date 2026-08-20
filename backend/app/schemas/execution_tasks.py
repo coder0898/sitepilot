@@ -196,6 +196,10 @@ class TaskSupportAssignmentEndIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason_code: str = Field(min_length=1, max_length=200)
     reason_detail: str | None = Field(default=None, max_length=2000)
+    # Optional atomic reassignment: TaskSupportAssignmentService.end_support
+    # already creates a replacement assignment in the same transaction when
+    # this is set, rather than requiring a separate end + assign round trip.
+    replacement_employee_id: uuid.UUID | None = None
 
     @field_validator("reason_code")
     @classmethod

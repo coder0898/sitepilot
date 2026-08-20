@@ -689,6 +689,7 @@ def end_task_support(
     return TaskSupportAssignmentService(db).end_support(
         project_id, task_id, assignment_id, actor,
         reason_code=payload.reason_code, reason_detail=payload.reason_detail,
+        replacement_employee_id=payload.replacement_employee_id,
     )
 
 
