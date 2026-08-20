@@ -374,8 +374,11 @@ function SubmissionForm({ projectId, approval, onSubmitted }) {
     <h4 className="text-xs font-black uppercase tracking-wide text-emerald-800">Update / submit evidence</h4>
     <form className="mt-3 grid gap-3" onSubmit={submit}>
       <Field label="Update note"><Textarea className="min-h-20" value={note} onChange={event => setNote(event.target.value)} placeholder="Describe what's attached, or any context for Admin"/></Field>
+      {/* capture="environment" biases the mobile OS picker to the rear
+          camera - PDFs/multi-select still reachable via the same picker's
+          "Files" option. */}
       <label className="grid gap-2 text-sm font-bold text-slate-700">Documents or photos (optional)
-        <input className="w-full cursor-pointer rounded-xl border border-slate-200 bg-white text-sm font-normal text-slate-600 file:mr-4 file:border-0 file:bg-emerald-700 file:px-3 file:py-2 file:font-bold file:text-white hover:file:bg-emerald-800" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={pickFiles}/>
+        <input className="w-full cursor-pointer rounded-xl border border-slate-200 bg-white text-sm font-normal text-slate-600 file:mr-4 file:border-0 file:bg-emerald-700 file:px-3 file:py-2 file:font-bold file:text-white hover:file:bg-emerald-800" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" capture="environment" onChange={pickFiles}/>
       </label>
       {fileError && <p className="text-xs font-bold text-rose-700">{fileError}</p>}
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</div>}
