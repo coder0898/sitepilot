@@ -95,7 +95,7 @@ export function CommunicationPage({ action }) {
       <div>
         <p className="text-xs font-black uppercase tracking-[.18em] text-blue-700">Communication</p>
         <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Communication</h2>
-        <span className="mt-2 block text-sm text-slate-500">Send announcements, meeting alerts and updates to your project teams.</span>
+        <span className="mt-2 block text-sm text-slate-500">Send announcements, meeting alerts, quick discussions and updates to your project teams.</span>
       </div>
       <Button onClick={openComposer}><Plus size={17} /> Create Broadcast</Button>
     </section>
@@ -129,7 +129,7 @@ export function CommunicationPage({ action }) {
     {detail && <RecipientPreviewDrawer title={detail.title} subtitle={`${detail.project_name} · ${detail.recipient_count} recipient${detail.recipient_count === 1 ? "" : "s"}`}
       recipients={detail.recipients} readOnly deliverySummary={detail.delivery_summary} onClose={() => setDetail(null)} />}
 
-    {composerOpen && <Modal title="New Broadcast" subtitle="Send an announcement, meeting alert or update to a project team." onClose={() => setComposerOpen(false)} className="sm:max-w-3xl">
+    {composerOpen && <Modal title="New Broadcast" subtitle="Send an announcement, meeting alert, quick discussion or update to a project team." onClose={() => setComposerOpen(false)} className="sm:max-w-3xl">
       <BroadcastComposer embedded projects={projects} templates={templates} action={action} onCreated={afterCreate} onTemplateSaved={afterTemplateChange} />
     </Modal>}
   </div>;

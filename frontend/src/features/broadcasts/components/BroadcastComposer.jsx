@@ -84,7 +84,7 @@ export function BroadcastComposer({ projects, templates, action, onCreated, onTe
     setFormError("");
     if (!projectId) return setFormError("Select a project to message.");
     if (selectedGroups.size === 0) return setFormError("Select at least one recipient group.");
-    if (!form.title.trim()) return setFormError("Enter a meeting title.");
+    if (!form.title.trim()) return setFormError("Enter a title.");
     if (!form.messageBody.trim()) return setFormError("Enter a message body.");
     let scheduledAt = null;
     if (sendMode === "scheduled") {
@@ -106,7 +106,7 @@ export function BroadcastComposer({ projects, templates, action, onCreated, onTe
   async function handleSaveTemplate() {
     if (!templateName.trim()) return;
     const result = await action(() => broadcastApi.createTemplate({
-      name: templateName, title: form.title || "Untitled meeting", agenda: form.agenda || null, message_body: form.messageBody || "",
+      name: templateName, title: form.title || "Untitled message", agenda: form.agenda || null, message_body: form.messageBody || "",
     }), "Template saved");
     if (result?.ok) { setSaveTemplateOpen(false); setTemplateName(""); onTemplateSaved?.(); }
   }
@@ -144,7 +144,7 @@ export function BroadcastComposer({ projects, templates, action, onCreated, onTe
 
       <div className="grid gap-4 border-t border-slate-100 pt-4">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-black text-slate-800">Meeting details</p>
+          <p className="text-sm font-black text-slate-800">Message details</p>
           {templates.length > 0 && <div className="relative">
             <button type="button" onClick={() => setTemplateMenuOpen(v => !v)} className="flex items-center gap-1.5 text-xs font-bold text-blue-700 hover:underline"><Sparkles size={13} /> Use a template</button>
             {templateMenuOpen && <div className="absolute right-0 top-[calc(100%+6px)] z-20 grid w-56 gap-0.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
@@ -153,13 +153,13 @@ export function BroadcastComposer({ projects, templates, action, onCreated, onTe
           </div>}
         </div>
 
-        <Field label="Meeting title" htmlFor="broadcast-title"><Input id="broadcast-title" value={form.title} onChange={event => setField("title", event.target.value)} placeholder="Weekly site progress review" /></Field>
+        <Field label="Title" htmlFor="broadcast-title"><Input id="broadcast-title" value={form.title} onChange={event => setField("title", event.target.value)} placeholder="Weekly site review, or just a quick update" /></Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Date" htmlFor="broadcast-date"><Input id="broadcast-date" type="date" value={form.meetingDate} onChange={event => setField("meetingDate", event.target.value)} /></Field>
-          <Field label="Time" htmlFor="broadcast-time"><Input id="broadcast-time" type="time" value={form.meetingTime} onChange={event => setField("meetingTime", event.target.value)} /></Field>
+          <Field label="Date (optional)" htmlFor="broadcast-date"><Input id="broadcast-date" type="date" value={form.meetingDate} onChange={event => setField("meetingDate", event.target.value)} /></Field>
+          <Field label="Time (optional)" htmlFor="broadcast-time"><Input id="broadcast-time" type="time" value={form.meetingTime} onChange={event => setField("meetingTime", event.target.value)} /></Field>
         </div>
-        <Field label="Location or meeting link" htmlFor="broadcast-location"><Input id="broadcast-location" value={form.locationOrLink} onChange={event => setField("locationOrLink", event.target.value)} placeholder="Site office, or a video call link" /></Field>
-        <Field label="Agenda" htmlFor="broadcast-agenda"><Textarea id="broadcast-agenda" value={form.agenda} onChange={event => setField("agenda", event.target.value)} placeholder="What will be covered" /></Field>
+        <Field label="Location or link (optional)" htmlFor="broadcast-location"><Input id="broadcast-location" value={form.locationOrLink} onChange={event => setField("locationOrLink", event.target.value)} placeholder="Site office, or a video call link" /></Field>
+        <Field label="Agenda or notes (optional)" htmlFor="broadcast-agenda"><Textarea id="broadcast-agenda" value={form.agenda} onChange={event => setField("agenda", event.target.value)} placeholder="What this covers - leave blank for a quick message" /></Field>
         <Field label="Message body" htmlFor="broadcast-body"><Textarea id="broadcast-body" className="min-h-32" value={form.messageBody} onChange={event => setField("messageBody", event.target.value)} placeholder="Write the announcement recipients will see…" /></Field>
 
         {sendMode === "scheduled" && <div className="grid grid-cols-2 gap-3 rounded-2xl border border-blue-200 bg-blue-50/60 p-3">
@@ -184,7 +184,7 @@ export function BroadcastComposer({ projects, templates, action, onCreated, onTe
 
     {previewOpen && <Modal title="Message preview" subtitle={selectedProject?.name} onClose={() => setPreviewOpen(false)}>
       <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-5">
-        <h3 className="text-lg font-black text-slate-950">{form.title || "Untitled meeting"}</h3>
+        <h3 className="text-lg font-black text-slate-950">{form.title || "Untitled message"}</h3>
         <p className="text-sm font-bold text-slate-600">
           {form.meetingDate ? formatDateShort(form.meetingDate) : "No date set"}{form.meetingTime ? ` · ${form.meetingTime}` : ""}
           {form.locationOrLink ? ` · ${form.locationOrLink}` : ""}
