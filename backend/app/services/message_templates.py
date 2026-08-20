@@ -95,6 +95,12 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
         # Non-doc event type - see task.readiness_declared's note above.
         "task_attendance_recorded", "en", ("task_id", "employee_id", "status", "note"),
     ),
+    "task.rescheduled": TemplateSpec(
+        # Plan Phase 4: no doc template covers a planned-date replan
+        # specifically - the closest doc-aligned name is used, flagged for
+        # later product review per the plan's Decisions section.
+        "task_rescheduled", "en", ("task_id", "planned_start_date", "planned_end_date", "reason"),
+    ),
     # ---- project events -------------------------------------------------
     "project.role_change_requested": TemplateSpec(
         "project_role_change_requested", "en", ("project_id", "role_type", "reason_code"),

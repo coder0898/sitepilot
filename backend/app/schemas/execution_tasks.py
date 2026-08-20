@@ -234,6 +234,40 @@ class TaskAttendanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TaskRescheduleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_planned_start_date: date
+    new_planned_end_date: date
+    # Optional at the schema layer, same shape as TaskStatusTransitionIn's
+    # `reason` - required-and-blank is enforced by TaskRescheduleService
+    # itself (mirrors task_lifecycle.py's transition() cancel-reason check),
+    # not here.
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskRescheduleOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    baseline_id: uuid.UUID
+    original_code: str
+    title: str
+    task_kind: str | None
+    task_class: str | None
+    lifecycle_status: str
+    planned_start_date: date | None
+    planned_end_date: date | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TaskSupportAssignmentCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employee_id: uuid.UUID

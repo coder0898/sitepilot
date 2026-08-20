@@ -5,14 +5,13 @@ report-type-specific extras, then frozen into `ReportSnapshot.payload_json`
 at generation time - see the plan's Key Technical Decision that a report
 never silently changes after the fact.
 
-Known gap, deliberately not solved here: R6 asks for "schedule movement
-(from Phase 1's `task_schedule_revisions`)" but no such table (or any
-task-reschedule mutation that would populate it) exists anywhere in Phase
-1's actual implementation - only in this plan's own Context section. Adding
-a new reschedule-mutation subsystem is out of this unit's scope (its Files
-list only introduces `report_snapshots` and the report service/routes), so
-`schedule_revisions` is always `[]` here, with this comment as the marker
-for the follow-up that will need to land the real mutation and revisit this.
+`schedule_revisions` (R6's "schedule movement") was a documented gap here
+until Plan Phase 4 landed `task_reschedule.py`'s `TaskRescheduleService` -
+the first (and only) mutation that writes a `TASK_RESCHEDULED` `V2AuditEvent`
+against a task's `planned_start_date`/`planned_end_date`. It is now a real
+query over that same generic audit table, in the same
+window-filtered/dict-list shape `_ownership_changes_in_window` already uses
+below.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import SupportAssignmentChange, Task, TaskSupportAssignment
 from app.models import User
-from app.project_models import ProjectRoleChange, V2Project
+from app.project_models import ProjectRoleChange, V2AuditEvent, V2Project
 from app.report_models import REPORT_TYPES, ReportSnapshot
 from app.routes.projects_v2 import get_project
 from app.services.project_visibility import ProjectVisibilityService
@@ -86,6 +85,37 @@ def _ownership_changes_in_window(db: Session, project_id: uuid.UUID, start: date
     }
 
 
+def _schedule_revisions_in_window(db: Session, project_id: uuid.UUID, start: datetime, end: datetime) -> list[dict]:
+    """Plan Phase 4 follow-on: every `TASK_RESCHEDULED` audit event for this
+    project within the report window, in the same shape
+    `_ownership_changes_in_window` uses - a list of dicts, not a nested
+    envelope, since `_build_payload` dumps this straight into the report
+    payload."""
+    rows = db.scalars(
+        select(V2AuditEvent).where(
+            V2AuditEvent.project_id == project_id,
+            V2AuditEvent.entity_type == "task",
+            V2AuditEvent.action == "TASK_RESCHEDULED",
+            V2AuditEvent.occurred_at >= start,
+            V2AuditEvent.occurred_at < end,
+        )
+    ).all()
+    return [
+        {
+            "id": str(row.id),
+            "task_id": str(row.entity_id),
+            "before_planned_start_date": (row.before_json or {}).get("planned_start_date"),
+            "before_planned_end_date": (row.before_json or {}).get("planned_end_date"),
+            "planned_start_date": (row.after_json or {}).get("planned_start_date"),
+            "planned_end_date": (row.after_json or {}).get("planned_end_date"),
+            "reason": row.reason,
+            "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
+            "occurred_at": row.occurred_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
 def _milestone_progress(db: Session, project_id: uuid.UUID) -> list[dict]:
     milestones = db.scalars(
         select(Task).where(Task.project_id == project_id, Task.task_kind == "milestone")
@@ -122,7 +152,7 @@ class ReportGenerationService:
         }
         if report_type == "weekly":
             payload["milestone_progress"] = _milestone_progress(self.db, project_id)
-            payload["schedule_revisions"] = []  # see module docstring - Phase 1 gap, not this unit's scope
+            payload["schedule_revisions"] = _schedule_revisions_in_window(self.db, project_id, period_start, period_end)
             payload["ownership_changes"] = _ownership_changes_in_window(self.db, project_id, period_start, period_end)
             payload["management_decisions_required"] = {
                 "pending_approvals": [t.model_dump(mode="json") for t in summary.pending_approvals],

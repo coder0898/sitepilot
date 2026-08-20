@@ -59,6 +59,8 @@ from app.schemas.execution_tasks import (
     TaskReadinessDeclarationIn,
     TaskReadinessDeclarationOut,
     TaskReadinessOut,
+    TaskRescheduleIn,
+    TaskRescheduleOut,
     TaskStatusTransitionIn,
     TaskSupportAssignmentCreateIn,
     TaskSupportAssignmentEndIn,
@@ -91,6 +93,7 @@ from app.services.task_lifecycle import TaskLifecycleService
 from app.services.task_progress import TaskProgressService
 from app.services.task_readiness import TaskReadinessService
 from app.services.task_readiness_declaration import TaskReadinessDeclarationService
+from app.services.task_reschedule import TaskRescheduleService
 from app.services.task_support_assignment import TaskSupportAssignmentService
 from app.services.task_verification import TaskVerificationService
 
@@ -726,6 +729,26 @@ def create_task_attendance(
         project_id, task_id, payload.employee_id, actor,
         status=payload.status,
         note=payload.note,
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/reschedule", response_model=TaskRescheduleOut)
+def reschedule_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskRescheduleIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Plan Phase 4: Supervisor/PM/Admin-only replan of a task's planned
+    start/end dates, audited via a TASK_RESCHEDULED V2AuditEvent. Never
+    calls TaskLifecycleService.transition and never touches
+    lifecycle_status."""
+    return TaskRescheduleService(db).reschedule(
+        project_id, task_id, actor,
+        new_planned_start_date=payload.new_planned_start_date,
+        new_planned_end_date=payload.new_planned_end_date,
+        reason=payload.reason,
     )
 
 
