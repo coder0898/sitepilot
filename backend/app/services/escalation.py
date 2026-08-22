@@ -44,6 +44,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.execution_models import (
@@ -113,6 +114,25 @@ class EscalationService:
         except Exception:
             self.db.rollback()
             raise
+
+    def _commit_new_tracking(self) -> bool:
+        """Commits a newly-added open `EscalationTracking` row (plus
+        whatever else is pending in the session, e.g. the paired outbox
+        emit). `_has_open_tracking`'s pre-check only guards against
+        re-tracking within a single sweep call - it cannot see a row
+        another concurrent sweep is committing right now. Returns False if
+        that race is lost: `uq_v2_escalation_tracking_entity_stage_open`
+        raises `IntegrityError`, treated as a benign "someone else already
+        opened this escalation" rather than a real failure."""
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            return False
+        except Exception:
+            self.db.rollback()
+            raise
+        return True
 
     # ---- task staleness (reused from project_visibility.py's shape) -----
 
@@ -196,7 +216,8 @@ class EscalationService:
                 },
                 idempotency_key=f"task:{task.id}:task.eod_followup_required:{now.isoformat()}",
             )
-            self._commit()
+            if not self._commit_new_tracking():
+                continue
             escalated.append(task)
         return escalated
 
@@ -233,7 +254,8 @@ class EscalationService:
                 },
                 idempotency_key=f"task:{task.id}:task.escalated_to_admin:{now.isoformat()}",
             )
-            self._commit()
+            if not self._commit_new_tracking():
+                continue
             escalated.append(task)
         return escalated
 
@@ -271,7 +293,8 @@ class EscalationService:
                 },
                 idempotency_key=f"project_external_approval:{approval.id}:project_external_approval.followup_required:{now.isoformat()}",
             )
-            self._commit()
+            if not self._commit_new_tracking():
+                continue
             escalated.append(approval)
         return escalated
 
@@ -310,7 +333,8 @@ class EscalationService:
                 },
                 idempotency_key=f"project_external_approval:{approval.id}:project_external_approval.escalated_to_admin:{now.isoformat()}",
             )
-            self._commit()
+            if not self._commit_new_tracking():
+                continue
             escalated.append(approval)
         return escalated
 

@@ -1,7 +1,7 @@
 import { FolderKanban, Plus } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { projectsApi } from "../../api/projectsApi";
-import { Button, EmptyState, LoadingSpinner } from "../../components/ui";
+import { Button, EmptyState, LoadingSpinner, RefreshButton } from "../../components/ui";
 import { useRoute } from "../../lib/route";
 import { AttentionMenu } from "./components/AttentionMenu";
 import { ProjectFormModal } from "./components/ProjectFormModal";
@@ -46,6 +46,12 @@ export function ProjectsPage({ user, action }) {
   // `projects` state is not readable synchronously right after load() in the
   // same tick, so keep the last fetched list here for post-save lookups.
   const loadedProjects = useRef([]);
+  // Bumped only by the manual Refresh button, never by refreshAll() on its
+  // own (post-save calls already reload themselves in place) - folded into
+  // ProjectWorkspace's key below so a manual refresh also forces the open
+  // project's workspace and every pane inside it (dependencies, external
+  // gates, vendors, template review) to re-fetch, not just the list.
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   async function loadPublishedTemplates() {
     if (!CAN_CREATE.includes(user.role)) {
@@ -149,6 +155,11 @@ export function ProjectsPage({ user, action }) {
     return items;
   }
 
+  async function manualRefresh() {
+    await refreshAll();
+    setRefreshNonce(current => current + 1);
+  }
+
   async function saveProject(payload) {
     if (saving) return;
     setSaving(true);
@@ -188,6 +199,7 @@ export function ProjectsPage({ user, action }) {
         <p className="text-xs text-slate-500">Manage your projects and execution lifecycle</p>
       </div>
       <div className="flex items-center gap-2">
+        <RefreshButton onClick={manualRefresh} loading={loading}/>
         <AttentionMenu items={attention} onOpen={openFromAttention}/>
         {CAN_CREATE.includes(user.role) && <Button onClick={() => { setFormError(""); setFormProject(null); }}>
           <Plus size={17}/> New project
@@ -221,7 +233,7 @@ export function ProjectsPage({ user, action }) {
           <div className="min-w-0 bg-slate-50/60">
             {selected
               ? <ProjectWorkspace
-                  key={selected.id}
+                  key={`${selected.id}:${refreshNonce}`}
                   projectId={selected.id}
                   references={references}
                   templates={publishedTemplates}

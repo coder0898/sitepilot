@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { templatesApi } from "../../api/templatesApi";
-import { Alert, Button, EmptyState, Input, LoadingSpinner, Pill, Select } from "../../components/ui";
+import { Alert, Button, EmptyState, Input, LoadingSpinner, Pill, RefreshButton, Select } from "../../components/ui";
 import { formatTemplateDate, statusTone } from "./components/TemplateCard";
 import { TemplateDependencyCard } from "./components/TemplateDependencyCard";
 import { TemplateDependencyTable } from "./components/TemplateDependencyTable";
@@ -260,6 +260,14 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
   const invalidDependencyCount = useMemo(() => dependencyResult.items.filter(item => item.validation_state === "invalid").length, [dependencyResult.items]);
   const invalidGateCount = useMemo(() => gateResult.items.filter(item => item.validation_state === "invalid").length, [gateResult.items]);
 
+  const isRefreshing = versionLoading || tasksLoading || dependenciesLoading || gatesLoading;
+  function refreshAll() {
+    setVersionRetry(value => value + 1);
+    setTaskRetry(value => value + 1);
+    setDependencyRetry(value => value + 1);
+    setGateRetry(value => value + 1);
+  }
+
   function resetTaskPage() { setTaskPage(1); }
   function clearTaskFilters() {
     setSearch("");
@@ -305,6 +313,7 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button variant="ghost" className="-ml-3 w-fit text-slate-300 hover:bg-white/10 hover:text-white" onClick={onBack}><ArrowLeft size={17}/> Back to Templates</Button>
           <div className="grid gap-2 sm:flex sm:flex-wrap sm:justify-end" aria-label="Template version actions">
+            <RefreshButton className="border-white/15 bg-white/10 text-white hover:bg-white/15" loading={isRefreshing} onClick={refreshAll}/>
             {onClone && summary.status !== "archived" && <Button variant="secondary" className="border-white/15 bg-white/10 text-white hover:bg-white/15" onClick={() => onClone(summary)}><Copy size={17}/> Clone as Draft</Button>}
             {onArchive && summary.status === "published" && <Button className="bg-amber-500 text-slate-950 hover:bg-amber-400" onClick={() => onArchive(summary)}><Archive size={17}/> Archive Version</Button>}
             {summary.status === "draft" && onOpenDraftEditor && <Button className="bg-blue-600 hover:bg-blue-500" onClick={() => onOpenDraftEditor(summary)}><PencilLine size={17}/> Open Draft Editor</Button>}

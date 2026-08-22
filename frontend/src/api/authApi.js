@@ -52,7 +52,7 @@ export const authApi = {
         result = unwrap(await supabase.auth.exchangeCodeForSession(code));
       } catch (error) {
         if (error.message?.toLowerCase().includes("code verifier")) {
-          throw new Error("This verification link was created by an older sign-in flow. Request a fresh verification email and open only the newest link.");
+          throw new Error("This verification link was created by an older sign-in flow. Request a fresh verification email and open only the newest link.", { cause: error });
         }
         throw error;
       }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CalendarCheck, CalendarRange, ClipboardList, FolderKanban, GitBranch, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
-import { EmptyState, LoadingSpinner, Select } from "../../components/ui";
+import { EmptyState, LoadingSpinner, RefreshButton, Select } from "../../components/ui";
 import { DependencyControlView } from "./components/DependencyControlView";
 import { ExecutionCalendarView } from "./components/ExecutionCalendarView";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
@@ -43,6 +43,11 @@ export function ExecutionPage({ user }) {
   // fetch of the same task.
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [myTasks, setMyTasks] = useState([]);
+  // Bumped by the header Refresh button. Included in the two effects below so
+  // they rerun on demand, and in the currently-mounted role view's `key` so
+  // it remounts and refetches too (each role view owns its own task fetch -
+  // see the module comment above).
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -56,7 +61,7 @@ export function ExecutionPage({ user }) {
       .catch(err => { if (active) setError(err.message || "Unable to load active projects."); })
       .finally(() => { if (active) setProjectsLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [reloadToken]);
 
   useEffect(() => {
     if (!projectId) {
@@ -97,7 +102,7 @@ export function ExecutionPage({ user }) {
       })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [projectId, user.role]);
+  }, [projectId, user.role, reloadToken]);
 
   const selectedProject = projects.find(project => project.id === projectId);
 
@@ -115,13 +120,16 @@ export function ExecutionPage({ user }) {
           <h2 className="mt-2 text-2xl font-black tracking-[-.035em] text-slate-950 sm:text-3xl">{view?.project_name || selectedProject?.name || "Select an active project"}</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{user.role === "internal_employee" ? "Only tasks you're actively assigned to support appear here - update their status, log progress and upload evidence." : "Track and drive task execution for this activated project: status updates, evidence, verification/approval, blockers/delays and support assignment."}</p>
         </div>
-        <label className="grid min-w-[240px] gap-2 text-sm font-bold text-slate-700">
-          <span>Active project</span>
-          <Select value={projectId} onChange={event => setProjectId(event.target.value)} disabled={projectsLoading}>
-            <option value="">{projectsLoading ? "Loading..." : "Select project"}</option>
-            {projects.map(project => <option key={project.id} value={project.id}>{project.name} ({project.code})</option>)}
-          </Select>
-        </label>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="grid min-w-[240px] gap-2 text-sm font-bold text-slate-700">
+            <span>Active project</span>
+            <Select value={projectId} onChange={event => setProjectId(event.target.value)} disabled={projectsLoading}>
+              <option value="">{projectsLoading ? "Loading..." : "Select project"}</option>
+              {projects.map(project => <option key={project.id} value={project.id}>{project.name} ({project.code})</option>)}
+            </Select>
+          </label>
+          <RefreshButton loading={projectsLoading || detailLoading} onClick={() => setReloadToken(token => token + 1)}/>
+        </div>
       </header>
 
       {error && <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-700">{error}</div>}
@@ -161,16 +169,16 @@ export function ExecutionPage({ user }) {
                   onBack={() => setSelectedTaskId(null)}
                   onChanged={() => {}}
                 />
-              : <MyAssignedWorkList projectId={projectId} onOpenTask={setSelectedTaskId} onTasksLoaded={setMyTasks}/>
+              : <MyAssignedWorkList key={reloadToken} projectId={projectId} onOpenTask={setSelectedTaskId} onTasksLoaded={setMyTasks}/>
           )}
 
-          {activeTab === viewMeta.key && user.role === "supervisor" && <SupervisorOperationsBoard projectId={projectId} user={user}/>}
+          {activeTab === viewMeta.key && user.role === "supervisor" && <SupervisorOperationsBoard key={reloadToken} projectId={projectId} user={user}/>}
 
-          {activeTab === viewMeta.key && !["internal_employee", "supervisor"].includes(user.role) && <ExecutionCalendarView projectId={projectId} user={user}/>}
+          {activeTab === viewMeta.key && !["internal_employee", "supervisor"].includes(user.role) && <ExecutionCalendarView key={reloadToken} projectId={projectId} user={user}/>}
 
-          {activeTab === "dependencies" && <DependencyControlView projectId={projectId} project={project} user={user} dependencies={dependencies}/>}
+          {activeTab === "dependencies" && <DependencyControlView key={reloadToken} projectId={projectId} project={project} user={user} dependencies={dependencies}/>}
 
-          {activeTab === "approvals" && <ExternalApprovalsPanel projectId={projectId} project={project} user={user}/>}        </>
+          {activeTab === "approvals" && <ExternalApprovalsPanel key={reloadToken} projectId={projectId} project={project} user={user}/>}        </>
       ) : !error && (
         <EmptyState icon={<CalendarCheck size={21}/>} title="Select an active project" description="Choose an activated project above to view its task baseline."/>
       )}

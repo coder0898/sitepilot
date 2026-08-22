@@ -95,6 +95,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sqlalchemy import and_, exists, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.execution_models import (
@@ -440,7 +441,19 @@ class MessageDispatchService:
                 attempt_count=0,
             )
             self.db.add(delivery)
-            self.db.flush()
+            try:
+                self.db.flush()
+            except IntegrityError:
+                # Lost a race against a concurrent dispatch pass that already
+                # inserted the same (event, recipient, template) delivery -
+                # `uq_v2_message_deliveries_event_recipient_template` caught
+                # it. Benign: roll back our half-started insert and fall back
+                # to the row the other pass already committed, same as if
+                # `_existing_delivery` above had found it in the first place.
+                self.db.rollback()
+                delivery = self._existing_delivery(event.id, recipient, template)
+                if delivery is None or delivery.status in _SUCCEEDED_STATUSES:
+                    return
 
         # Refresh the denormalized snapshot on every attempt (including a
         # retry) so it reflects the number this specific attempt targeted.

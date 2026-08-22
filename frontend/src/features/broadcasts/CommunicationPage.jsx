@@ -2,7 +2,7 @@ import { AlertOctagon, CalendarClock, CheckCircle2, Plus, Send, Trash2, Users2 }
 import { useEffect, useState } from "react";
 import { broadcastApi } from "../../api/broadcastApi";
 import { projectsApi } from "../../api/projectsApi";
-import { Button, EmptyState, LoadingSpinner, Modal } from "../../components/ui";
+import { Button, EmptyState, LoadingSpinner, Modal, RefreshButton } from "../../components/ui";
 import { cn } from "../../utils/cn";
 import { BroadcastComposer } from "./components/BroadcastComposer";
 import { BroadcastList } from "./components/BroadcastList";
@@ -53,6 +53,7 @@ export function CommunicationPage({ action }) {
   const [limit, setLimit] = useState(20);
   const [detail, setDetail] = useState(null);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   async function loadProjects() {
     const list = await projectsApi.list({ status: "active" });
@@ -90,6 +91,19 @@ export function CommunicationPage({ action }) {
 
   function openComposer() { setActiveTab("messages"); setComposerOpen(true); }
 
+  async function refreshAll() {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        loadSummary(),
+        loadProjects(),
+        activeTab === "templates" ? loadTemplates() : loadBroadcasts(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   return <div className="grid gap-6">
     <section className="flex flex-wrap items-start justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,.06)]">
       <div>
@@ -97,7 +111,10 @@ export function CommunicationPage({ action }) {
         <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Communication</h2>
         <span className="mt-2 block text-sm text-slate-500">Send announcements, meeting alerts, quick discussions and updates to your project teams.</span>
       </div>
-      <Button onClick={openComposer}><Plus size={17} /> Create Broadcast</Button>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <RefreshButton loading={refreshing} onClick={refreshAll}/>
+        <Button onClick={openComposer}><Plus size={17} /> Create Broadcast</Button>
+      </div>
     </section>
 
     <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

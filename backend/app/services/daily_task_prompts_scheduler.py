@@ -37,18 +37,32 @@ def run_daily_task_prompts_pass() -> int:
     it in the same pass reason about the exact same instant rather than two
     clock reads that could straddle a day boundary. Returns the total
     number of tasks that had an event emitted across all six calls.
+
+    Each of the six calls is isolated from the others: one call raising
+    (a bug, a transient DB error) is logged and skipped rather than
+    aborting the rest of the pass - without this, a failure in, say,
+    `emit_readiness_checks` would silently also skip `emit_start_checks`,
+    both midday/EOD checks, and both escalation sweeps for that entire
+    tick.
     """
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         prompts = DailyTaskPromptsService(db)
         escalation = EscalationService(db)
         processed = 0
-        processed += len(prompts.emit_readiness_checks(now))
-        processed += len(prompts.emit_start_checks(now))
-        processed += len(prompts.emit_midday_checks(now))
-        processed += len(prompts.emit_eod_checks(now))
-        processed += len(escalation.sweep_task_followups(now))
-        processed += len(escalation.sweep_task_escalations(now))
+        for label, call in (
+            ("emit_readiness_checks", lambda: prompts.emit_readiness_checks(now)),
+            ("emit_start_checks", lambda: prompts.emit_start_checks(now)),
+            ("emit_midday_checks", lambda: prompts.emit_midday_checks(now)),
+            ("emit_eod_checks", lambda: prompts.emit_eod_checks(now)),
+            ("sweep_task_followups", lambda: escalation.sweep_task_followups(now)),
+            ("sweep_task_escalations", lambda: escalation.sweep_task_escalations(now)),
+        ):
+            try:
+                processed += len(call())
+            except Exception:
+                logger.exception("Daily task prompts pass: %s failed; continuing with the rest of the pass.", label)
+                db.rollback()
         return processed
 
 

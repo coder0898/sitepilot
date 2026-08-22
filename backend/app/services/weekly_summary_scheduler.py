@@ -109,22 +109,30 @@ def run_weekly_summary_pass() -> int:
         generated = 0
         projects = list(db.scalars(select(V2Project).where(V2Project.status == "active")).all())
         for project in projects:
-            if not _is_weekly_summary_due(db, project.id, now):
+            try:
+                if not _is_weekly_summary_due(db, project.id, now):
+                    continue
+                snapshot = generator.generate(project.id, "weekly", period_start, now, actor)
+                OutboxService(db).emit(
+                    event_type="report.weekly_summary_generated",
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    payload={"project_id": str(project.id), "report_snapshot_id": str(snapshot.id)},
+                    # Keyed on the snapshot's own id - unique per generate() call,
+                    # so a re-run of this same pass before the next 7-day window
+                    # opens (the due-check above already prevents that, but this
+                    # is the belt to that braces) can never double-emit for the
+                    # same report.
+                    idempotency_key=f"project:{project.id}:report.weekly_summary_generated:{snapshot.id}",
+                )
+                db.commit()
+            except Exception:
+                # One project's report failing (a generation bug, a
+                # transient DB error) must not stop every other active
+                # project from getting its weekly summary in this pass.
+                logger.exception("Weekly summary generation failed for project %s; skipping and continuing.", project.id)
+                db.rollback()
                 continue
-            snapshot = generator.generate(project.id, "weekly", period_start, now, actor)
-            OutboxService(db).emit(
-                event_type="report.weekly_summary_generated",
-                aggregate_type="project",
-                aggregate_id=project.id,
-                payload={"project_id": str(project.id), "report_snapshot_id": str(snapshot.id)},
-                # Keyed on the snapshot's own id - unique per generate() call,
-                # so a re-run of this same pass before the next 7-day window
-                # opens (the due-check above already prevents that, but this
-                # is the belt to that braces) can never double-emit for the
-                # same report.
-                idempotency_key=f"project:{project.id}:report.weekly_summary_generated:{snapshot.id}",
-            )
-            db.commit()
             generated += 1
         return generated
 

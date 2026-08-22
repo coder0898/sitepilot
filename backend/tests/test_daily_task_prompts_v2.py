@@ -78,6 +78,12 @@ class DailyTaskPromptsAndGateReminderTests(unittest.TestCase):
         self.project_id = uuid.uuid4()
         self.today = date(2026, 8, 20)
         self.now = datetime(2026, 8, 20, 9, 0, 0, tzinfo=timezone.utc)
+        # Inside the configured midday/EOD windows (settings.
+        # daily_task_prompts_midday_hour_utc/eod_hour_utc) - emit_midday_checks
+        # and emit_eod_checks only actually fire once `now.hour` reaches
+        # these, so tests exercising them use these instead of `self.now`.
+        self.midday_now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=timezone.utc)
+        self.eod_now = datetime(2026, 8, 20, 18, 0, 0, tzinfo=timezone.utc)
 
         with self.Session.begin() as session:
             session.add(User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True))
@@ -264,18 +270,26 @@ class DailyTaskPromptsAndGateReminderTests(unittest.TestCase):
         task_id = task.id
 
         with self.Session() as session:
-            result = DailyTaskPromptsService(session).emit_midday_checks(self.now)
+            result = DailyTaskPromptsService(session).emit_midday_checks(self.midday_now)
         self.assertEqual([t.id for t in result], [task_id])
 
         with self.Session() as session:
             self.assertEqual(len(self.outbox_events(session, "task.midday_check", task_id)), 1)
+
+    def test_midday_check_does_not_fire_outside_the_midday_window(self):
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", lifecycle_status="in_progress")
+
+        with self.Session() as session:
+            result = DailyTaskPromptsService(session).emit_midday_checks(self.now)
+        self.assertEqual(result, [])
 
     def test_planned_task_is_not_flagged_for_midday_check(self):
         with self.Session.begin() as session:
             self.make_task(session, "T001", lifecycle_status="planned")
 
         with self.Session() as session:
-            result = DailyTaskPromptsService(session).emit_midday_checks(self.now)
+            result = DailyTaskPromptsService(session).emit_midday_checks(self.midday_now)
         self.assertEqual(result, [])
 
     def test_midday_check_same_day_idempotent_next_day_emits_again(self):
@@ -284,14 +298,14 @@ class DailyTaskPromptsAndGateReminderTests(unittest.TestCase):
         task_id = task.id
 
         with self.Session() as session:
-            first = DailyTaskPromptsService(session).emit_midday_checks(self.now)
+            first = DailyTaskPromptsService(session).emit_midday_checks(self.midday_now)
         with self.Session() as session:
-            second = DailyTaskPromptsService(session).emit_midday_checks(self.now + timedelta(hours=2))
+            second = DailyTaskPromptsService(session).emit_midday_checks(self.midday_now + timedelta(hours=2))
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
 
         with self.Session() as session:
-            third = DailyTaskPromptsService(session).emit_midday_checks(self.now + timedelta(days=1))
+            third = DailyTaskPromptsService(session).emit_midday_checks(self.midday_now + timedelta(days=1))
         self.assertEqual([t.id for t in third], [task_id])
 
         with self.Session() as session:
@@ -305,18 +319,41 @@ class DailyTaskPromptsAndGateReminderTests(unittest.TestCase):
         task_id = task.id
 
         with self.Session() as session:
-            result = DailyTaskPromptsService(session).emit_eod_checks(self.now)
+            result = DailyTaskPromptsService(session).emit_eod_checks(self.eod_now)
         self.assertEqual([t.id for t in result], [task_id])
 
         with self.Session() as session:
             self.assertEqual(len(self.outbox_events(session, "task.eod_check", task_id)), 1)
+
+    def test_eod_check_does_not_fire_outside_the_eod_window(self):
+        with self.Session.begin() as session:
+            self.make_task(session, "T001", lifecycle_status="in_progress")
+
+        with self.Session() as session:
+            result = DailyTaskPromptsService(session).emit_eod_checks(self.now)
+        self.assertEqual(result, [])
+
+    def test_midday_and_eod_checks_never_both_fire_in_the_same_pass(self):
+        with self.Session.begin() as session:
+            task = self.make_task(session, "T001", lifecycle_status="in_progress")
+        task_id = task.id
+
+        # Any single instant is either before the midday window, inside the
+        # midday window, or inside the EOD window - never inside both at
+        # once, so a single pass at self.midday_now can only ever emit the
+        # midday check, and a single pass at self.eod_now only the EOD one.
+        with self.Session() as session:
+            midday_result = DailyTaskPromptsService(session).emit_midday_checks(self.midday_now)
+            eod_result_during_midday = DailyTaskPromptsService(session).emit_eod_checks(self.midday_now)
+        self.assertEqual([t.id for t in midday_result], [task_id])
+        self.assertEqual(eod_result_during_midday, [])
 
     def test_completed_task_is_not_flagged_for_eod_check(self):
         with self.Session.begin() as session:
             self.make_task(session, "T001", lifecycle_status="completed")
 
         with self.Session() as session:
-            result = DailyTaskPromptsService(session).emit_eod_checks(self.now)
+            result = DailyTaskPromptsService(session).emit_eod_checks(self.eod_now)
         self.assertEqual(result, [])
 
     def test_eod_check_same_day_idempotent_next_day_emits_again(self):
@@ -325,14 +362,14 @@ class DailyTaskPromptsAndGateReminderTests(unittest.TestCase):
         task_id = task.id
 
         with self.Session() as session:
-            first = DailyTaskPromptsService(session).emit_eod_checks(self.now)
+            first = DailyTaskPromptsService(session).emit_eod_checks(self.eod_now)
         with self.Session() as session:
-            second = DailyTaskPromptsService(session).emit_eod_checks(self.now + timedelta(hours=8))
+            second = DailyTaskPromptsService(session).emit_eod_checks(self.eod_now + timedelta(hours=2))
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
 
         with self.Session() as session:
-            third = DailyTaskPromptsService(session).emit_eod_checks(self.now + timedelta(days=1))
+            third = DailyTaskPromptsService(session).emit_eod_checks(self.eod_now + timedelta(days=1))
         self.assertEqual([t.id for t in third], [task_id])
 
         with self.Session() as session:

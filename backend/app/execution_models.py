@@ -721,13 +721,17 @@ class EscalationTracking(Base):
     explicit `resolved_at` is harmless.
 
     Only one OPEN row (`resolved_at is null`) may exist per (entity_type,
-    entity_id, stage) - enforced by a PARTIAL unique index in the migration
+    entity_id, stage) - enforced by a PARTIAL unique index
     (`uq_v2_escalation_tracking_entity_stage_open`, `where resolved_at is
     null`), not a table-wide `UniqueConstraint` here: an entity that
     escalates, resolves, and later stalls again must be able to get a second
-    row for the same stage. Same "DB-level partial index, service-layer
-    check enforces it in SQLite tests" split already used by
-    `TaskSupportAssignment`'s `uq_v2_task_support_assignments_active_task_employee`.
+    row for the same stage. Mirrored below the same way
+    `MessageDelivery.uq_v2_message_deliveries_provider_message_id` mirrors
+    its own partial unique index, so both Postgres and the SQLite test
+    harness enforce it - `EscalationService`'s own open-row check
+    (`_has_open_tracking`) is the first line of defense, and
+    `_commit_new_tracking` treats the `IntegrityError` this index raises on
+    a lost race as a benign no-op rather than a crash.
     """
 
     __tablename__ = "escalation_tracking"
@@ -735,6 +739,12 @@ class EscalationTracking(Base):
         CheckConstraint("entity_type in ('task', 'project_external_approval')", name="ck_v2_escalation_tracking_entity_type"),
         CheckConstraint("stage in ('followup', 'admin_escalation')", name="ck_v2_escalation_tracking_stage"),
         Index("ix_v2_escalation_tracking_entity", "entity_type", "entity_id"),
+        Index(
+            "uq_v2_escalation_tracking_entity_stage_open", "entity_type", "entity_id", "stage",
+            unique=True,
+            postgresql_where=text("resolved_at is null"),
+            sqlite_where=text("resolved_at is null"),
+        ),
         {"schema": V2_SCHEMA},
     )
 

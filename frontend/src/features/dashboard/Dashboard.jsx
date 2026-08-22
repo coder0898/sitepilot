@@ -79,7 +79,7 @@ export function Dashboard({ initialUser, onLogout }) {
       notice={notice}
       onClearNotice={() => setNotice("")}
     >
-      <DashboardTab tab={tab} loading={loading} data={data} user={user} action={action} onOpenProject={openProject} />
+      <DashboardTab tab={tab} loading={loading} data={data} user={user} action={action} onOpenProject={openProject} onRefresh={refresh} />
     </AppLayout>
   );
 }

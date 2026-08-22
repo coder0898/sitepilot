@@ -33,14 +33,24 @@ def run_gate_reminder_pass() -> int:
     pass, matching `daily_task_prompts_scheduler.py`'s own discipline.
     Returns the total number of approvals that had an event emitted across
     all three calls.
+
+    Each call is isolated from the others: one raising is logged and
+    skipped rather than aborting the remaining calls in the same tick.
     """
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         escalation = EscalationService(db)
         processed = 0
-        processed += len(escalation.emit_gate_due_reminders(now))
-        processed += len(escalation.sweep_approval_followups(now))
-        processed += len(escalation.sweep_approval_escalations(now))
+        for label, call in (
+            ("emit_gate_due_reminders", lambda: escalation.emit_gate_due_reminders(now)),
+            ("sweep_approval_followups", lambda: escalation.sweep_approval_followups(now)),
+            ("sweep_approval_escalations", lambda: escalation.sweep_approval_escalations(now)),
+        ):
+            try:
+                processed += len(call())
+            except Exception:
+                logger.exception("Gate reminder pass: %s failed; continuing with the rest of the pass.", label)
+                db.rollback()
         return processed
 
 

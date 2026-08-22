@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { adminVisibilityApi } from "../../api/adminVisibilityApi";
-import { EmptyState, LoadingSpinner, Pill } from "../../components/ui";
+import { EmptyState, LoadingSpinner, Pill, RefreshButton } from "../../components/ui";
 import { cn } from "../../utils/cn";
 import { relativeAge } from "../../utils/format";
 import { paginationItems } from "../../utils/pagination";
@@ -219,6 +219,7 @@ export function AdminProjectsOverview({ onOpenProject }) {
             <span className="mt-2 block text-sm text-slate-500">Cross-project performance, status, and activity overview</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <RefreshButton loading={loading} onClick={load}/>
             <div className="relative">
               <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search projects..."

@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   UsersRound,
 } from "lucide-react";
-import { Button, Input, Pill } from "../../components/ui";
+import { Button, Input, Pill, RefreshButton } from "../../components/ui";
 import { usersApi } from "../../api/usersApi";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
@@ -43,7 +43,7 @@ function EmptyState() {
   return <div className="grid place-items-center px-5 py-16 text-center"><span className="grid size-14 place-items-center rounded-[20px] bg-slate-100 text-slate-400"><UsersRound size={25}/></span><h3 className="mt-4 font-black text-slate-900">No matching identities</h3><p className="mt-1 max-w-xs text-sm leading-6 text-slate-500">Try a different name, email, or role filter.</p></div>;
 }
 
-function AccessDirectory({ data, user, action }) {
+function AccessDirectory({ data, user, action, onRefresh }) {
   const users = data.users || [];
   const catalog = data.access_catalog || [];
   const manageableRoles = data.manageable_roles || [];
@@ -70,7 +70,7 @@ function AccessDirectory({ data, user, action }) {
       <div className="absolute -right-20 -top-28 size-72 rounded-full border-[52px] border-blue-500/10"/>
       <div className="relative flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
         <div><p className="text-xs font-black uppercase tracking-[.2em] text-blue-300">Identity and access</p><h1 className="mt-2 text-3xl font-black tracking-[-.04em] sm:text-4xl">Users & Access</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-blue-100/70">One auditable directory for employee identity, fixed role boundaries, and account status.</p></div>
-        <Pill tone="blue">Approval-gated onboarding</Pill>
+        <div className="flex flex-wrap items-center gap-2"><Pill tone="blue">Approval-gated onboarding</Pill>{onRefresh && <RefreshButton onClick={onRefresh}/>}</div>
       </div>
     </section>
 

@@ -79,7 +79,14 @@ def run_meeting_reminder_pass() -> int:
         for broadcast in due:
             if broadcast.scheduled_at is None or _aware(broadcast.scheduled_at) > now:
                 continue
-            send_scheduled_broadcast(db, actor, broadcast)
+            try:
+                send_scheduled_broadcast(db, actor, broadcast)
+            except Exception:
+                # One broadcast failing to send must not stop every other
+                # due broadcast in this pass from going out.
+                logger.exception("Failed to send scheduled broadcast %s; skipping and continuing.", broadcast.id)
+                db.rollback()
+                continue
             sent += 1
         return sent
 

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -16,8 +17,34 @@ from app.services.outbox_scheduler import start_dispatcher, stop_dispatcher
 from app.services.weekly_summary_scheduler import start_weekly_summary_scheduler, stop_weekly_summary_scheduler
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup, in the same order the old `@app.on_event("startup")` hooks
+    # ran in (registration order == execution order for that decorator):
+    # seed data first, then each background scheduler.
+    with SessionLocal() as db:
+        ensure_seed_data(db)
+    start_dispatcher(app)
+    start_retention_scheduler(app)
+    start_daily_task_prompts_scheduler(app)
+    start_gate_reminder_scheduler(app)
+    start_weekly_summary_scheduler(app)
+    start_meeting_reminder_scheduler(app)
+
+    yield
+
+    # Shutdown, in the same order the old `@app.on_event("shutdown")` hooks
+    # ran in.
+    await stop_dispatcher(app)
+    await stop_retention_scheduler(app)
+    await stop_daily_task_prompts_scheduler(app)
+    await stop_gate_reminder_scheduler(app)
+    await stop_weekly_summary_scheduler(app)
+    await stop_meeting_reminder_scheduler(app)
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="SiteOps API")
+    app = FastAPI(title="SiteOps API", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -57,71 +84,6 @@ def create_app() -> FastAPI:
     app.include_router(dependencies_v2.router)
     app.include_router(templates_v2.router)
     app.include_router(broadcasts.router)
-
-    @app.on_event("startup")
-    def startup() -> None:
-        with SessionLocal() as db:
-            ensure_seed_data(db)
-
-    # U3 (R18): start the outbox dispatcher. Separate from the seed hook
-    # above because it must be async - `asyncio.create_task` needs a running
-    # event loop - and because the two have nothing to do with each other.
-    @app.on_event("startup")
-    async def start_outbox_dispatcher() -> None:
-        start_dispatcher(app)
-
-    @app.on_event("shutdown")
-    async def stop_outbox_dispatcher() -> None:
-        await stop_dispatcher(app)
-
-    # Same rationale as the outbox dispatcher above: async startup task,
-    # started/stopped alongside it but independent of it.
-    @app.on_event("startup")
-    async def start_evidence_retention_scheduler() -> None:
-        start_retention_scheduler(app)
-
-    @app.on_event("shutdown")
-    async def stop_evidence_retention_scheduler() -> None:
-        await stop_retention_scheduler(app)
-
-    # Plan Phase 6 (second half): same rationale as the outbox dispatcher
-    # above - async startup task, started/stopped alongside it but
-    # independent of it.
-    @app.on_event("startup")
-    async def start_daily_task_prompts() -> None:
-        start_daily_task_prompts_scheduler(app)
-
-    @app.on_event("shutdown")
-    async def stop_daily_task_prompts() -> None:
-        await stop_daily_task_prompts_scheduler(app)
-
-    @app.on_event("startup")
-    async def start_gate_reminder() -> None:
-        start_gate_reminder_scheduler(app)
-
-    @app.on_event("shutdown")
-    async def stop_gate_reminder() -> None:
-        await stop_gate_reminder_scheduler(app)
-
-    # Plan Phase 8: same rationale as the outbox dispatcher above - async
-    # startup task, started/stopped alongside it but independent of it.
-    @app.on_event("startup")
-    async def start_weekly_summary() -> None:
-        start_weekly_summary_scheduler(app)
-
-    @app.on_event("shutdown")
-    async def stop_weekly_summary() -> None:
-        await stop_weekly_summary_scheduler(app)
-
-    # Plan Phase 9: same rationale as the outbox dispatcher above - async
-    # startup task, started/stopped alongside it but independent of it.
-    @app.on_event("startup")
-    async def start_meeting_reminder() -> None:
-        start_meeting_reminder_scheduler(app)
-
-    @app.on_event("shutdown")
-    async def stop_meeting_reminder() -> None:
-        await stop_meeting_reminder_scheduler(app)
 
     return app
 

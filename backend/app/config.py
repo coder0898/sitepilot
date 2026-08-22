@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     # than once a day harmless - it just means a task's prompt fires closer
     # to whichever hour it first becomes eligible.
     daily_task_prompts_interval_seconds: float = 3600.0
+    # UTC hour bounds for `DailyTaskPromptsService.emit_midday_checks`/
+    # `emit_eod_checks` - without these, both checks queried the identical
+    # "in progress" condition with no time-of-day gating, so an hourly tick
+    # could fire the "midday" and "end-of-day" prompts back-to-back at any
+    # hour. Midday must be strictly before EOD; the checks below use
+    # `[midday, eod)` for the midday window and `[eod, 24)` for EOD.
+    daily_task_prompts_midday_hour_utc: int = 12
+    daily_task_prompts_eod_hour_utc: int = 18
     # Plan Phase 6 (second half): the gate due-date reminder + approval-side
     # escalation sweep (`gate_reminder_scheduler.py`). Same enabled-by-
     # default rationale as above.
