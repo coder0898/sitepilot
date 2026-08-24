@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: siteops-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Free plan sleeps after ~15 min idle, which kills the in-process
+    # schedulers in backend/app/main.py (daily task prompts, gate/meeting
+    # reminders, weekly summaries, evidence retention, outbox dispatch) and
+    # breaks the WhatsApp inbound webhook. Must stay on an always-on plan.
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Single disk backs both upload dirs via UPLOAD_DIR/EVIDENCE_UPLOAD_DIR
+    # below - Render services only support one persistent disk each.
+    disk:
+      name: siteops-data
+      mountPath: /app/data
+      sizeGB: 5
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: UPLOAD_DIR
+        value: data/uploads/task-proofs
+      - key: EVIDENCE_UPLOAD_DIR
+        value: data/evidence_storage
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_API_VERSION
+        value: v21.0
+      - key: WHATSAPP_WEBHOOK_SECRET
+        sync: false
+      - key: BOOTSTRAP_SUPER_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: MIGRATION_TEMP_PASSWORD
+        sync: false
