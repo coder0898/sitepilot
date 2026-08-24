@@ -9,7 +9,9 @@ services:
     # reminders, weekly summaries, evidence retention, outbox dispatch) and
     # breaks the WhatsApp inbound webhook. Must stay on an always-on plan.
     plan: starter
-    region: oregon
+    # Matches the Supabase project's ap-south-1 (Mumbai) region - Singapore
+    # is Render's closest region, keeping backend<->DB latency low.
+    region: singapore
     healthCheckPath: /api/health
     autoDeploy: true
     # Single disk backs both upload dirs via UPLOAD_DIR/EVIDENCE_UPLOAD_DIR
