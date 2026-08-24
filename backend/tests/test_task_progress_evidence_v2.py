@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import shutil
-import tempfile
 import unittest
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -73,9 +72,14 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.evidence_dir = tempfile.mkdtemp(prefix="siteops-evidence-test-")
-        self._original_evidence_dir = settings.evidence_upload_dir
-        settings.evidence_upload_dir = self.evidence_dir
+        self.evidence_store: dict[str, bytes] = {}
+        self._storage_patches = [
+            patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
+            patch("app.services.evidence_storage.read", side_effect=self.evidence_store.get),
+            patch("app.services.evidence_storage.delete", side_effect=lambda key: self.evidence_store.pop(key, None)),
+        ]
+        for storage_patch in self._storage_patches:
+            storage_patch.start()
 
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -142,8 +146,8 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.engine.dispose()
-        settings.evidence_upload_dir = self._original_evidence_dir
-        shutil.rmtree(self.evidence_dir, ignore_errors=True)
+        for storage_patch in self._storage_patches:
+            storage_patch.stop()
 
     def act_as(self, user: User) -> None:
         self._current_actor = user
@@ -323,12 +327,11 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
             self.assertEqual(len(files), 1)
             evidence_rows = session.scalars(select(TaskEvidence)).all()
             self.assertEqual(len(evidence_rows), 1)
-            stored_path = Path(self.evidence_dir) / files[0].storage_key
-            self.assertTrue(stored_path.is_file())
-            # Bytes on disk are the compressed JPEG re-encode, not a byte-
+            self.assertIn(files[0].storage_key, self.evidence_store)
+            # Stored bytes are the compressed JPEG re-encode, not a byte-
             # for-byte copy of the uploaded PNG.
-            self.assertNotEqual(stored_path.read_bytes(), TINY_PNG_BYTES)
-            self.assertTrue(stored_path.name.endswith(".jpg"))
+            self.assertNotEqual(self.evidence_store[files[0].storage_key], TINY_PNG_BYTES)
+            self.assertTrue(files[0].storage_key.endswith(".jpg"))
 
     def test_submit_text_only_progress_without_evidence_succeeds(self):
         project = self.activate_project()
@@ -525,12 +528,28 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
         outsider_download = self.client.get(f"/api/v2/projects/{project['id']}/tasks/{task.id}/evidence/{file_id}")
         self.assertEqual(outsider_download.status_code, 403, outsider_download.text)
 
-    def test_public_uploads_mount_never_serves_evidence(self):
-        """Sanity check that the evidence storage directory used by the
-        service is not the same directory backing the public `/uploads`
-        StaticFiles mount."""
-        self.assertNotEqual(Path(self.evidence_dir).resolve(), Path("uploads").resolve())
-        self.assertNotEqual(Path(self.evidence_dir).resolve(), Path(settings.upload_dir).resolve())
+    def test_evidence_never_lands_on_local_disk(self):
+        """Sanity check that submitting evidence never touches the local
+        filesystem at all - it goes straight to `evidence_storage`'s
+        Supabase Storage bucket, never a path under the public `/uploads`
+        StaticFiles mount (settings.upload_dir)."""
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+
+        self.act_as_supervisor()
+        response = self.submit_progress(
+            project["id"], task.id, note="Evidence for disk-isolation check.",
+            files={"evidence": ("bay3.png", TINY_PNG_BYTES, "image/png")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        with self.Session() as session:
+            file_object = session.scalars(select(FileObject)).first()
+        storage_key = file_object.storage_key
+
+        upload_dir = Path(settings.upload_dir)
+        if upload_dir.is_dir():
+            self.assertEqual(list(upload_dir.rglob(f"*{storage_key}*")), [])
 
 
 if __name__ == "__main__":

@@ -9,12 +9,9 @@ it is safe to re-run, and that one bad pass does not end the schedule.
 from __future__ import annotations
 
 import asyncio
-import shutil
-import tempfile
 import unittest
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -48,9 +45,14 @@ def compile_jsonb_sqlite(_type, _compiler, **_kw):
 
 class EvidenceRetentionScheduleTests(unittest.TestCase):
     def setUp(self):
-        self.evidence_dir = tempfile.mkdtemp(prefix="siteops-retention-schedule-test-")
-        self._original_evidence_dir = settings.evidence_upload_dir
-        settings.evidence_upload_dir = self.evidence_dir
+        self.evidence_store: dict[str, bytes] = {}
+        self._storage_patches = [
+            patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
+            patch("app.services.evidence_storage.read", side_effect=self.evidence_store.get),
+            patch("app.services.evidence_storage.delete", side_effect=lambda key: self.evidence_store.pop(key, None)),
+        ]
+        for storage_patch in self._storage_patches:
+            storage_patch.start()
 
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -82,12 +84,11 @@ class EvidenceRetentionScheduleTests(unittest.TestCase):
 
     def tearDown(self):
         self.engine.dispose()
-        settings.evidence_upload_dir = self._original_evidence_dir
-        shutil.rmtree(self.evidence_dir, ignore_errors=True)
+        for storage_patch in self._storage_patches:
+            storage_patch.stop()
 
     def _seed(self) -> None:
-        self.file_path = Path(self.evidence_dir) / "expired-evidence.jpg"
-        self.file_path.write_bytes(b"fake evidence bytes")
+        self.evidence_store["expired-evidence.jpg"] = b"fake evidence bytes"
 
         with self.Session.begin() as session:
             session.add(User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True))
@@ -131,10 +132,10 @@ class EvidenceRetentionScheduleTests(unittest.TestCase):
     # ---- the pass itself -------------------------------------------------
 
     def test_a_pass_purges_expired_evidence(self):
-        self.assertTrue(self.file_path.is_file())
+        self.assertIn("expired-evidence.jpg", self.evidence_store)
         purged = evidence_retention_scheduler.run_retention_pass()
         self.assertEqual(purged, 1)
-        self.assertFalse(self.file_path.is_file())
+        self.assertNotIn("expired-evidence.jpg", self.evidence_store)
 
     def test_a_second_pass_after_a_purge_is_a_safe_no_op(self):
         evidence_retention_scheduler.run_retention_pass()
@@ -144,7 +145,7 @@ class EvidenceRetentionScheduleTests(unittest.TestCase):
         with self.Session.begin() as session:
             session.get(V2Project, self.project_id).completed_at = datetime.now(timezone.utc)
         self.assertEqual(evidence_retention_scheduler.run_retention_pass(), 0)
-        self.assertTrue(self.file_path.is_file())
+        self.assertIn("expired-evidence.jpg", self.evidence_store)
 
 
 class EvidenceRetentionLoopTests(unittest.IsolatedAsyncioTestCase):

@@ -5,9 +5,9 @@ against an execution-layer task, optionally with one evidence file. It never
 changes `Task.lifecycle_status` itself - that stays U2's job, via a later
 `submitted` transition that references this evidence.
 
-Evidence bytes are written to `settings.evidence_upload_dir`, a directory
-deliberately separate from `settings.upload_dir` and NEVER passed to
-FastAPI's `StaticFiles` (see backend/app/main.py) - so a `file_objects.
+Evidence bytes are written to the private `evidence` bucket in Supabase
+Storage (see `app.services.evidence_storage`), never to a directory passed
+to FastAPI's `StaticFiles` (see backend/app/main.py) - so a `file_objects.
 storage_key` alone is never a reachable public URL. The only read path is
 `TaskProgressService.get_evidence_file`, which re-checks the requester's
 project access before returning bytes.
@@ -17,16 +17,15 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.execution_models import FileObject, Task, TaskEvidence, TaskProgressUpdate, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services import evidence_storage
 from app.services.evidence_image import compress_evidence_image
 from app.services.outbox import OutboxService
 
@@ -157,9 +156,7 @@ class TaskProgressService:
 
             extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
             storage_key = f"{task.id}-{uuid.uuid4().hex}{extension}"
-            storage_dir = Path(settings.evidence_upload_dir)
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            (storage_dir / storage_key).write_bytes(evidence_bytes)
+            evidence_storage.write(storage_key, evidence_bytes, evidence_content_type)
 
             checksum = hashlib.sha256(evidence_bytes).hexdigest()
             file_object = FileObject(
@@ -239,8 +236,8 @@ class TaskProgressService:
         if not file_object:
             raise HTTPException(404, "Evidence file not found for this task.")
 
-        file_path = Path(settings.evidence_upload_dir) / file_object.storage_key
-        if not file_path.is_file():
+        data = evidence_storage.read(file_object.storage_key)
+        if data is None:
             raise HTTPException(404, "Evidence file is no longer available.")
 
-        return file_object, file_path.read_bytes()
+        return file_object, data

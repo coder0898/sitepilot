@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import ast
 import inspect
-import shutil
-import tempfile
 import unittest
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,7 +16,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
-from app.config import settings
 from app.database import get_db
 from app.execution_models import BaselineTask, FileObject, OutboxEvent, ProjectBaseline, Task, TaskDependency, ProjectExternalApproval, ProjectExternalApprovalTask
 from app.models import EmployeeProfile, User, UserRole
@@ -69,9 +67,14 @@ class VendorActivityApiTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.evidence_dir = tempfile.mkdtemp(prefix="siteops-vendor-activity-test-")
-        self._original_evidence_dir = settings.evidence_upload_dir
-        settings.evidence_upload_dir = self.evidence_dir
+        self.evidence_store: dict[str, bytes] = {}
+        self._storage_patches = [
+            patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
+            patch("app.services.evidence_storage.read", side_effect=self.evidence_store.get),
+            patch("app.services.evidence_storage.delete", side_effect=lambda key: self.evidence_store.pop(key, None)),
+        ]
+        for storage_patch in self._storage_patches:
+            storage_patch.start()
 
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -139,8 +142,8 @@ class VendorActivityApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.engine.dispose()
-        settings.evidence_upload_dir = self._original_evidence_dir
-        shutil.rmtree(self.evidence_dir, ignore_errors=True)
+        for storage_patch in self._storage_patches:
+            storage_patch.stop()
 
     def act_as(self, user: User) -> None:
         self._current_actor = user

@@ -6,8 +6,9 @@ gate is assigned to attach doc/photo evidence and move it from `assigned` to
 reject path (U5) loops the gate back to `assigned` rather than ending it.
 
 Evidence handling mirrors `task_progress.py`'s `TaskProgressService` in full:
-same MIME allowlist and size cap, same `settings.evidence_upload_dir` disk
-location (never passed to FastAPI's `StaticFiles`), same sha256 checksum on
+same MIME allowlist and size cap, same private Supabase Storage `evidence`
+bucket via `app.services.evidence_storage` (never a path passed to FastAPI's
+`StaticFiles`), same sha256 checksum on
 `FileObject`, and the same authenticated re-check-then-read-bytes shape for
 `get_evidence_file` - except scoped through this gate's own submission/
 evidence tables rather than task_progress_updates/task_evidence, and joined
@@ -27,13 +28,11 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.execution_models import (
     FileObject,
     ProjectExternalApproval,
@@ -42,6 +41,7 @@ from app.execution_models import (
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.services import evidence_storage
 from app.services.evidence_image import compress_evidence_image
 from app.services.outbox import OutboxService
 
@@ -148,9 +148,7 @@ class ProjectGateSubmissionService:
 
             extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
             storage_key = f"{approval.id}-{uuid.uuid4().hex}{extension}"
-            storage_dir = Path(settings.evidence_upload_dir)
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            (storage_dir / storage_key).write_bytes(evidence_bytes)
+            evidence_storage.write(storage_key, evidence_bytes, evidence_content_type)
 
             checksum = hashlib.sha256(evidence_bytes).hexdigest()
             file_object = FileObject(
@@ -260,8 +258,8 @@ class ProjectGateSubmissionService:
         if not file_object:
             raise HTTPException(404, "Evidence file not found for this external approval.")
 
-        file_path = Path(settings.evidence_upload_dir) / file_object.storage_key
-        if not file_path.is_file():
+        data = evidence_storage.read(file_object.storage_key)
+        if data is None:
             raise HTTPException(404, "Evidence file is no longer available.")
 
-        return file_object, file_path.read_bytes()
+        return file_object, data

@@ -50,7 +50,11 @@ Set-SupabaseMigrationsEnabled $false
 try {
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $supabaseStartOutput = & npx supabase start -x realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor,postgrest 2>&1
+    # storage-api is NOT excluded: app.services.evidence_storage uploads
+    # task/gate/vendor-activity evidence to it (bucket created by
+    # supabase/migrations/202608240001_v2_evidence_storage_bucket.sql), so
+    # local dev needs the real thing, not a stub.
+    $supabaseStartOutput = & npx supabase start -x realtime,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor,postgrest 2>&1
     $supabaseStartExitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorActionPreference
     if ($supabaseStartExitCode -ne 0) {

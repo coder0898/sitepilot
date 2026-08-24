@@ -13,7 +13,6 @@ task through this mechanism (R4); see
 
 import io
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -21,9 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user, require_roles
-from app.config import settings
 from app.database import get_db
 from app.execution_models import FileObject, Task
+from app.services import evidence_storage
 from app.models import User, UserRole
 from app.routes.projects_v2 import get_project
 from app.schemas.vendor_assignment import (
@@ -425,13 +424,13 @@ def download_vendor_activity_evidence(
     if not file_object:
         raise HTTPException(404, "Evidence file not found for this vendor activity event.")
 
-    file_path = Path(settings.evidence_upload_dir) / file_object.storage_key
-    if not file_path.is_file():
+    data = evidence_storage.read(file_object.storage_key)
+    if data is None:
         raise HTTPException(404, "Evidence file is no longer available.")
 
     safe_filename = file_object.original_filename.replace('"', "").replace("\\", "").replace("\n", "").replace("\r", "")
     return StreamingResponse(
-        io.BytesIO(file_path.read_bytes()),
+        io.BytesIO(data),
         media_type=file_object.mime_type,
         headers={
             "Content-Disposition": f'attachment; filename="{safe_filename}"',

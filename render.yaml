@@ -4,22 +4,20 @@ services:
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    # Free plan sleeps after ~15 min idle, which kills the in-process
+    # Free plan sleeps after ~15 min idle, which pauses the in-process
     # schedulers in backend/app/main.py (daily task prompts, gate/meeting
     # reminders, weekly summaries, evidence retention, outbox dispatch) and
-    # breaks the WhatsApp inbound webhook. Must stay on an always-on plan.
-    plan: starter
+    # slows the WhatsApp inbound webhook's first response after a sleep.
+    # Mitigate with an external keep-alive hitting /api/health every
+    # ~10 minutes (e.g. cron-job.org, UptimeRobot). No persistent disk is
+    # needed: evidence lives in Supabase Storage (app.services.evidence_storage),
+    # not on this container's filesystem.
+    plan: free
     # Matches the Supabase project's ap-south-1 (Mumbai) region - Singapore
     # is Render's closest region, keeping backend<->DB latency low.
     region: singapore
     healthCheckPath: /api/health
     autoDeploy: true
-    # Single disk backs both upload dirs via UPLOAD_DIR/EVIDENCE_UPLOAD_DIR
-    # below - Render services only support one persistent disk each.
-    disk:
-      name: siteops-data
-      mountPath: /app/data
-      sizeGB: 5
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -33,10 +31,6 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
-      - key: UPLOAD_DIR
-        value: data/uploads/task-proofs
-      - key: EVIDENCE_UPLOAD_DIR
-        value: data/evidence_storage
       - key: WHATSAPP_ACCESS_TOKEN
         sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID

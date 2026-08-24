@@ -2,18 +2,16 @@
 
 Uses the real `TaskProgressService.submit_progress` / `ProjectGateSubmission
 Service.submit` paths to create evidence, so what is under test is the
-actual on-disk files those units write in production - not a hand-built
+actual stored bytes those units write in production - not a hand-built
 `FileObject` row that might not match what they actually produce.
 """
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 import unittest
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -22,7 +20,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import template_models  # noqa: F401  - registers v2_template_* tables for V2Project's nullable FK.
-from app.config import settings
 from app.execution_models import (
     FileObject,
     OutboxEvent,
@@ -57,9 +54,14 @@ TINY_PNG_BYTES = (
 
 class EvidenceRetentionSweepTests(unittest.TestCase):
     def setUp(self):
-        self.evidence_dir = tempfile.mkdtemp(prefix="siteops-retention-test-")
-        self._original_evidence_dir = settings.evidence_upload_dir
-        settings.evidence_upload_dir = self.evidence_dir
+        self.evidence_store: dict[str, bytes] = {}
+        self._storage_patches = [
+            patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
+            patch("app.services.evidence_storage.read", side_effect=self.evidence_store.get),
+            patch("app.services.evidence_storage.delete", side_effect=lambda key: self.evidence_store.pop(key, None)),
+        ]
+        for storage_patch in self._storage_patches:
+            storage_patch.start()
 
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -89,8 +91,8 @@ class EvidenceRetentionSweepTests(unittest.TestCase):
 
     def tearDown(self):
         self.engine.dispose()
-        settings.evidence_upload_dir = self._original_evidence_dir
-        shutil.rmtree(self.evidence_dir, ignore_errors=True)
+        for storage_patch in self._storage_patches:
+            storage_patch.stop()
 
     def admin_user(self) -> User:
         return User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
@@ -184,63 +186,58 @@ class EvidenceRetentionSweepTests(unittest.TestCase):
 
     def test_evidence_past_the_retention_window_is_purged(self):
         file_object = self._submit_task_evidence()
-        file_path = Path(self.evidence_dir) / file_object.storage_key
-        self.assertTrue(file_path.is_file())
+        self.assertIn(file_object.storage_key, self.evidence_store)
 
         self._set_completed_at(datetime.now(timezone.utc) - timedelta(days=200))
 
         db = self.Session()
         self.assertEqual(purge_expired_evidence(db, retention_months=6), 1)
-        self.assertFalse(file_path.is_file())
+        self.assertNotIn(file_object.storage_key, self.evidence_store)
 
         # The record survives - only the bytes are gone, so
-        # get_evidence_file's existing is_file() check answers "no longer
-        # available" for it with no route change.
+        # get_evidence_file's existing `evidence_storage.read(...) is None`
+        # check answers "no longer available" for it with no route change.
         self.assertIsNotNone(db.get(FileObject, file_object.id))
         self.assertIsNotNone(db.get(V2Project, self.project_id).evidence_purged_at)
 
     def test_evidence_inside_the_retention_window_is_left_alone(self):
         file_object = self._submit_task_evidence()
-        file_path = Path(self.evidence_dir) / file_object.storage_key
 
         self._set_completed_at(datetime.now(timezone.utc) - timedelta(days=30))
 
         db = self.Session()
         self.assertEqual(purge_expired_evidence(db, retention_months=6), 0)
-        self.assertTrue(file_path.is_file())
+        self.assertIn(file_object.storage_key, self.evidence_store)
 
     def test_a_project_never_marked_complete_is_never_swept(self):
         # completed_at is None - the exact protection a delayed project (one
         # that overran target_handover_date but was never actually marked
         # 'completed') relies on.
         file_object = self._submit_task_evidence()
-        file_path = Path(self.evidence_dir) / file_object.storage_key
 
         db = self.Session()
         self.assertEqual(purge_expired_evidence(db, retention_months=6), 0)
-        self.assertTrue(file_path.is_file())
+        self.assertIn(file_object.storage_key, self.evidence_store)
 
     def test_an_active_project_is_never_swept_even_with_a_stale_completed_at(self):
         file_object = self._submit_task_evidence()
-        file_path = Path(self.evidence_dir) / file_object.storage_key
         self._set_completed_at(datetime.now(timezone.utc) - timedelta(days=200))
         with self.Session.begin() as session:
             session.get(V2Project, self.project_id).status = "active"
 
         db = self.Session()
         self.assertEqual(purge_expired_evidence(db, retention_months=6), 0)
-        self.assertTrue(file_path.is_file())
+        self.assertIn(file_object.storage_key, self.evidence_store)
 
     def test_gate_evidence_is_covered_by_the_sweep_too(self):
         file_object = self._make_gate_with_evidence()
-        file_path = Path(self.evidence_dir) / file_object.storage_key
-        self.assertTrue(file_path.is_file())
+        self.assertIn(file_object.storage_key, self.evidence_store)
 
         self._set_completed_at(datetime.now(timezone.utc) - timedelta(days=200))
 
         db = self.Session()
         self.assertEqual(purge_expired_evidence(db, retention_months=6), 1)
-        self.assertFalse(file_path.is_file())
+        self.assertNotIn(file_object.storage_key, self.evidence_store)
 
     def test_an_already_purged_project_is_not_rescanned(self):
         self._submit_task_evidence()

@@ -6,7 +6,8 @@
 delayed project have its still-in-use evidence swept while execution is
 ongoing.
 
-A purge deletes only the file bytes on disk. It deliberately leaves every
+A purge deletes only the file bytes from the `evidence` Supabase Storage
+bucket (see `app.services.evidence_storage`). It deliberately leaves every
 row alone: `FileObject` (filename/mime/size/checksum/uploader),
 `TaskEvidence` / `ProjectExternalApprovalEvidence` link rows,
 `TaskProgressUpdate` / `ProjectExternalApprovalSubmission` notes, and the
@@ -14,17 +15,16 @@ full `V2AuditEvent` trail. That is deliberate, not an oversight - it is
 what lets `TaskProgressService.get_evidence_file` and
 `ProjectGateSubmissionService.get_evidence_file` already answer "evidence
 file is no longer available" for a purged file with no route change at
-all: their existing `file_path.is_file()` check already handles bytes that
-used to exist and no longer do. So after a purge, the record that evidence
-existed, passed validation, and was approved/rejected survives - only the
-pixels are gone.
+all: their existing `evidence_storage.read(...) is None` check already
+handles bytes that used to exist and no longer do. So after a purge, the
+record that evidence existed, passed validation, and was approved/rejected
+survives - only the pixels are gone.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +39,7 @@ from app.execution_models import (
     TaskProgressUpdate,
 )
 from app.project_models import V2Project
+from app.services import evidence_storage
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,10 @@ def _project_evidence_file_ids(db: Session, project_id) -> set:
     return task_file_ids | gate_file_ids
 
 
-def _delete_file_bytes(storage_dir: Path, file_object: FileObject, project_id) -> None:
+def _delete_file_bytes(file_object: FileObject, project_id) -> None:
     try:
-        (storage_dir / file_object.storage_key).unlink(missing_ok=True)
-    except OSError:
+        evidence_storage.delete(file_object.storage_key)
+    except evidence_storage.EvidenceStorageError:
         logger.exception("Failed to delete evidence file %s for project %s.", file_object.id, project_id)
 
 
@@ -89,14 +90,13 @@ def purge_expired_evidence(db: Session, retention_months: int | None = None, now
     """
     months = retention_months if retention_months is not None else settings.evidence_retention_months
     current_time = now or datetime.now(timezone.utc)
-    storage_dir = Path(settings.evidence_upload_dir)
 
     projects = _eligible_projects(db, months, current_time)
     for project in projects:
         for file_id in _project_evidence_file_ids(db, project.id):
             file_object = db.get(FileObject, file_id)
             if file_object is not None:
-                _delete_file_bytes(storage_dir, file_object, project.id)
+                _delete_file_bytes(file_object, project.id)
 
         project.evidence_purged_at = current_time
         db.add(project)

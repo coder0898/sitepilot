@@ -9,7 +9,8 @@ the plan), and 0 or 1 evidence files.
 Evidence upload reuses `TaskProgressService`'s exact pattern (imported, not
 redefined): the `ALLOWED_EVIDENCE_MIME_TYPES` allowlist and
 `MAX_EVIDENCE_SIZE_BYTES` cap from `app.services.task_progress`, bytes
-written under `settings.evidence_upload_dir`, a sha256 checksum, and a
+written to the private Supabase Storage `evidence` bucket via
+`app.services.evidence_storage`, a sha256 checksum, and a
 `FileObject` row - then linked via `VendorActivityEvidence`, a dedicated
 join table, never a polymorphic entity_type/entity_id reference (mirrors
 `TaskEvidence`).
@@ -24,16 +25,15 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.execution_models import FileObject
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services import evidence_storage
 from app.services.task_progress import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES
 from app.vendor_models import TaskVendorAssignment, VendorActivityEvent, VendorActivityEvidence
 
@@ -129,9 +129,7 @@ class VendorActivityService:
 
             extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
             storage_key = f"{assignment.id}-{uuid.uuid4().hex}{extension}"
-            storage_dir = Path(settings.evidence_upload_dir)
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            (storage_dir / storage_key).write_bytes(evidence_bytes)
+            evidence_storage.write(storage_key, evidence_bytes, evidence_content_type)
 
             checksum = hashlib.sha256(evidence_bytes).hexdigest()
             file_object = FileObject(

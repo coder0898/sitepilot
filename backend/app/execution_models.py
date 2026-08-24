@@ -487,11 +487,12 @@ class TaskProgressUpdate(Base):
 
 
 class FileObject(Base):
-    """U3: metadata for one uploaded file. Bytes live on disk under
-    `settings.evidence_upload_dir` - a directory deliberately never passed
-    to StaticFiles (see backend/app/main.py) - keyed by `storage_key`. This
-    table never stores a public URL, only enough metadata for the
-    authenticated download route to locate and validate the file."""
+    """U3: metadata for one uploaded file. Bytes live in the private
+    Supabase Storage `evidence` bucket (see app.services.evidence_storage),
+    never a path passed to StaticFiles (see backend/app/main.py) - keyed by
+    `storage_key`. This table never stores a public URL, only enough
+    metadata for the authenticated download route to locate and validate
+    the file."""
 
     __tablename__ = "file_objects"
     __table_args__ = (

@@ -7,8 +7,9 @@ Pins `ProjectGateSubmissionService`:
 - Submission only fires from `assigned` - covers both a first submission and
   a resubmission after rejection, since decide() (U5) loops rejection back
   to `assigned` rather than ending it there.
-- Evidence bytes land on disk under `settings.evidence_upload_dir`, never a
-  public URL - `get_evidence_file` re-checks project access AND scopes the
+- Evidence bytes land in the private Supabase Storage `evidence` bucket via
+  `app.services.evidence_storage`, never a public URL - `get_evidence_file`
+  re-checks project access AND scopes the
   file through this approval's own submissions, so a file_id from a
   different approval/project can never be substituted (R7, the IDOR fix
   from doc review).
@@ -17,11 +18,10 @@ Pins `ProjectGateSubmissionService`:
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 import unittest
 import uuid
 from datetime import date, datetime, timezone
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, select
@@ -31,7 +31,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import template_models  # noqa: F401  - registers v2_template_* tables for V2Project's nullable FK.
-from app.config import settings
 from app.execution_models import (
     FileObject,
     OutboxEvent,
@@ -63,9 +62,14 @@ TINY_PNG_BYTES = (
 
 class ProjectGateSubmissionTests(unittest.TestCase):
     def setUp(self):
-        self.evidence_dir = tempfile.mkdtemp(prefix="siteops-gate-evidence-test-")
-        self._original_evidence_dir = settings.evidence_upload_dir
-        settings.evidence_upload_dir = self.evidence_dir
+        self.evidence_store: dict[str, bytes] = {}
+        self._storage_patches = [
+            patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
+            patch("app.services.evidence_storage.read", side_effect=self.evidence_store.get),
+            patch("app.services.evidence_storage.delete", side_effect=lambda key: self.evidence_store.pop(key, None)),
+        ]
+        for storage_patch in self._storage_patches:
+            storage_patch.start()
 
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -104,8 +108,8 @@ class ProjectGateSubmissionTests(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
-        settings.evidence_upload_dir = self._original_evidence_dir
-        shutil.rmtree(self.evidence_dir, ignore_errors=True)
+        for storage_patch in self._storage_patches:
+            storage_patch.stop()
 
     # ---- actors ---------------------------------------------------------
 
