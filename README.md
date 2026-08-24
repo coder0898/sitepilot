@@ -50,7 +50,54 @@ Other scripts:
 
 - For a fully clean database, run `npm run local:stop` then `npm run local:start` again (the script re-bootstraps Supabase and both migration sets from scratch).
 - Proof uploads are stored in Docker volume `siteops_uploads` and served from `/uploads` on the backend.
+- Task/gate/vendor-activity evidence is stored in the local Supabase Storage `evidence` bucket (started as part of `npx supabase start`), not on local disk - see `backend/app/services/evidence_storage.py`.
 - The React app auto-detects the current browser hostname and calls backend on the same hostname, port `8000` for backend.
+
+## Deploy
+
+Live environment:
+
+- Frontend: https://sitepilot-psi.vercel.app/
+- Backend: https://sitepilot-backend-f1q4.onrender.com (health check: `/api/health`)
+- Database/Auth/Storage: Supabase (hosted)
+
+### 1. Supabase
+
+1. Create a project at supabase.com.
+2. Bootstrap the baseline schema from `backend/`: `DATABASE_URL=<hosted connection string> alembic upgrade head`.
+3. Apply the domain schema: `npx supabase link --project-ref <ref>` then `npx supabase db push` (applies `supabase/migrations/*.sql`, including the private `evidence` Storage bucket).
+4. Import the authoritative 45-day template from `backend/`: `DATABASE_URL=<hosted connection string> python -m app.scripts.import_v2_template import --created-by-email <existing active Super Admin email>`. Verify with the same command's `verify` subcommand.
+
+`DATABASE_URL` for all of the above must use the **Session pooler** connection string (not Direct connection or Transaction pooler) with a `postgresql+psycopg://` scheme, e.g.:
+
+```
+postgresql+psycopg://postgres.<project-ref>:<url-encoded-password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
+### 2. Render (backend)
+
+Create a plain **Web Service** (not a Blueprint - Blueprint deploys can prompt for payment/billing details that a Web Service does not):
+
+- Runtime: Docker, Root Directory: `backend`, Branch: `master`
+- Region: match Supabase's project region for low latency (this project: Singapore, matching Supabase's `ap-south-1`)
+- Instance Type: Free
+- Health Check Path: `/api/health`
+- No persistent disk needed - evidence/uploads never touch local disk
+
+`render.yaml` documents the full set of environment variables this service expects (`DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`, `WHATSAPP_WEBHOOK_SECRET`, `BOOTSTRAP_SUPER_ADMIN_EMAIL`, `BOOTSTRAP_SUPER_ADMIN_PASSWORD`) - set the real values by hand in Render's dashboard; none of them belong in source control.
+
+Render's free plan spins the service down after ~15 minutes of no inbound traffic. That pauses the in-process schedulers in `backend/app/main.py` (daily task prompts, gate/meeting reminders, weekly summaries, evidence retention, outbox dispatch) and slows the WhatsApp inbound webhook's first response after a sleep. Point a free external keep-alive (e.g. cron-job.org, every ~10 minutes) at `/api/health` to keep it always warm.
+
+### 3. Vercel (frontend)
+
+- Import the repo, set **Root Directory** to `frontend` (monorepo - this can only be set in Vercel's project settings, not a config file).
+- Build environment variables: `VITE_API_BASE` (the Render URL above), `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`. Never put `SUPABASE_SECRET_KEY` here - a frontend build ships to every visitor's browser.
+
+### 4. Close the loop
+
+- Set `FRONTEND_URL` on Render to the real Vercel domain. It is not cosmetic - `app/routes/access_requests.py` uses it to build the links inside access-verification and password-reset emails, so leaving it as `http://localhost:3000` breaks those emails for real users.
+- `CORS_ORIGINS` is currently unused: `backend/app/main.py` hardcodes `allow_origins=["*"]` regardless of this setting.
+- Once `WHATSAPP_ACCESS_TOKEN`/`WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_WEBHOOK_SECRET` are set, register `<render-url>/api/v2/whatsapp/inbound` as the webhook URL in Meta's WhatsApp Cloud API app settings.
 
 ## Phase 2 release gate
 
