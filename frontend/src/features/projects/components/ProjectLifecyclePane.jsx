@@ -1,5 +1,5 @@
 import { ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { Alert, Button, Field, Input, Select } from "../../../components/ui";
 
@@ -24,6 +24,14 @@ export function ProjectLifecyclePane({ project, user, onChanged, onDeleted }) {
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  // project.status changes (e.g. after a successful transition, since this
+  // pane stays mounted and only `project` is reloaded) recompute `transitions`
+  // above - reset `target` so it can't keep pointing at a value that's no
+  // longer a valid transition for the new status.
+  useEffect(() => {
+    setTarget((TRANSITIONS[user.role]?.[project.status] || [])[0] || "");
+  }, [project.status, user.role]);
 
   async function restore(event) {
     event.preventDefault();

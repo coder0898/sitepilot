@@ -178,6 +178,96 @@ class TaskDelayOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+ReadinessDeclarationStatus = Literal["ready", "issue", "need_help"]
+
+
+class TaskReadinessDeclarationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: ReadinessDeclarationStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskReadinessDeclarationOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    project_id: uuid.UUID
+    declared_by: uuid.UUID
+    status: str
+    note: str | None
+    declared_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+AttendanceStatus = Literal["present", "absent"]
+
+
+class TaskAttendanceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    employee_id: uuid.UUID
+    status: AttendanceStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskAttendanceOut(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    project_id: uuid.UUID
+    employee_id: uuid.UUID
+    status: str
+    note: str | None
+    recorded_by: uuid.UUID
+    recorded_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskRescheduleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_planned_start_date: date
+    new_planned_end_date: date
+    # Optional at the schema layer, same shape as TaskStatusTransitionIn's
+    # `reason` - required-and-blank is enforced by TaskRescheduleService
+    # itself (mirrors task_lifecycle.py's transition() cancel-reason check),
+    # not here.
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class TaskRescheduleOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    baseline_id: uuid.UUID
+    original_code: str
+    title: str
+    task_kind: str | None
+    task_class: str | None
+    lifecycle_status: str
+    planned_start_date: date | None
+    planned_end_date: date | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TaskSupportAssignmentCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employee_id: uuid.UUID
@@ -196,6 +286,10 @@ class TaskSupportAssignmentEndIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason_code: str = Field(min_length=1, max_length=200)
     reason_detail: str | None = Field(default=None, max_length=2000)
+    # Optional atomic reassignment: TaskSupportAssignmentService.end_support
+    # already creates a replacement assignment in the same transaction when
+    # this is set, rather than requiring a separate end + assign round trip.
+    replacement_employee_id: uuid.UUID | None = None
 
     @field_validator("reason_code")
     @classmethod

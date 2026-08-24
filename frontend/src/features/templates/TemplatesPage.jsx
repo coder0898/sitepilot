@@ -1,7 +1,7 @@
 import { BookOpenCheck, ChevronLeft, ChevronRight, DatabaseZap, FilePlus2, FilterX, Layers3, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { templatesApi } from "../../api/templatesApi";
-import { Alert, Button, EmptyState, Input, LoadingSpinner, Select } from "../../components/ui";
+import { Alert, Button, EmptyState, Input, LoadingSpinner, RefreshButton, Select } from "../../components/ui";
 import { TemplateAuthoringModal } from "./components/TemplateAuthoringModal";
 import { TemplateArchiveVersionModal } from "./components/TemplateArchiveVersionModal";
 import { TemplateDeleteDraftModal } from "./components/TemplateDeleteDraftModal";
@@ -134,6 +134,7 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
       <label className="relative min-w-0 flex-1"><Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><Input aria-label="Search templates" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} className="min-h-12 pl-11" placeholder="Search template name, code or version"/></label>
       {isSuperAdmin && <Select aria-label="Filter template status" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }} className="min-h-12 sm:max-w-48"><option value="">All statuses</option><option value="published">Published</option><option value="draft">Draft</option></Select>}
       {hasFilters && <Button variant="ghost" className="min-h-12" onClick={clearFilters}><FilterX size={17}/> Clear filters</Button>}
+      <RefreshButton className="min-h-12" loading={loading} onClick={() => setRetryKey(value => value + 1)}/>
     </div></div>
 
     {loading ? <LoadingState/> : error ? <Alert tone="danger" className="items-center"><div><strong className="block">Template library unavailable</strong><span className="mt-1 block font-medium">{error}</span></div><Button size="sm" variant="secondary" onClick={() => setRetryKey(value => value + 1)}><RefreshCw size={15}/> Retry</Button></Alert> : !result.items.length ? <EmptyState className="min-h-64 bg-white" icon={hasFilters ? <Search size={21}/> : <DatabaseZap size={21}/>} title={hasFilters ? "No templates match these filters" : "No template versions available"} description={hasFilters ? "Clear the filters or try a broader name, code or version." : "Published template versions will appear here after the approved import is completed."} action={hasFilters ? <Button variant="secondary" onClick={clearFilters}><FilterX size={16}/> Clear filters</Button> : null}/> : <>

@@ -43,6 +43,8 @@ from app.schemas.execution_tasks import (
     TaskApprovalIn,
     TaskApprovalOut,
     TaskApprovalSummaryOut,
+    TaskAttendanceIn,
+    TaskAttendanceOut,
     TaskAuditEventOut,
     TaskBlockerCreateIn,
     TaskBlockerOut,
@@ -54,7 +56,11 @@ from app.schemas.execution_tasks import (
     TaskListItemOut,
     TaskOut,
     TaskProgressUpdateOut,
+    TaskReadinessDeclarationIn,
+    TaskReadinessDeclarationOut,
     TaskReadinessOut,
+    TaskRescheduleIn,
+    TaskRescheduleOut,
     TaskStatusTransitionIn,
     TaskSupportAssignmentCreateIn,
     TaskSupportAssignmentEndIn,
@@ -67,21 +73,27 @@ from app.schemas.execution_tasks import (
 )
 from app.schemas.project_gate_decision import (
     ProjectExternalApprovalOut,
+    ProjectExternalApprovalStatusCheckIn,
+    ProjectExternalApprovalStatusCheckOut,
     ProjectGateAssignIn,
     ProjectGateDecisionIn,
     ProjectGateSubmissionOut,
 )
 from app.services.project_gate_assignment import ProjectGateAssignmentService
 from app.services.project_gate_decision import ProjectGateDecisionService
+from app.services.project_gate_status_check import ProjectGateStatusCheckService
 from app.services.project_gate_submission import ProjectGateSubmissionService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
+from app.services.task_attendance import TaskAttendanceService
 from app.services.task_blocker import TaskBlockerService
 from app.services.task_delay import TaskDelayService
 from app.services.task_delay_variance import variance_for_task
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.task_progress import TaskProgressService
 from app.services.task_readiness import TaskReadinessService
+from app.services.task_readiness_declaration import TaskReadinessDeclarationService
+from app.services.task_reschedule import TaskRescheduleService
 from app.services.task_support_assignment import TaskSupportAssignmentService
 from app.services.task_verification import TaskVerificationService
 
@@ -600,6 +612,27 @@ async def submit_project_external_approval_evidence(
     )
 
 
+@router.post(
+    "/{project_id}/external-approvals/{approval_id}/status-checks",
+    response_model=ProjectExternalApprovalStatusCheckOut,
+)
+def create_project_external_approval_status_check(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    payload: ProjectExternalApprovalStatusCheckIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Phase 3 (3c): assignee-only advisory health check against an
+    external approval - the gate analog of `create_task_blocker`. Never
+    touches `ProjectExternalApproval.status`."""
+    return ProjectGateStatusCheckService(db).record(
+        project_id, approval_id, actor,
+        health=payload.health,
+        note=payload.note,
+    )
+
+
 @router.get("/{project_id}/external-approvals/{approval_id}/evidence/{file_id}")
 def download_project_external_approval_evidence(
     project_id: uuid.UUID,
@@ -664,6 +697,61 @@ def create_task_delay(
     )
 
 
+@router.post("/{project_id}/tasks/{task_id}/readiness-declarations", response_model=TaskReadinessDeclarationOut)
+def create_task_readiness_declaration(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskReadinessDeclarationIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Phase 3 (3a): any active project member's self-reported readiness
+    signal - advisory only, never read by `task_readiness.py`'s derived
+    projection."""
+    return TaskReadinessDeclarationService(db).declare(
+        project_id, task_id, actor,
+        status=payload.status,
+        note=payload.note,
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/attendance", response_model=TaskAttendanceOut)
+def create_task_attendance(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskAttendanceIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Phase 3 (3b): self-report or Supervisor/PM/Admin recording on
+    behalf of another Internal Employee."""
+    return TaskAttendanceService(db).record(
+        project_id, task_id, payload.employee_id, actor,
+        status=payload.status,
+        note=payload.note,
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/reschedule", response_model=TaskRescheduleOut)
+def reschedule_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskRescheduleIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Plan Phase 4: Supervisor/PM/Admin-only replan of a task's planned
+    start/end dates, audited via a TASK_RESCHEDULED V2AuditEvent. Never
+    calls TaskLifecycleService.transition and never touches
+    lifecycle_status."""
+    return TaskRescheduleService(db).reschedule(
+        project_id, task_id, actor,
+        new_planned_start_date=payload.new_planned_start_date,
+        new_planned_end_date=payload.new_planned_end_date,
+        reason=payload.reason,
+    )
+
+
 @router.post("/{project_id}/tasks/{task_id}/support-assignments", response_model=TaskSupportAssignmentOut)
 def assign_task_support(
     project_id: uuid.UUID,
@@ -689,6 +777,7 @@ def end_task_support(
     return TaskSupportAssignmentService(db).end_support(
         project_id, task_id, assignment_id, actor,
         reason_code=payload.reason_code, reason_detail=payload.reason_detail,
+        replacement_employee_id=payload.replacement_employee_id,
     )
 
 

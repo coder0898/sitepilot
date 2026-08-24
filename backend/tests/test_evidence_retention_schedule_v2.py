@@ -199,15 +199,19 @@ class EvidenceRetentionLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(getattr(app.state, evidence_retention_scheduler.TASK_ATTRIBUTE))
 
 
-class EvidenceRetentionWiringTests(unittest.TestCase):
-    def test_the_app_registers_startup_and_shutdown_handlers(self):
+class EvidenceRetentionWiringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_apps_lifespan_starts_and_stops_the_scheduler(self):
+        # `main.py`'s startup/shutdown is a single `lifespan` context manager
+        # (not per-feature `@app.on_event` handlers), so wiring is verified
+        # by actually running it - `ensure_seed_data` is stubbed out since
+        # it would otherwise open a real database connection.
         from app.main import create_app
 
         app = create_app()
-        startup_names = {handler.__name__ for handler in app.router.on_startup}
-        shutdown_names = {handler.__name__ for handler in app.router.on_shutdown}
-        self.assertIn("start_evidence_retention_scheduler", startup_names)
-        self.assertIn("stop_evidence_retention_scheduler", shutdown_names)
+        with patch("app.main.ensure_seed_data"):
+            async with app.router.lifespan_context(app):
+                self.assertIsNotNone(getattr(app.state, evidence_retention_scheduler.TASK_ATTRIBUTE, None))
+            self.assertIsNone(getattr(app.state, evidence_retention_scheduler.TASK_ATTRIBUTE, None))
 
     def test_the_interval_and_switch_are_configurable_settings(self):
         self.assertIsInstance(settings.evidence_retention_enabled, bool)

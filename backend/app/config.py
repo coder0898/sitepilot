@@ -62,6 +62,54 @@ class Settings(BaseSettings):
     # time-sensitive path - polling more often than daily costs a query for
     # no one who could ever perceive the difference.
     evidence_retention_interval_seconds: float = 86400.0
+    # Plan Phase 6 (second half): the merged daily task-prompt + task-side
+    # escalation sweep (`daily_task_prompts_scheduler.py`). Enabled by
+    # default for the same reason as the two schedulers above - a prompt
+    # cadence nobody runs is not a cadence. The switch exists for an
+    # operator who needs to pause it without redeploying.
+    daily_task_prompts_enabled: bool = True
+    # Hourly: frequent enough to catch a "morning of start" or "midday"
+    # window without needing precise wall-clock scheduling. Per-calendar-day
+    # idempotency (see `DailyTaskPromptsService`) makes ticking more often
+    # than once a day harmless - it just means a task's prompt fires closer
+    # to whichever hour it first becomes eligible.
+    daily_task_prompts_interval_seconds: float = 3600.0
+    # UTC hour bounds for `DailyTaskPromptsService.emit_midday_checks`/
+    # `emit_eod_checks` - without these, both checks queried the identical
+    # "in progress" condition with no time-of-day gating, so an hourly tick
+    # could fire the "midday" and "end-of-day" prompts back-to-back at any
+    # hour. Midday must be strictly before EOD; the checks below use
+    # `[midday, eod)` for the midday window and `[eod, 24)` for EOD.
+    daily_task_prompts_midday_hour_utc: int = 12
+    daily_task_prompts_eod_hour_utc: int = 18
+    # Plan Phase 6 (second half): the gate due-date reminder + approval-side
+    # escalation sweep (`gate_reminder_scheduler.py`). Same enabled-by-
+    # default rationale as above.
+    gate_reminder_enabled: bool = True
+    gate_reminder_interval_seconds: float = 3600.0
+    # Plan Phase 8: the automated weekly report-summary pass
+    # (`weekly_summary_scheduler.py`). Same enabled-by-default rationale as
+    # the schedulers above.
+    weekly_summary_enabled: bool = True
+    # Hourly, same as `daily_task_prompts_interval_seconds`/
+    # `gate_reminder_interval_seconds`: the real cadence gate is the 7-day
+    # check inside the pass itself (against the latest weekly
+    # `ReportSnapshot.period_start`), not this tick interval - a frequent
+    # tick with an internal idempotency/cadence check doing the real
+    # gating is the pattern every scheduler in this codebase already uses.
+    weekly_summary_interval_seconds: float = 3600.0
+    # Plan Phase 9: the automated meeting-reminder pass
+    # (`meeting_reminder_scheduler.py`). Same enabled-by-default rationale as
+    # the schedulers above.
+    meeting_reminder_enabled: bool = True
+    # 5 minutes, deliberately SHORTER than the other schedulers' hourly
+    # default: a meeting reminder is time-sensitive to the actual clock in a
+    # way the daily/weekly cadences aren't - someone scheduling a reminder
+    # for "30 minutes before the meeting" needs better-than-hourly
+    # granularity for that reminder to fire anywhere close to on time,
+    # unlike a daily prompt or weekly report where being off by up to an
+    # hour is invisible to anyone.
+    meeting_reminder_interval_seconds: float = 300.0
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""

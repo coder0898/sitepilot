@@ -18,6 +18,7 @@ from app.execution_models import (
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
+    ProjectExternalApproval,
     Task,
     TaskApprovalDecision,
     TaskBlocker,
@@ -91,6 +92,7 @@ class ProjectDashboardRouteTests(unittest.TestCase):
             V2Vendor.__table__,
             TaskVendorAssignment.__table__,
             VendorActivityEvent.__table__,
+            ProjectExternalApproval.__table__,
         ):
             table.create(self.engine)
 

@@ -90,11 +90,16 @@ from app.vendor_models import TaskVendorAssignment, V2VendorContact
 VENDOR_COMMANDS = {"ACCEPT", "DECLINE", "CLARIFY"}
 EMPLOYEE_COMMAND = "STATUS"
 
-# The only project roles that may drive a task-lifecycle transition at all
+# The project roles that may drive a task-lifecycle transition at all
 # (TaskLifecycleService._require_role_for_transition) - reused verbatim as
 # the pre-filter for resolving an ambiguous project-scoped task code,
 # rather than inventing a separate role set for the WhatsApp path.
-_STATUS_DRIVING_ROLES = ("site_supervisor", "project_manager")
+# `internal_employee` was added here (Phase 1 fix) to bring the WhatsApp
+# STATUS path in line with what the portal itself already allows: an
+# Internal Employee support-assigned to a task can drive its
+# `in_progress`/`submitted` transitions per task_lifecycle.py - excluding
+# them here was a WhatsApp-path-only gap, not a deliberate narrower rule.
+_STATUS_DRIVING_ROLES = ("site_supervisor", "project_manager", "internal_employee")
 
 _RESPONSE_BY_COMMAND = {
     "ACCEPT": "accepted",

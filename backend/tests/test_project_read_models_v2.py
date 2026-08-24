@@ -18,6 +18,7 @@ from app.execution_models import (
     BaselineTask,
     OutboxEvent,
     ProjectBaseline,
+    ProjectExternalApproval,
     Task,
     TaskApprovalDecision,
     TaskBlocker,
@@ -71,7 +72,7 @@ class ProjectReadModelTests(unittest.TestCase):
             ProjectBaseline.__table__, BaselineTask.__table__, Task.__table__, TaskDependency.__table__,
             TaskProgressUpdate.__table__, TaskVerification.__table__, TaskBlocker.__table__,
             TaskDelayEvent.__table__, TaskApprovalDecision.__table__, TaskSupportAssignment.__table__,
-            OutboxEvent.__table__,
+            OutboxEvent.__table__, ProjectExternalApproval.__table__,
         ):
             table.create(self.engine)
 

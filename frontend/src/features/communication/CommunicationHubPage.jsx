@@ -6,7 +6,7 @@ import {
 import { communicationApi } from "../../api/communicationApi";
 import { vendorAssignmentApi } from "../../api/vendorAssignmentApi";
 import { vendorsApi } from "../../api/vendorsApi";
-import { ConfirmModal, EmptyState, LoadingSpinner, Modal } from "../../components/ui";
+import { ConfirmModal, EmptyState, LoadingSpinner, Modal, RefreshButton } from "../../components/ui";
 import { cn } from "../../utils/cn";
 import { paginationItems } from "../../utils/pagination";
 
@@ -186,16 +186,19 @@ export function CommunicationHubPage({ user, action }) {
           <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Vendors, contacts & site communication</h2>
           <span className="mt-2 block text-sm text-slate-500">Centralized directory of vendors and contacts across all projects.</span>
         </div>
-        {canManage && <div ref={addMenuRef} className="relative shrink-0">
-          <button type="button" onClick={() => setAddMenuOpen(v => !v)}
-            className="flex min-h-11 items-center gap-2 rounded-xl bg-blue-700 px-4 text-sm font-black text-white shadow-[0_10px_24px_rgba(29,78,216,0.22)] transition hover:bg-blue-800">
-            <Plus size={17}/> Add vendor <ChevronDown size={15}/>
-          </button>
-          {addMenuOpen && <div className="absolute right-0 top-[calc(100%+8px)] z-20 grid w-52 gap-0.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
-            <button type="button" onClick={() => { setAddMenuOpen(false); setForm("main"); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50">Add main vendor</button>
-            <button type="button" onClick={() => { setAddMenuOpen(false); setForm("contact"); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50">Add contact</button>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <RefreshButton loading={loading} onClick={() => load()}/>
+          {canManage && <div ref={addMenuRef} className="relative shrink-0">
+            <button type="button" onClick={() => setAddMenuOpen(v => !v)}
+              className="flex min-h-11 items-center gap-2 rounded-xl bg-blue-700 px-4 text-sm font-black text-white shadow-[0_10px_24px_rgba(29,78,216,0.22)] transition hover:bg-blue-800">
+              <Plus size={17}/> Add vendor <ChevronDown size={15}/>
+            </button>
+            {addMenuOpen && <div className="absolute right-0 top-[calc(100%+8px)] z-20 grid w-52 gap-0.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(15,23,42,.14)]">
+              <button type="button" onClick={() => { setAddMenuOpen(false); setForm("main"); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50">Add main vendor</button>
+              <button type="button" onClick={() => { setAddMenuOpen(false); setForm("contact"); }} className="rounded-lg px-3 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50">Add contact</button>
+            </div>}
           </div>}
-        </div>}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

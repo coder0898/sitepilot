@@ -293,10 +293,13 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             json={"employee_id": str(employee_id), "responsibility": responsibility},
         )
 
-    def end_support(self, project_id, task_id, assignment_id, reason_code="workload"):
+    def end_support(self, project_id, task_id, assignment_id, reason_code="workload", replacement_employee_id=None):
+        body = {"reason_code": reason_code}
+        if replacement_employee_id is not None:
+            body["replacement_employee_id"] = str(replacement_employee_id)
         return self.client.post(
             f"/api/v2/projects/{project_id}/tasks/{task_id}/support-assignments/{assignment_id}/end",
-            json={"reason_code": reason_code},
+            json=body,
         )
 
     def transition(self, project_id, task_id, target_status: str, reason: str | None = None):
@@ -408,6 +411,45 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
             changes = session.scalars(select(SupportAssignmentChange)).all()
             self.assertEqual(len(changes), 1)
             self.assertEqual(changes[0].previous_employee_id, internal_employee_id)
+
+    def test_end_support_with_replacement_reassigns_atomically(self):
+        # Phase 2 (whatsapp-model-alignment plan): a single end-support call
+        # with replacement_employee_id set both ends the old assignment and
+        # creates the new one in one atomic request, rather than requiring a
+        # separate end + assign round trip.
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        self.add_internal_member(project["id"], SECOND_INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+        original_employee_id = self.employee_id_for(INTERNAL_ID)
+        replacement_employee_id = self.employee_id_for(SECOND_INTERNAL_ID)
+
+        self.act_as_supervisor()
+        created = self.assign_support(project["id"], t001.id, original_employee_id)
+        assignment_id = created.json()["id"]
+
+        response = self.end_support(
+            project["id"], t001.id, assignment_id, replacement_employee_id=replacement_employee_id,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["employee_id"], str(replacement_employee_id))
+        self.assertEqual(body["status"], "active")
+        self.assertIsNone(body["ends_at"])
+
+        with self.Session() as session:
+            rows = session.scalars(
+                select(TaskSupportAssignment).where(TaskSupportAssignment.task_id == t001.id)
+            ).all()
+            self.assertEqual(len(rows), 2)
+            by_status = {row.status: row for row in rows}
+            self.assertEqual(by_status["ended"].employee_id, original_employee_id)
+            self.assertEqual(by_status["active"].employee_id, replacement_employee_id)
+
+            changes = session.scalars(select(SupportAssignmentChange)).all()
+            self.assertEqual(len(changes), 1)
+            self.assertEqual(changes[0].previous_employee_id, original_employee_id)
+            self.assertEqual(changes[0].replacement_employee_id, replacement_employee_id)
 
     # ---- error path: no project membership ---------------------------------
 

@@ -258,17 +258,21 @@ class OutboxDispatchLoopTests(unittest.IsolatedAsyncioTestCase):
         await outbox_scheduler.stop_dispatcher(app)  # must not raise
 
 
-class OutboxDispatchWiringTests(unittest.TestCase):
+class OutboxDispatchWiringTests(unittest.IsolatedAsyncioTestCase):
     """The app actually registers the dispatcher, which is the whole point."""
 
-    def test_the_app_registers_startup_and_shutdown_handlers_for_the_dispatcher(self):
+    async def test_the_apps_lifespan_starts_and_stops_the_dispatcher(self):
+        # `main.py`'s startup/shutdown is a single `lifespan` context manager
+        # (not per-feature `@app.on_event` handlers), so wiring is verified
+        # by actually running it - `ensure_seed_data` is stubbed out since
+        # it would otherwise open a real database connection.
         from app.main import create_app
 
         app = create_app()
-        startup_names = {handler.__name__ for handler in app.router.on_startup}
-        shutdown_names = {handler.__name__ for handler in app.router.on_shutdown}
-        self.assertIn("start_outbox_dispatcher", startup_names)
-        self.assertIn("stop_outbox_dispatcher", shutdown_names)
+        with patch("app.main.ensure_seed_data"):
+            async with app.router.lifespan_context(app):
+                self.assertIsNotNone(getattr(app.state, outbox_scheduler.TASK_ATTRIBUTE, None))
+            self.assertIsNone(getattr(app.state, outbox_scheduler.TASK_ATTRIBUTE, None))
 
     def test_the_interval_and_switch_are_configurable_settings(self):
         # Sourced from environment/`.env` like every other setting, so an

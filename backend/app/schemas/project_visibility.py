@@ -87,3 +87,10 @@ class ProjectVisibilitySummary(BaseModel):
     schedule_variance: ScheduleVarianceOut
 
     reassignment_required: list[ReassignmentRequiredOut]
+
+    gate_pending_approvals: int
+    """Plan Phase 8: `ProjectExternalApproval` rows on this project currently
+    `submitted` and awaiting an Admin decision. Folded into this summary
+    (rather than a separate call) so the weekly report - which dumps this
+    whole summary wholesale via `report_generation.py`'s `_build_payload` -
+    carries it with no payload-shape change of its own."""

@@ -17,14 +17,27 @@ class, mirroring how `supabase_secret_key` is sourced - always from
 environment/`.env`, never hardcoded, never committed. This unit needs no
 such settings since the sandbox adapter requires no credentials.
 
-Recipient resolution structurally excludes `UserRole.super_admin`: it only
-ever queries `V2ProjectMembership.project_role in ('project_manager',
-'site_supervisor')`, and `project_role` never stores `'super_admin'` (see
+`_resolve_pm_supervisor_recipients` (and therefore `_ACCOUNTABLE_ROLES`)
+structurally excludes `UserRole.super_admin`: it only ever queries
+`V2ProjectMembership.project_role in ('project_manager', 'site_supervisor')`,
+and `project_role` never stores `'super_admin'` (see
 `app.project_models.V2ProjectMembership` - the column's only values are
 `'project_manager'`, `'site_supervisor'`, `'internal_employee'`). A Super
 Admin acting on a project is never a project *member* and therefore can
-never be selected as a notification recipient by this code, independent of
+never be selected as a notification recipient via that path, independent of
 their `User.role`.
+
+This is narrower than a claim about `_resolve_recipients` as a whole,
+though: `_resolve_admin_recipients` (Phase 1b) is a second, deliberately
+separate resolver that DOES query `User.role in (admin, super_admin)`
+directly - it is invoked only for an explicit allowlist of event types
+(every `project_external_approval.*` event, `task.approval_recorded` via
+`_ADMIN_CC_TASK_EVENTS`, and `report.weekly_summary_generated` via Phase 8's
+`_ADMIN_CC_PROJECT_EVENTS`), never as a blanket widening of the PM/
+Supervisor path, and never changes what `_ACCOUNTABLE_ROLES` itself means.
+Admin becomes a WhatsApp *recipient* on those specific events (visibility),
+never an approver - BR-008's PM-primary approval authority in
+`task_approval.py` is untouched.
 
 Recipient resolution never silently drops a project member (PM/Supervisor)
 or a vendor's primary contact for lacking a phone number: it always
@@ -82,11 +95,19 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sqlalchemy import and_, exists, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.execution_models import MessageDelivery, OutboxEvent, Task
-from app.models import EmployeeProfile, User
+from app.execution_models import (
+    MessageDelivery,
+    OutboxEvent,
+    ProjectExternalApproval,
+    Task,
+    TaskSupportAssignment,
+)
+from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
+from app.services.message_templates import TemplateSpec, render_components, resolve
 from app.vendor_models import TaskVendorAssignment, V2VendorContact
 
 # The only two `V2ProjectMembership.project_role` values this service ever
@@ -96,6 +117,48 @@ from app.vendor_models import TaskVendorAssignment, V2VendorContact
 _ACCOUNTABLE_ROLES = ("project_manager", "site_supervisor")
 
 _SUCCEEDED_STATUSES = ("sent", "delivered", "read")
+
+# Phase 1b (locked decision #1): Class A approval decisions are the one
+# task-event class where Admin becomes a CC recipient - visibility only,
+# never authority. BR-008's PM-primary approve/reject flow in
+# task_approval.py is unchanged; this only widens who is *notified* of the
+# outcome it already decided. Deliberately narrow - do not add every task
+# event here.
+#
+# Phase 6 adds `task.escalated_to_admin` (`EscalationService.
+# sweep_task_escalations`): a task that reaches the admin-escalation stage
+# is, by definition, an Admin-visibility event - the same "visibility, not
+# authority" rationale as the Class A decision above.
+_ADMIN_CC_TASK_EVENTS = {"task.approval_recorded", "task.escalated_to_admin"}
+
+# Plan Phase 8: mirrors `_ADMIN_CC_TASK_EVENTS`'s exact pattern for the
+# `project` aggregate branch. Deliberately a narrow allowlist, not a
+# blanket "every project.* event reaches Admin" widening - the plan's own
+# framing is that Admin is pushed the weekly summary specifically, not
+# every project-aggregate event `_resolve_pm_supervisor_recipients` already
+# reaches PM/Supervisor for.
+_ADMIN_CC_PROJECT_EVENTS = {"report.weekly_summary_generated"}
+
+# Phase 7: the four daily-prompt event types `daily_task_prompts.py` emits.
+# Per the doc's own §5-§6 readiness/start/midday/EOD templates, the assigned
+# Internal Employee is a receiver on all four - unlike the vendor-eligible
+# set below, this one is not narrowed to exclude the EOD check.
+_EMPLOYEE_ELIGIBLE_TASK_EVENTS: set[str] = {
+    "task.readiness_check",
+    "task.start_check",
+    "task.midday_check",
+    "task.eod_check",
+}
+
+# Phase 7: three of the four daily-prompt event types - the doc's own tables
+# mark readiness/start/midday as "Vendor if involved" but the EOD check's
+# receiver list is PM/Supervisor/Internal Employee only, no vendor -
+# `task.eod_check` is deliberately excluded here.
+_VENDOR_ELIGIBLE_TASK_EVENTS: set[str] = {
+    "task.readiness_check",
+    "task.start_check",
+    "task.midday_check",
+}
 
 
 @dataclass(frozen=True)
@@ -172,6 +235,26 @@ class MessageDispatchService:
             for employee_id, phone in rows
         ]
 
+    def _primary_vendor_contact_recipient(self, vendor_id: uuid.UUID) -> Recipient | None:
+        """Shared tail of vendor recipient resolution: given a `vendor_id`,
+        find its primary `V2VendorContact` and build a `Recipient`. Used by
+        both `_resolve_vendor_recipient` (payload-driven, `task.
+        vendor_assigned`) and `_resolve_vendor_recipient_for_task`
+        (lookup-driven, Phase 7's readiness/start/midday checks)."""
+        contact = self.db.scalar(
+            select(V2VendorContact).where(
+                V2VendorContact.vendor_id == vendor_id,
+                V2VendorContact.is_primary.is_(True),
+            )
+        )
+        if contact is None:
+            return None
+        # As with PM/Supervisor resolution: resolve regardless of phone,
+        # using phone falling back to whatsapp, falling back to "" - a
+        # missing number surfaces as a failed delivery, not a silent skip.
+        phone = contact.phone or contact.whatsapp or ""
+        return Recipient(employee_id=None, vendor_contact_id=contact.id, phone=phone)
+
     def _resolve_vendor_recipient(self, event: OutboxEvent) -> Recipient | None:
         """Only called for `event_type == 'task.vendor_assigned'`. Reads
         `vendor_id` directly off the payload (the shape
@@ -190,19 +273,103 @@ class MessageDispatchService:
         if not vendor_id_raw:
             return None
 
-        contact = self.db.scalar(
-            select(V2VendorContact).where(
-                V2VendorContact.vendor_id == uuid.UUID(vendor_id_raw),
-                V2VendorContact.is_primary.is_(True),
+        return self._primary_vendor_contact_recipient(uuid.UUID(vendor_id_raw))
+
+    def _resolve_vendor_recipient_for_task(self, task: Task) -> Recipient | None:
+        """Phase 7: lookup-driven vendor resolution for the readiness/start/
+        midday daily-prompt events (`_VENDOR_ELIGIBLE_TASK_EVENTS`). Unlike
+        `_resolve_vendor_recipient`, these events' payloads (written by
+        `DailyTaskPromptsService._emit_for_tasks` - `task_id`, `project_id`,
+        `lifecycle_status`, `planned_start_date`) carry no vendor info at
+        all, since a prompt sweep doesn't know per-task vendor assignment
+        without querying for it.
+
+        "Active" here mirrors `vendor_acknowledgement.py`'s
+        `RESOLVED_ASSIGNMENT_STATUSES` framing in reverse: a
+        `TaskVendorAssignment` is still "the vendor is involved" as long as
+        it hasn't been explicitly `declined` - `pending_ack` (not yet
+        responded) and `acknowledged` (accepted) both count. When more than
+        one non-declined assignment exists on the same task (e.g. a re-
+        delegation), the most recently created one wins.
+
+        Returns `None` (not an error) when the task has no active vendor
+        assignment or that vendor has no primary contact - "vendor not
+        involved" is the normal case for most tasks, per the doc's "if
+        involved" language."""
+        assignment = self.db.scalar(
+            select(TaskVendorAssignment)
+            .where(
+                TaskVendorAssignment.task_id == task.id,
+                TaskVendorAssignment.status != "declined",
             )
+            .order_by(TaskVendorAssignment.created_at.desc())
+            .limit(1)
         )
-        if contact is None:
+        if assignment is None:
             return None
-        # As with PM/Supervisor resolution: resolve regardless of phone,
-        # using phone falling back to whatsapp, falling back to "" - a
-        # missing number surfaces as a failed delivery, not a silent skip.
-        phone = contact.phone or contact.whatsapp or ""
-        return Recipient(employee_id=None, vendor_contact_id=contact.id, phone=phone)
+        return self._primary_vendor_contact_recipient(assignment.vendor_id)
+
+    def _resolve_admin_recipients(self) -> list[Recipient]:
+        """All active users with `role in (admin, super_admin)`. Deliberately
+        "all admins" - there is no per-project Admin assignment anywhere in
+        the schema (`V2ProjectMembership.project_role` cannot hold
+        `'admin'`/`'super_admin'` - see the module docstring) to narrow this
+        to project scope, so every project's `project_external_approval.*`
+        event and every `task.approval_recorded` event notifies the same
+        Admin set. This is a locked decision (plan Decisions section), not
+        an oversight.
+
+        Follows the same resolve-then-fail-visibly pattern as
+        `_resolve_pm_supervisor_recipients`/`_resolve_vendor_recipient`: an
+        Admin with no phone on file is still resolved to a `Recipient` and
+        reaches the adapter, surfacing as an explicit `failed`/
+        `missing_phone` delivery row rather than silently vanishing.
+        """
+        rows = self.db.execute(
+            select(EmployeeProfile.id, User.phone)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .where(User.role.in_((UserRole.admin, UserRole.super_admin)), User.active.is_(True))
+        ).all()
+        return [
+            Recipient(employee_id=employee_id, vendor_contact_id=None, phone=phone or "")
+            for employee_id, phone in rows
+        ]
+
+    def _resolve_gate_assignee_recipient(self, approval: ProjectExternalApproval) -> list[Recipient]:
+        """Resolves a `project_external_approval` gate's own assignee
+        (`assigned_to_user_id`) to a `Recipient`. Returns `[]` - a genuinely
+        unresolvable recipient, skipped rather than resolved-then-failed,
+        matching this module's own precedent for "no row to even construct"
+        cases (see `_resolve_vendor_recipient`'s `None` returns) - when the
+        gate has no assignee yet (`unassigned` status) or the assignee's
+        `EmployeeProfile`/`User` link can't be found."""
+        if approval.assigned_to_user_id is None:
+            return []
+        employee = self.db.scalar(
+            select(EmployeeProfile).where(EmployeeProfile.user_id == approval.assigned_to_user_id)
+        )
+        if employee is None:
+            return []
+        user = self.db.get(User, approval.assigned_to_user_id)
+        if user is None:
+            return []
+        return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
+
+    def _resolve_internal_employee_recipient(self, task: Task) -> list[Recipient]:
+        """Resolves every active `TaskSupportAssignment` on `task` to its
+        employee's `Recipient`. Scaffolded in Phase 1, wired up in Phase 7 -
+        called for every event type in `_EMPLOYEE_ELIGIBLE_TASK_EVENTS`
+        (the four daily-prompt events: readiness/start/midday/EOD)."""
+        rows = self.db.execute(
+            select(EmployeeProfile.id, User.phone)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .join(TaskSupportAssignment, TaskSupportAssignment.employee_id == EmployeeProfile.id)
+            .where(TaskSupportAssignment.task_id == task.id, TaskSupportAssignment.status == "active")
+        ).all()
+        return [
+            Recipient(employee_id=employee_id, vendor_contact_id=None, phone=phone or "")
+            for employee_id, phone in rows
+        ]
 
     def _resolve_recipients(self, event: OutboxEvent) -> list[Recipient]:
         recipients: list[Recipient] = []
@@ -215,8 +382,27 @@ class MessageDispatchService:
                 vendor_recipient = self._resolve_vendor_recipient(event)
                 if vendor_recipient is not None:
                     recipients.append(vendor_recipient)
+            if event.event_type in _ADMIN_CC_TASK_EVENTS:
+                recipients.extend(self._resolve_admin_recipients())
+            if event.event_type in _EMPLOYEE_ELIGIBLE_TASK_EVENTS:
+                recipients.extend(self._resolve_internal_employee_recipient(task))
+            if event.event_type in _VENDOR_ELIGIBLE_TASK_EVENTS:
+                vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
+                if vendor_task_recipient is not None:
+                    recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
             recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
+            if event.event_type in _ADMIN_CC_PROJECT_EVENTS:
+                recipients.extend(self._resolve_admin_recipients())
+        elif event.aggregate_type == "project_external_approval":
+            approval = self.db.get(ProjectExternalApproval, event.aggregate_id)
+            if approval is None:
+                return []
+            recipients.extend(self._resolve_gate_assignee_recipient(approval))
+            # Every project_external_approval.* event resolves Admin - this
+            # is where doc #27's "Admin review-required push" falls out of,
+            # `submitted` included (Phase 1b).
+            recipients.extend(self._resolve_admin_recipients())
         return recipients
 
     # ---- delivery -----------------------------------------------------
@@ -238,7 +424,8 @@ class MessageDispatchService:
             )
         return self.db.scalar(stmt)
 
-    def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, template: str) -> None:
+    def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
+        template = spec.meta_template_name
         delivery = self._existing_delivery(event.id, recipient, template)
         if delivery is not None and delivery.status in _SUCCEEDED_STATUSES:
             return  # already succeeded - no re-send
@@ -254,7 +441,19 @@ class MessageDispatchService:
                 attempt_count=0,
             )
             self.db.add(delivery)
-            self.db.flush()
+            try:
+                self.db.flush()
+            except IntegrityError:
+                # Lost a race against a concurrent dispatch pass that already
+                # inserted the same (event, recipient, template) delivery -
+                # `uq_v2_message_deliveries_event_recipient_template` caught
+                # it. Benign: roll back our half-started insert and fall back
+                # to the row the other pass already committed, same as if
+                # `_existing_delivery` above had found it in the first place.
+                self.db.rollback()
+                delivery = self._existing_delivery(event.id, recipient, template)
+                if delivery is None or delivery.status in _SUCCEEDED_STATUSES:
+                    return
 
         # Refresh the denormalized snapshot on every attempt (including a
         # retry) so it reflects the number this specific attempt targeted.
@@ -262,7 +461,14 @@ class MessageDispatchService:
         delivery.status = "sending"
         delivery.attempt_count += 1
 
-        result = self.adapter.send(recipient_phone=recipient.phone, template=template, payload=event.payload or {})
+        # Merge `components` into a copy of the event payload rather than
+        # mutating `event.payload` itself - the outbox row's payload is the
+        # durable record of what happened; `components` is dispatch-time
+        # rendering derived from it, not part of that record.
+        components = render_components(spec, event.payload or {})
+        send_payload = {**(event.payload or {}), "components": components, "language_code": spec.language}
+
+        result = self.adapter.send(recipient_phone=recipient.phone, template=template, payload=send_payload)
         if result.ok:
             delivery.status = "sent"
             delivery.provider_message_id = result.provider_message_id
@@ -304,9 +510,9 @@ class MessageDispatchService:
         processed in this call."""
         events = self._select_events(limit)
         for event in events:
-            template = event.event_type
+            spec = resolve(event.event_type)
             for recipient in self._resolve_recipients(event):
-                self._dispatch_to_recipient(event, recipient, template)
+                self._dispatch_to_recipient(event, recipient, spec)
             event.status = "dispatched"
             self.db.add(event)
             self.db.commit()

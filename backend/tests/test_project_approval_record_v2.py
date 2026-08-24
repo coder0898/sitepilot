@@ -227,6 +227,10 @@ class ProjectExternalApprovalTests(unittest.TestCase):
                 # and whether it gates work without reading the planning
                 # tables (KTD8).
                 "blocking", "coverage_state", "coverage_text",
+                # Phase 5: resolved from the gate's required_by_type/value
+                # at activation (project_gate_due_date.py). Nullable - see
+                # that module's docstring for when it is legitimately unset.
+                "due_at",
             },
         )
 
