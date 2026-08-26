@@ -71,25 +71,19 @@ function App() {
           if (!active) return;
           setVerificationReady(true);
           setView("verify-access");
+        } else if (entryView === "reset-password") {
+          const { session } = await authApi.consumeRecoveryCallback();
+          if (!active) return;
+          if (!session) throw new Error("This password setup link is incomplete or expired.");
+          setRecoveryReady(true);
+        } else if (entryView === "forgot-password") {
+          // Arrived here only because initialView() saw an error_code in the URL
+          // (an expired/already-used link) - never fall through to a lingering
+          // session and silently log the user in over that error.
         } else {
           const { data: { session } } = await authApi.getSession();
           if (!active) return;
-          if (entryView === "reset-password") {
-            const tokenHash = new URLSearchParams(window.location.search).get("token_hash");
-            if (tokenHash) {
-              const verified = await authApi.verifyRecoveryToken(tokenHash);
-              if (!verified?.session) throw new Error("Supabase did not create a recovery session.");
-              if (!active) return;
-              setRecoveryReady(true);
-              window.history.replaceState({}, "", `${window.location.pathname}?view=reset-password`);
-            } else if (session) {
-              setRecoveryReady(true);
-            } else {
-              throw new Error("This password setup link is incomplete or expired.");
-            }
-          } else {
-            await loadPortalIdentity(session);
-          }
+          await loadPortalIdentity(session);
         }
       } catch (caught) {
         if (!active) return;

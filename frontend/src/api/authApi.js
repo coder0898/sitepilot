@@ -21,9 +21,30 @@ export const authApi = {
     unwrap(await supabase.auth.resetPasswordForEmail(email, { redirectTo }));
     return { message: "If this account exists, Supabase has sent a recovery email." };
   },
-  async verifyRecoveryToken(tokenHash) {
+  async consumeRecoveryCallback() {
     ensureConfigured();
-    return unwrap(await supabase.auth.verifyOtp({ token_hash: tokenHash, type: "recovery" }));
+    const query = new URLSearchParams(window.location.search);
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const callbackError = fragment.get("error_description") || query.get("error_description");
+    if (callbackError) throw new Error(callbackError.replaceAll("+", " "));
+    // Same server-issued implicit-grant link shape as consumeAccessVerificationCallback -
+    // the backend's password-recovery email hits Supabase's REST /recover endpoint
+    // directly (not this PKCE-configured browser client), so it returns
+    // #access_token/refresh_token in the fragment rather than a token_hash. Consume
+    // it explicitly instead of relying on detectSessionInUrl.
+    const accessToken = fragment.get("access_token");
+    const refreshToken = fragment.get("refresh_token");
+    if (accessToken && refreshToken) {
+      const result = unwrap(await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      }));
+      window.history.replaceState({}, "", window.location.pathname + "?view=reset-password");
+      return result;
+    }
+    const tokenHash = query.get("token_hash");
+    if (tokenHash) return unwrap(await supabase.auth.verifyOtp({ token_hash: tokenHash, type: "recovery" }));
+    return { session: null };
   },
   async consumeAccessVerificationCallback() {
     ensureConfigured();
