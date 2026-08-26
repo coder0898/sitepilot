@@ -16,8 +16,8 @@ export function QuickActions({ contact, compact = false }) {
   </div>;
 }
 
-export function Metric({ icon, value, label, hint, action, tone = "border-slate-200 bg-slate-50" }) {
-  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone)}>
+export function Metric({ icon, value, label, hint, action, tone = "border-slate-200 bg-slate-50", className }) {
+  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone, className)}>
     <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/70 text-blue-700">{icon}</span>
     <div className="min-w-0 flex-1">
       <p className="text-xs font-bold text-slate-500">{label}</p>

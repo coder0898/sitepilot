@@ -206,7 +206,7 @@ export function CommunicationHubPage({ user, action }) {
         <Metric icon={<Tag size={20}/>} label="Active Categories" value={categoriesInUse} hint={`of ${hub.categories.length} total`} tone="border-emerald-200 bg-emerald-50"/>
         <Metric icon={<ContactRound size={20}/>} label="Site Contacts" value={hub.contacts.length} hint="Across all vendors" tone="border-violet-200 bg-violet-50"/>
         <Metric icon={<FolderKanban size={20}/>} label="Active Projects" value={activeProjects} hint={`of ${hub.projects.length} total`} tone="border-amber-200 bg-amber-50"/>
-        <Metric icon={<ClipboardList size={20}/>} label="Pending Follow-ups" value={pendingFollowups} tone="border-rose-200 bg-rose-50"
+        <Metric icon={<ClipboardList size={20}/>} label="Pending Follow-ups" value={pendingFollowups} tone="border-rose-200 bg-rose-50" className="col-span-2 sm:col-span-1"
           action={<button type="button" onClick={() => setStatus("on_hold")} className="text-[11px] font-black text-blue-700 hover:underline">See all</button>}/>
       </div>
     </section>
