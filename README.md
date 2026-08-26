@@ -91,7 +91,7 @@ Render's free plan spins the service down after ~15 minutes of no inbound traffi
 ### 3. Vercel (frontend)
 
 - Import the repo, set **Root Directory** to `frontend` (monorepo - this can only be set in Vercel's project settings, not a config file).
-- Build environment variables: `VITE_API_BASE` (the Render URL above), `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`. Never put `SUPABASE_SECRET_KEY` here - a frontend build ships to every visitor's browser.
+- Build environment variables: `VITE_API_BASE` (the Render URL above), `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_FRONTEND_URL` (this Vercel domain - pins where password-reset emails redirect, so triggering a reset from a local dev session never sends the link to `localhost` instead). Never put `SUPABASE_SECRET_KEY` here - a frontend build ships to every visitor's browser.
 
 ### 4. Close the loop
 

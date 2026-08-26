@@ -22,7 +22,12 @@ export const authApi = {
   },
   async requestReset(email) {
     ensureConfigured();
-    const redirectTo = `${window.location.origin}/?view=reset-password`;
+    // window.location.origin would otherwise send the reset link back to
+    // wherever the browser happened to be (e.g. localhost, if an admin
+    // triggers this while running the app locally against production data)
+    // instead of the real deployed site. Pin it, matching the backend's own
+    // FRONTEND_URL-driven emails.
+    const redirectTo = `${import.meta.env.VITE_FRONTEND_URL || window.location.origin}/?view=reset-password`;
     unwrap(await supabase.auth.resetPasswordForEmail(email, { redirectTo }));
     return { message: "If this account exists, Supabase has sent a recovery email." };
   },
