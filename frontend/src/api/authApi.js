@@ -6,7 +6,12 @@ function ensureConfigured() {
 }
 
 function unwrap(result) {
-  if (result.error) throw new Error(result.error.message);
+  if (result.error) {
+    if (result.error.status === 429 || /rate limit/i.test(result.error.message || "")) {
+      throw new Error("Too many email requests in a short time. Wait a few minutes, then try again.");
+    }
+    throw new Error(result.error.message);
+  }
   return result.data;
 }
 

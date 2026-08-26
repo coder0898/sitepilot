@@ -89,6 +89,21 @@ function SidebarIconButton({ label, onClick, children }) {
   return <IconButton variant="ghost" className="!text-slate-300 hover:!bg-white/10 hover:!text-white" aria-label={label} onClick={onClick}>{children}</IconButton>;
 }
 
+// Modals render via their own portal at z-50 and cover the full viewport, so a
+// notice sitting inline in <main> (behind that backdrop) is invisible whenever
+// an action is triggered from inside one - portal this above it instead.
+function NoticeToast({ notice, onDismiss }) {
+  if (!notice) return null;
+  return createPortal(
+    <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex justify-center px-3 pt-3 sm:px-4">
+      <div className="pointer-events-auto w-full max-w-xl shadow-[0_18px_50px_rgba(15,23,42,.2)]">
+        <Alert tone={notice.tone} onDismiss={onDismiss}>{notice.message}</Alert>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, onRefresh, notice, onClearNotice, children }) {
   const activeLabel = tabs.find(([key]) => key === activeTab)?.[1] || "Workspace";
   return <div className="min-h-dvh min-w-0 bg-[radial-gradient(circle_at_10%_0%,rgba(219,234,254,.9),transparent_28%),linear-gradient(145deg,#f8fafc_0%,#eef4fb_56%,#f8fafc_100%)] text-slate-950 lg:grid lg:grid-cols-[272px_minmax(0,1fr)]">
@@ -102,10 +117,10 @@ export function AppLayout({ user, tabs, activeTab, onTabChange, onLogout, onRefr
     <div className="min-w-0">
       <header className="sticky top-0 z-30 flex min-h-[70px] items-center gap-3 border-b border-slate-200/80 bg-white/90 px-4 backdrop-blur-xl lg:hidden"><div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-600 font-black text-white">45</div><div className="min-w-0 flex-1"><span className="block text-[10px] font-black uppercase tracking-[.18em] text-blue-700">SiteOps</span><strong className="block truncate text-base">{activeLabel}</strong></div><IconButton variant="secondary" aria-label="Refresh workspace" onClick={onRefresh}><RefreshCw size={18}/></IconButton><IconButton variant="ghost" aria-label="Logout" onClick={onLogout}><LogOut size={18}/></IconButton></header>
       <main className={`min-w-0 max-w-full overflow-x-hidden px-3 pb-28 pt-3 sm:px-5 sm:pt-5 lg:p-8 lg:pb-8 tab-${activeTab}`}>
-        {notice && <Alert className="mb-4" onDismiss={onClearNotice}>{notice}</Alert>}
         {children}
       </main>
     </div>
+    <NoticeToast notice={notice} onDismiss={onClearNotice}/>
     <MobileNavigation tabs={tabs} activeTab={activeTab} onTabChange={onTabChange}/>
   </div>;
 }
