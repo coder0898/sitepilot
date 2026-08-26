@@ -1,7 +1,7 @@
 import { cn } from "../../../utils/cn";
 
-export function KpiCard({ icon, tone, label, value, hint }) {
-  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone)}>
+export function KpiCard({ icon, tone, label, value, hint, className }) {
+  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone, className)}>
     <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/70">{icon}</span>
     <div className="min-w-0">
       <p className="text-xs font-bold text-slate-500">{label}</p>

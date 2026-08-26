@@ -122,7 +122,7 @@ export function CommunicationPage({ action }) {
       <KpiCard icon={<Users2 size={20} className="text-violet-600" />} tone="border-violet-200 bg-violet-50" label="Total Recipients" value={summary.total_recipients} />
       <KpiCard icon={<CheckCircle2 size={20} className="text-emerald-600" />} tone="border-emerald-200 bg-emerald-50" label="Delivery Success" value={`${summary.delivery_success_rate}%`} />
       <KpiCard icon={<CalendarClock size={20} className="text-amber-600" />} tone="border-amber-200 bg-amber-50" label="Scheduled" value={summary.scheduled} />
-      <KpiCard icon={<AlertOctagon size={20} className="text-rose-600" />} tone="border-rose-200 bg-rose-50" label="Failed" value={summary.failed} />
+      <KpiCard icon={<AlertOctagon size={20} className="text-rose-600" />} tone="border-rose-200 bg-rose-50" label="Failed" value={summary.failed} className="col-span-2 sm:col-span-1" />
     </section>
 
     <nav className="flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-[0_12px_40px_rgba(15,23,42,.06)]" aria-label="Communication sections">

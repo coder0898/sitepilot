@@ -68,8 +68,8 @@ function formatAction(action = "") {
   return action.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function StatTile({ icon, tone, label, value, hint }) {
-  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone)}>
+function StatTile({ icon, tone, label, value, hint, className }) {
+  return <div className={cn("flex items-center gap-3 rounded-2xl border p-4", tone, className)}>
     <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/70">{icon}</span>
     <div className="min-w-0">
       <p className="text-xs font-bold text-slate-500">{label}</p>
@@ -256,7 +256,7 @@ export function AdminProjectsOverview({ onOpenProject }) {
           <StatTile icon={<Activity size={20} className="text-emerald-600" />} tone="border-emerald-200 bg-emerald-50" label="Active" value={summary.active} hint={summary.total ? `${Math.round(summary.active / summary.total * 100)}% of total` : undefined} />
           <StatTile icon={<ShieldAlert size={20} className="text-amber-600" />} tone="border-amber-200 bg-amber-50" label="At Risk" value={summary.atRisk} hint={summary.total ? `${Math.round(summary.atRisk / summary.total * 100)}% of total` : undefined} />
           <StatTile icon={<Clock size={20} className="text-rose-600" />} tone="border-rose-200 bg-rose-50" label="Delayed" value={summary.delayed} hint={summary.total ? `${Math.round(summary.delayed / summary.total * 100)}% of total` : undefined} />
-          <StatTile icon={<CheckCircle2 size={20} className="text-blue-600" />} tone="border-blue-200 bg-blue-50" label="Completed" value={summary.completed} hint={summary.total ? `${Math.round(summary.completed / summary.total * 100)}% of total` : undefined} />
+          <StatTile icon={<CheckCircle2 size={20} className="text-blue-600" />} tone="border-blue-200 bg-blue-50" label="Completed" value={summary.completed} hint={summary.total ? `${Math.round(summary.completed / summary.total * 100)}% of total` : undefined} className="col-span-2 sm:col-span-1" />
         </div>
       </section>
 
