@@ -9,7 +9,7 @@ export function Dashboard({ initialUser, onLogout }) {
   const [data, setData] = useState(null);
   const [route, setRoute] = useRoute();
   const tab = route.tab || "projects";
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Switching module tabs drops any project selection the Projects tab was
@@ -33,7 +33,7 @@ export function Dashboard({ initialUser, onLogout }) {
         onLogout();
         return;
       }
-      setNotice(error.message);
+      setNotice({ message: error.message, tone: "danger" });
       setData({ user: initialUser, users: [], module_permissions: ["projects", "execution", "communication"] });
     } finally {
       setLoading(false);
@@ -58,12 +58,12 @@ export function Dashboard({ initialUser, onLogout }) {
   async function action(operation, message = "Saved", options = {}) {
     try {
       await operation();
-      setNotice(message);
+      setNotice({ message, tone: "success" });
       if (options.refresh !== false) await refresh();
       return { ok: true };
     } catch (error) {
       const errorMessage = error.message || "Something went wrong";
-      setNotice(errorMessage);
+      setNotice({ message: errorMessage, tone: "danger" });
       return { ok: false, error: errorMessage };
     }
   }
@@ -77,7 +77,7 @@ export function Dashboard({ initialUser, onLogout }) {
       onLogout={onLogout}
       onRefresh={refresh}
       notice={notice}
-      onClearNotice={() => setNotice("")}
+      onClearNotice={() => setNotice(null)}
     >
       <DashboardTab tab={tab} loading={loading} data={data} user={user} action={action} onOpenProject={openProject} onRefresh={refresh} />
     </AppLayout>
