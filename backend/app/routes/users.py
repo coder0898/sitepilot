@@ -1,6 +1,5 @@
 import re
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, inspect, or_, select, text
@@ -11,10 +10,10 @@ from app.auth import can_create_role, require_roles
 from app.database import get_db
 from app.models import AccessRequest, AccessRequestEvent, EmployeeProfile, User, UserAccountEvent, UserRole
 from app.project_models import V2Project, V2ProjectMembership
-from app.schemas.requests import MyProfileUpdateIn, UserCreateIn, UserDeleteIn, UserLifecycleIn, UserUpdateIn
+from app.schemas.requests import MyProfileUpdateIn, UserDeleteIn, UserInviteIn, UserLifecycleIn, UserUpdateIn
 from app.services.access_control import access_catalog, manageable_roles
 from app.services.serializers import public_user
-from app.services.supabase_auth import SupabaseAuthError, admin_create_user, admin_delete_user, admin_update_user
+from app.services.supabase_auth import SupabaseAuthError, admin_delete_user, admin_update_user
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -118,12 +117,13 @@ def account_events(user_id: uuid.UUID, actor: User = Depends(require_roles(*tupl
     } for item in events]
 
 
-@router.post("")
-def create_user(payload: UserCreateIn, actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)), db: Session = Depends(get_db)):
+@router.post("/invite")
+def invite_user(payload: UserInviteIn, actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)), db: Session = Depends(get_db)):
+    """Pre-registers a roster entry with no password: the person's first
+    Google sign-in auto-links to this row by matching email (see
+    app.auth.current_user), which is when the account actually activates."""
     if not can_create_role(actor.role, payload.role):
         raise HTTPException(403, "You cannot create this role.")
-    if len(payload.password) < 8:
-        raise HTTPException(422, "Temporary password must be at least 8 characters.")
     name = clean_required(payload.name, "Full name")
     email = clean_required(payload.email, "Email").lower()
     if db.scalar(select(User).where(func.lower(User.email) == email)):
@@ -131,24 +131,14 @@ def create_user(payload: UserCreateIn, actor: User = Depends(require_roles(UserR
     employee_code = clean_required(payload.employee_code, "Employee code")
     designation = clean_required(payload.designation, "Designation")
     phone = clean_phone(payload.phone)
-    try:
-        auth_identity = admin_create_user(
-            email=email,
-            password=payload.password,
-            metadata={"name": name, "siteops_role": payload.role.value},
-        )
-    except SupabaseAuthError as exc:
-        raise HTTPException(exc.status_code, exc.public_message) from exc
 
-    auth_user_id = uuid.UUID(auth_identity["id"])
     user = User(
         name=name,
         email=email,
         phone=phone,
         role=payload.role,
         password_hash=None,
-        supabase_user_id=auth_user_id,
-        activated_at=datetime.now(timezone.utc),
+        supabase_user_id=None,
         created_by=actor.id,
     )
     db.add(user)
@@ -160,14 +150,10 @@ def create_user(payload: UserCreateIn, actor: User = Depends(require_roles(UserR
             designation=designation,
             department=(payload.department or "").strip() or None,
         ))
-        add_event(db, user, actor, "ACCOUNT_CREATED", "Supabase Auth account and SiteOps access created.", to_role=payload.role)
+        add_event(db, user, actor, "ACCOUNT_INVITED", "Pre-registered for Google sign-in; awaiting first login.", to_role=payload.role)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        try:
-            admin_delete_user(str(auth_user_id))
-        except SupabaseAuthError:
-            pass
         raise HTTPException(409, "Email or employee code is already in use.") from exc
     return public_user(user, db)
 

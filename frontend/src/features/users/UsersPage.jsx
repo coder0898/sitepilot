@@ -5,19 +5,18 @@ import {
   ChevronRight,
   CircleUserRound,
   Mail,
-  KeyRound,
   Pencil,
   Phone,
   Search,
   ShieldCheck,
+  UserPlus,
   UsersRound,
 } from "lucide-react";
 import { Button, Input, Pill, RefreshButton } from "../../components/ui";
 import { usersApi } from "../../api/usersApi";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
-import { ChangePasswordModal, EditMyProfileModal, UserModal } from "./components/UserModals";
-import { AccessRequestQueue } from "./components/AccessRequestQueue";
+import { CreateUserModal, EditMyProfileModal, UserModal } from "./components/UserModals";
 
 const managementRoles = new Set(["super_admin", "admin"]);
 
@@ -48,9 +47,16 @@ function AccessDirectory({ data, user, action, onRefresh }) {
   const catalog = data.access_catalog || [];
   const manageableRoles = data.manageable_roles || [];
   const [selected, setSelected] = useState(null);
+  const [inviting, setInviting] = useState(false);
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("active");
+
+  async function invite(event) {
+    event.preventDefault();
+    const result = await action(() => usersApi.invite(Object.fromEntries(new FormData(event.currentTarget))), "Added to roster - they can now sign in with Google");
+    if (result?.ok !== false) { setInviting(false); onRefresh?.(); }
+  }
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -70,7 +76,7 @@ function AccessDirectory({ data, user, action, onRefresh }) {
       <div className="absolute -right-20 -top-28 size-72 rounded-full border-[52px] border-blue-500/10"/>
       <div className="relative flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
         <div><p className="text-xs font-black uppercase tracking-[.2em] text-blue-300">Identity and access</p><h1 className="mt-2 text-3xl font-black tracking-[-.04em] sm:text-4xl">Users & Access</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-blue-100/70">One auditable directory for employee identity, fixed role boundaries, and account status.</p></div>
-        <div className="flex flex-wrap items-center gap-2"><Pill tone="blue">Approval-gated onboarding</Pill>{onRefresh && <RefreshButton onClick={onRefresh}/>}</div>
+        <div className="flex flex-wrap items-center gap-2"><Pill tone="blue">Google sign-in, no passwords</Pill><Button onClick={() => setInviting(true)}><UserPlus size={17}/>Add team member</Button>{onRefresh && <RefreshButton onClick={onRefresh}/>}</div>
       </div>
     </section>
 
@@ -79,8 +85,6 @@ function AccessDirectory({ data, user, action, onRefresh }) {
       <Metric icon={<BadgeCheck size={19}/>} label="Active access" value={activeCount} tone="green"/>
       <div className="col-span-2 lg:col-span-1"><Metric icon={<BriefcaseBusiness size={19}/>} label="Employee profiles" value={profiledCount} tone="violet"/></div>
     </section>
-
-    <AccessRequestQueue user={user} action={action}/>
 
     <section className="overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-[0_18px_50px_rgba(15,23,42,.06)]">
       <div className="grid gap-3 border-b border-slate-200 p-4 sm:grid-cols-[minmax(0,1fr)_180px_180px] sm:p-5">
@@ -97,12 +101,12 @@ function AccessDirectory({ data, user, action, onRefresh }) {
     <section className="grid gap-3 lg:grid-cols-3">{catalog.map(item => <article key={item.role} className="rounded-[22px] border border-slate-200 bg-white p-5"><div className="flex items-start justify-between gap-3"><span className="grid size-10 place-items-center rounded-2xl bg-blue-50 text-blue-700"><ShieldCheck size={19}/></span><Pill tone={manageableRoles.includes(item.role) ? "blue" : "gray"}>{manageableRoles.includes(item.role) ? "Manageable" : "Fixed"}</Pill></div><h3 className="mt-4 font-black text-slate-950">{item.label}</h3><p className="mt-1 text-sm leading-6 text-slate-500">{item.summary}</p></article>)}</section>
 
     {selected && <UserModal selectedUser={selected} actor={user} catalog={catalog} manageableRoles={manageableRoles} onClose={() => setSelected(null)} action={action}/>}
+    {inviting && <CreateUserModal create={invite} catalog={catalog} manageableRoles={manageableRoles} onClose={() => setInviting(false)}/>}
   </div>;
 }
 
 function PersonalProfile({ data, user, action }) {
   const [editing, setEditing] = useState(false);
-  const [changingPassword, setChangingPassword] = useState(false);
   const definition = (data.access_catalog || []).find(item => item.role === user.role) || { label: roles[user.role] || user.role, summary: "Role-based SiteOps access.", capabilities: [] };
   const profile = user.employee_profile || {};
   const detailRows = [
@@ -115,7 +119,7 @@ function PersonalProfile({ data, user, action }) {
   return <div className="grid gap-5 sm:gap-6">
     <section className="relative overflow-hidden rounded-[28px] bg-[#071a33] p-5 text-white shadow-[0_28px_70px_rgba(7,26,51,.16)] sm:p-8">
       <div className="absolute -right-20 -top-28 size-72 rounded-full border-[52px] border-blue-500/10"/>
-      <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center"><Avatar name={user.name} large/><div className="min-w-0 flex-1"><p className="text-xs font-black uppercase tracking-[.2em] text-blue-300">My profile</p><h1 className="mt-1 truncate text-3xl font-black tracking-[-.04em]">{user.name}</h1><div className="mt-2 flex flex-wrap items-center gap-2"><Pill>{definition.label}</Pill><AccountStatus person={user}/></div></div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => setChangingPassword(true)}><KeyRound size={17}/>Password</Button><Button onClick={() => setEditing(true)}><Pencil size={17}/>Edit profile</Button></div></div>
+      <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center"><Avatar name={user.name} large/><div className="min-w-0 flex-1"><p className="text-xs font-black uppercase tracking-[.2em] text-blue-300">My profile</p><h1 className="mt-1 truncate text-3xl font-black tracking-[-.04em]">{user.name}</h1><div className="mt-2 flex flex-wrap items-center gap-2"><Pill>{definition.label}</Pill><AccountStatus person={user}/></div></div><div className="flex flex-wrap gap-2"><Button onClick={() => setEditing(true)}><Pencil size={17}/>Edit profile</Button></div></div>
     </section>
 
     <section className="grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
@@ -125,7 +129,6 @@ function PersonalProfile({ data, user, action }) {
 
     <section className="flex items-start gap-3 rounded-[22px] border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-600 sm:p-5"><CircleUserRound className="mt-0.5 shrink-0 text-blue-600" size={20}/><p>You can update personal contact details here. Role, employee code, designation, department, and account status are controlled by authorized administrators.</p></section>
     {editing && <EditMyProfileModal user={user} action={action} onClose={() => setEditing(false)}/>}
-    {changingPassword && <ChangePasswordModal action={action} onClose={() => setChangingPassword(false)}/>}
   </div>;
 }
 

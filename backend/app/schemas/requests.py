@@ -7,30 +7,16 @@ from app.models import UserRole
 
 
 
-class AccessRequestCreateIn(BaseModel):
+class UserInviteIn(BaseModel):
+    """Pre-registers a roster entry with no password and no Supabase identity yet.
+
+    The account activates itself on the person's first Google sign-in
+    (see app.auth.current_user's email-match fallback), which links this
+    row to the Supabase identity Google creates at that point.
+    """
     name: str
     email: str
     phone: str | None = None
-    employee_code: str | None = None
-    designation: str | None = None
-    department: str | None = None
-    requested_role: UserRole
-    project_reference: str | None = None
-    justification: str
-
-
-class AccessRequestReviewIn(BaseModel):
-    role: UserRole | None = None
-    employee_code: str | None = None
-    designation: str | None = None
-    department: str | None = None
-    reason: str | None = None
-
-class UserCreateIn(BaseModel):
-    name: str
-    email: str
-    phone: str | None = None
-    password: str
     role: UserRole
     employee_code: str | None = None
     designation: str | None = None
