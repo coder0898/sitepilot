@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CheckCircle2, KeyRound, LoaderCircle, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ShieldCheck } from "lucide-react";
 
 function BrandPanel() {
   return <aside className="relative overflow-hidden bg-[#071a33] p-7 text-white sm:p-10 lg:p-12">
@@ -27,22 +27,14 @@ export function Notice({ error, message }) {
   return null;
 }
 
-export function TextField({ icon, label, ...props }) {
-  return <label className="grid gap-2 text-sm font-black text-slate-700"><span>{label}</span><span className="relative"><span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">{icon}</span><input className="min-h-13 w-full rounded-2xl border border-slate-200 bg-white pl-11 pr-4 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100" {...props}/></span></label>;
+function GoogleGlyph() {
+  return <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.9c1.7-1.56 2.7-3.87 2.7-6.62Z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.26c-.8.54-1.84.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.96v2.33A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.95 10.7A5.4 5.4 0 0 1 3.67 9c0-.59.1-1.17.28-1.7V4.97H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.03l2.99-2.33Z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.51.46 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.97l2.99 2.33C4.66 5.17 6.65 3.58 9 3.58Z"/></svg>;
 }
 
-export function SubmitButton({ loading, children }) {
-  return <button type="submit" disabled={loading} className="inline-flex min-h-13 w-full items-center justify-center gap-2 rounded-2xl bg-blue-700 px-5 text-sm font-black text-white shadow-[0_14px_30px_rgba(29,78,216,.22)] transition hover:bg-blue-800 disabled:cursor-wait disabled:opacity-60">{loading ? <LoaderCircle className="animate-spin" size={18}/> : children}</button>;
+export function GoogleButton({ onClick, children = "Continue with Google" }) {
+  return <button type="button" onClick={onClick} className="inline-flex min-h-13 w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-800 shadow-sm transition hover:border-blue-300 hover:bg-blue-50"><GoogleGlyph/>{children}</button>;
 }
 
-export function LoginPage({ onSubmit, onForgot, onRequest, error, message, loading }) {
-  return <AuthShell eyebrow="Welcome back" title="Sign in to SiteOps" subtitle="Use the company account issued by your administrator."><form onSubmit={onSubmit} className="mt-8 grid gap-5"><TextField icon={<Mail size={18}/>} label="Work email" name="email" type="email" autoComplete="email" placeholder="name@company.com" required/><TextField icon={<LockKeyhole size={18}/>} label="Password" name="password" type="password" autoComplete="current-password" placeholder="Enter your password" required/><div className="-mt-2 flex justify-end"><button type="button" onClick={onForgot} className="text-sm font-black text-blue-700 transition hover:text-blue-900">Forgot password?</button></div><Notice error={error} message={message}/><SubmitButton loading={loading}>Open workspace<ArrowRight size={18}/></SubmitButton><div className="flex items-center gap-3"><span className="h-px flex-1 bg-slate-200"/><span className="text-[11px] font-black uppercase tracking-[.14em] text-slate-400">New to SiteOps?</span><span className="h-px flex-1 bg-slate-200"/></div><button type="button" onClick={onRequest} className="min-h-12 rounded-2xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-800">Request workspace access</button></form></AuthShell>;
-}
-
-export function ForgotPasswordPage({ onSubmit, onBack, error, message, loading }) {
-  return <AuthShell eyebrow="Account recovery" title="Reset your password" subtitle="Enter your registered email. Supabase will send a secure, time-limited recovery link."><button type="button" onClick={onBack} className="mt-7 inline-flex items-center gap-2 text-sm font-black text-slate-500 hover:text-slate-900"><ArrowLeft size={17}/>Back to sign in</button><form onSubmit={onSubmit} className="mt-6 grid gap-5"><TextField icon={<Mail size={18}/>} label="Work email" name="email" type="email" autoComplete="email" placeholder="name@company.com" required/><Notice error={error} message={message}/><SubmitButton loading={loading}>Send recovery email<Mail size={18}/></SubmitButton><p className="text-center text-xs leading-5 text-slate-400">For security, the response is the same whether or not an account exists.</p></form></AuthShell>;
-}
-
-export function ResetPasswordPage({ onSubmit, error, loading }) {
-  return <AuthShell eyebrow="Secure recovery" title="Choose a new password" subtitle="This recovery session came from your Supabase email link. Use at least eight characters."><form onSubmit={onSubmit} className="mt-8 grid gap-5"><TextField icon={<KeyRound size={18}/>} label="New password" name="password" type="password" autoComplete="new-password" minLength={8} placeholder="Minimum 8 characters" required/><TextField icon={<LockKeyhole size={18}/>} label="Confirm new password" name="confirm_password" type="password" autoComplete="new-password" minLength={8} placeholder="Repeat your password" required/><Notice error={error}/><SubmitButton loading={loading}>Update password<ShieldCheck size={18}/></SubmitButton></form></AuthShell>;
+export function LoginPage({ onGoogle, error, message }) {
+  return <AuthShell eyebrow="Welcome back" title="Sign in to SiteOps" subtitle="One click with the Google account your administrator registered for you."><div className="mt-8 grid gap-5"><GoogleButton onClick={onGoogle}/><Notice error={error} message={message}/><p className="text-center text-xs leading-5 text-slate-400">New here? Ask your Admin or Super Admin to add you in User Management - you'll be able to sign in the moment they do.</p></div></AuthShell>;
 }

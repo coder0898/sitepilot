@@ -4,7 +4,6 @@ import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.config import settings
@@ -96,17 +95,3 @@ def admin_find_user_by_email(email: str) -> dict[str, Any] | None:
     users = result.get("users", result if isinstance(result, list) else [])
     return next((item for item in users if item.get("email", "").lower() == email.lower()), None)
 
-
-
-def request_password_recovery(email: str, redirect_to: str) -> None:
-    query = urlencode({"redirect_to": redirect_to})
-    _request(f"/recover?{query}", method="POST", payload={"email": email})
-
-def request_email_verification(email: str, redirect_to: str, metadata: dict[str, Any] | None = None) -> None:
-    """Send a magic-link verification without replacing the administrator browser session."""
-    query = urlencode({"redirect_to": redirect_to})
-    _request(f"/otp?{query}", method="POST", payload={
-        "email": email,
-        "create_user": True,
-        "data": metadata or {},
-    })
