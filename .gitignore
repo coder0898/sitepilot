@@ -28,5 +28,9 @@ backend/uploads/
 docs/
 todo.md
 
+# Local-only production DB backup/inspection dumps — contains real user PII,
+# never belongs in git history
+prod-backup-*/
+
 # Local Claude Code tool config — not part of the shipped app
 .claude/
