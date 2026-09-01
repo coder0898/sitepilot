@@ -16,6 +16,16 @@ class Settings(BaseSettings):
     # valid signature can ever be computed, so the route safely rejects
     # every inbound request until an operator configures this.
     whatsapp_webhook_secret: str = ""
+    # Meta's webhook subscription handshake (GET .../inbound with
+    # ?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...), required
+    # once when registering the callback URL in Meta for Developers. Distinct
+    # from `whatsapp_webhook_secret` (which signs delivery payloads) - this
+    # is a separate arbitrary string chosen by the operator and entered into
+    # both Meta's dashboard and this setting. Empty by default: with no
+    # configured token, the handshake can never match and always fails
+    # closed (403), matching `whatsapp_webhook_secret`'s same fail-closed
+    # default.
+    whatsapp_webhook_verify_token: str = ""
     # Real Meta WhatsApp Cloud API credentials (see
     # backend/app/services/whatsapp_provider.py). Sourced from
     # environment/`.env` only, mirroring `supabase_secret_key`'s pattern -

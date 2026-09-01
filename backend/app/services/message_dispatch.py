@@ -7,15 +7,15 @@ pending `OutboxEvent` rows (`app.execution_models.OutboxEvent`, written by
 `OutboxService.emit` - see `app.services.outbox`) and attempts delivery to
 every resolved recipient via a `WhatsAppProviderAdapter`.
 
-This unit does NOT send real WhatsApp messages. `SandboxProviderAdapter` is
-a deterministic fake used for infrastructure testing; a real provider
-adapter (e.g. a Meta/WABA client) would implement the same
-`WhatsAppProviderAdapter` protocol and be wired in behind an app.config
-setting later. That real adapter's credentials (an access token, a phone
-number ID, etc.) would be added to `backend/app/config.py`'s `Settings`
-class, mirroring how `supabase_secret_key` is sourced - always from
-environment/`.env`, never hardcoded, never committed. This unit needs no
-such settings since the sandbox adapter requires no credentials.
+This unit is provider-agnostic and holds no opinion on which adapter it is
+given. `SandboxProviderAdapter` (below) is a deterministic fake used for
+infrastructure testing - no network call, no credentials. `MessageDispatchService(db)` with no `adapter` argument defaults to it. The real
+sender, `MetaCloudApiAdapter` (`app.services.whatsapp_provider`), implements
+the same `WhatsAppProviderAdapter` protocol; `app.services.outbox_scheduler`
+is what actually chooses between the two per pass, based on whether real
+credentials are configured (`backend/app/config.py`'s
+`whatsapp_access_token`/`whatsapp_phone_number_id`) - this module itself
+never reads that config.
 
 `_resolve_pm_supervisor_recipients` (and therefore `_ACCOUNTABLE_ROLES`)
 structurally excludes `UserRole.super_admin`: it only ever queries

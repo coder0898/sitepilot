@@ -8,11 +8,16 @@ attempted.
 
 This module is the missing caller and nothing more. It changes nothing about
 what is emitted, nothing about who resolves as a recipient, and nothing about
-where a message goes: the wired adapter is still `SandboxProviderAdapter` per
-KTD7, which makes no network call and holds no credentials. Swapping in a
-real provider is a separate and deliberate decision, and one worth making
-carefully - the first real run would deliver the whole accumulated backlog at
-once, for work that happened weeks ago.
+where a message goes.
+
+The adapter is chosen per pass by `_build_adapter`: `MetaCloudApiAdapter` once
+real credentials (`WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`) are
+configured, `SandboxProviderAdapter` (no network call, no credentials) until
+then - so going live is an operator setting real env vars, not a redeploy.
+Flipping this on for the first time still delivers the whole accumulated
+backlog at once, for work that happened weeks ago - see
+`app/scripts/clear_whatsapp_backlog.py`, meant to run immediately before that
+first real cutover.
 
 Kept out of `main.py` so a pass and the loop's failure isolation can both be
 tested directly, rather than by standing up an app and waiting on wall-clock
@@ -24,11 +29,18 @@ import logging
 
 from app.config import settings
 from app.database import SessionLocal
-from app.services.message_dispatch import MessageDispatchService
+from app.services.message_dispatch import MessageDispatchService, SandboxProviderAdapter, WhatsAppProviderAdapter
+from app.services.whatsapp_provider import MetaCloudApiAdapter
 
 logger = logging.getLogger(__name__)
 
 TASK_ATTRIBUTE = "outbox_dispatch_task"
+
+
+def _build_adapter() -> WhatsAppProviderAdapter:
+    if settings.whatsapp_access_token and settings.whatsapp_phone_number_id:
+        return MetaCloudApiAdapter()
+    return SandboxProviderAdapter()
 
 
 def run_dispatch_pass() -> int:
@@ -41,7 +53,7 @@ def run_dispatch_pass() -> int:
     the events it already finished committed and the rest still pending.
     """
     with SessionLocal() as db:
-        return MessageDispatchService(db).process_pending()
+        return MessageDispatchService(db, adapter=_build_adapter()).process_pending()
 
 
 async def dispatch_loop(interval_seconds: float, runner=run_dispatch_pass) -> None:

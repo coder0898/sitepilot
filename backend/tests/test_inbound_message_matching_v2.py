@@ -57,14 +57,15 @@ SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
 INTERNAL_EMPLOYEE_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
 
-SUPERVISOR_PHONE = "9000000011"
-INTERNAL_EMPLOYEE_PHONE = "9000000012"
-UNKNOWN_PHONE = "9999999999"
-VENDOR_ELECTRICAL_CONTACT_PHONE = "9100000001"
-VENDOR_OTHER_CONTACT_PHONE = "9100000002"
-AMBIGUOUS_PHONE = "9200000001"
+SUPERVISOR_PHONE = "+9000000011"
+INTERNAL_EMPLOYEE_PHONE = "+9000000012"
+UNKNOWN_PHONE = "+9999999999"
+VENDOR_ELECTRICAL_CONTACT_PHONE = "+9100000001"
+VENDOR_OTHER_CONTACT_PHONE = "+9100000002"
+AMBIGUOUS_PHONE = "+9200000001"
 
 WEBHOOK_SECRET = "test-webhook-secret"
+WEBHOOK_VERIFY_TOKEN = "test-verify-token"
 
 
 class InboundMessageMatchingApiTests(unittest.TestCase):
@@ -126,6 +127,8 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
 
         self._original_webhook_secret = settings.whatsapp_webhook_secret
         settings.whatsapp_webhook_secret = WEBHOOK_SECRET
+        self._original_verify_token = settings.whatsapp_webhook_verify_token
+        settings.whatsapp_webhook_verify_token = WEBHOOK_VERIFY_TOKEN
 
         self.app = FastAPI()
         self.app.include_router(projects_router)
@@ -147,6 +150,7 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         self.client.close()
         self.engine.dispose()
         settings.whatsapp_webhook_secret = self._original_webhook_secret
+        settings.whatsapp_webhook_verify_token = self._original_verify_token
 
     def act_as_admin(self) -> None:
         self._current_actor = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
@@ -302,7 +306,33 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
     # ---- webhook helpers -------------------------------------------------
 
     def post_inbound(self, payload: dict, secret: str | None = None, header: str | None = ...):
-        raw_body = json.dumps(payload).encode("utf-8")
+        """Wraps the test's logical {provider_message_id, sender_phone,
+        message_text} into Meta's real webhook envelope shape - `from`
+        carries no leading `+` (Meta's own convention), mirroring what
+        `whatsapp_webhook_v2.py` actually receives in production; the route
+        itself is responsible for re-adding `+` to match stored E.164
+        numbers."""
+        envelope = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "test-waba-id",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"phone_number_id": "test-phone-number-id"},
+                        "messages": [{
+                            "from": payload["sender_phone"].lstrip("+"),
+                            "id": payload["provider_message_id"],
+                            "timestamp": "1700000000",
+                            "type": "text",
+                            "text": {"body": payload["message_text"]},
+                        }],
+                    },
+                }],
+            }],
+        }
+        raw_body = json.dumps(envelope).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if header is ...:
             signing_secret = secret if secret is not None else WEBHOOK_SECRET
@@ -461,6 +491,146 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401, response.text)
         self.assertEqual(self.inbound_rows(), [])
+
+    # ---- the verification handshake (GET) ----------------------------------
+
+    def test_webhook_verification_echoes_challenge_on_matching_token(self):
+        response = self.client.get(
+            "/api/v2/whatsapp/inbound",
+            params={"hub.mode": "subscribe", "hub.verify_token": WEBHOOK_VERIFY_TOKEN, "hub.challenge": "12345"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.text, "12345")
+
+    def test_webhook_verification_rejects_wrong_token(self):
+        response = self.client.get(
+            "/api/v2/whatsapp/inbound",
+            params={"hub.mode": "subscribe", "hub.verify_token": "wrong-token", "hub.challenge": "12345"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_webhook_verification_rejects_non_subscribe_mode(self):
+        response = self.client.get(
+            "/api/v2/whatsapp/inbound",
+            params={"hub.mode": "unsubscribe", "hub.verify_token": WEBHOOK_VERIFY_TOKEN, "hub.challenge": "12345"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    # ---- real Meta envelope edge cases --------------------------------------
+
+    def test_status_only_delivery_receipt_is_a_no_op(self):
+        """A `changes[].value` carrying `statuses` (a delivery/read receipt)
+        instead of `messages` is not an inbound message - accepted with 200,
+        no `InboundMessage` row written, per the module docstring."""
+        envelope = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "test-waba-id",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"phone_number_id": "test-phone-number-id"},
+                        "statuses": [{"id": "wamid.status-1", "status": "delivered"}],
+                    },
+                }],
+            }],
+        }
+        raw_body = json.dumps(envelope).encode("utf-8")
+        digest = hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+        response = self.client.post(
+            "/api/v2/whatsapp/inbound",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": f"sha256={digest}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows(), [])
+
+    def test_multiple_messages_in_one_delivery_are_all_processed(self):
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+
+        envelope = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "test-waba-id",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"phone_number_id": "test-phone-number-id"},
+                        "messages": [
+                            {
+                                "from": SUPERVISOR_PHONE.lstrip("+"),
+                                "id": "wamid.batch-1",
+                                "timestamp": "1700000000",
+                                "type": "text",
+                                "text": {"body": f"STATUS {task.original_code} ready"},
+                            },
+                            {
+                                "from": UNKNOWN_PHONE.lstrip("+"),
+                                "id": "wamid.batch-2",
+                                "timestamp": "1700000001",
+                                "type": "text",
+                                "text": {"body": "STATUS T001 ready"},
+                            },
+                        ],
+                    },
+                }],
+            }],
+        }
+        raw_body = json.dumps(envelope).encode("utf-8")
+        digest = hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+        response = self.client.post(
+            "/api/v2/whatsapp/inbound",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": f"sha256={digest}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = {row.provider_message_id: row for row in self.inbound_rows()}
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows["wamid.batch-1"].processing_status, "processed", rows["wamid.batch-1"].rejection_reason)
+        self.assertEqual(rows["wamid.batch-2"].processing_status, "unmatched")
+
+    def test_non_text_message_type_is_rejected_not_crashed(self):
+        """A message type other than `text` (image, location, etc.) carries
+        no `.text.body` - `message_text` falls back to `""`, which
+        `InboundMessageService` already rejects as "Unrecognized command"
+        rather than this route raising on the missing field."""
+        envelope = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "test-waba-id",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"phone_number_id": "test-phone-number-id"},
+                        "messages": [{
+                            "from": SUPERVISOR_PHONE.lstrip("+"),
+                            "id": "wamid.image-1",
+                            "timestamp": "1700000000",
+                            "type": "image",
+                            "image": {"id": "media-id-123"},
+                        }],
+                    },
+                }],
+            }],
+        }
+        raw_body = json.dumps(envelope).encode("utf-8")
+        digest = hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+        response = self.client.post(
+            "/api/v2/whatsapp/inbound",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": f"sha256={digest}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "Unrecognized command.")
 
     # ---- identity-matching edge cases --------------------------------------
 

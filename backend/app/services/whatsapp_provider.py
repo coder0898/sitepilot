@@ -1,12 +1,12 @@
 """Real Meta WhatsApp Cloud API adapter (Graph API).
 
 Implements the same `WhatsAppProviderAdapter` protocol as
-`SandboxProviderAdapter` (see `app.services.message_dispatch`), so it can
-later be wired into `MessageDispatchService` as a drop-in replacement -
-`MessageDispatchService(db, adapter=MetaCloudApiAdapter())`. Not yet wired
-in anywhere: `message_dispatch.py`'s own docstring notes turning on a real
-provider is "a separate, deliberate decision". This module only sends -
-callers own retries, persistence, and recipient resolution.
+`SandboxProviderAdapter` (see `app.services.message_dispatch`), so it is a
+drop-in replacement - `MessageDispatchService(db, adapter=MetaCloudApiAdapter())`.
+`app.services.outbox_scheduler._build_adapter` is what actually constructs
+this, once `whatsapp_access_token`/`whatsapp_phone_number_id` are configured
+- an operator setting real env vars, not a code change. This module only
+sends - callers own retries, persistence, and recipient resolution.
 
 Only template messages are supported (`type: "template"` in the Graph API
 request body), never free-form text: WhatsApp's Cloud API rejects a
