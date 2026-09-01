@@ -181,8 +181,6 @@ def update_user(user_id: uuid.UUID, payload: UserUpdateIn, actor: User = Depends
     role_changed = target_role != target.role
     if role_changed and len((payload.reason or "").strip()) < 4:
         raise HTTPException(422, "Provide a reason when changing a role.")
-    if not target.supabase_user_id:
-        raise HTTPException(409, "This legacy account is not linked to Supabase Auth. Link it before editing access.")
 
     old_role = target.role
     old_email = target.email
@@ -199,24 +197,34 @@ def update_user(user_id: uuid.UUID, payload: UserUpdateIn, actor: User = Depends
         profile.designation = clean_required(payload.designation or profile.designation, "Designation")
     profile.department = (payload.department or "").strip() or None
 
-    try:
-        admin_update_user(str(target.supabase_user_id), {
-            "email": target.email,
-            "user_metadata": {"name": target.name, "siteops_role": target.role.value},
-        })
-    except SupabaseAuthError as exc:
-        db.rollback()
-        raise HTTPException(exc.status_code, exc.public_message) from exc
+    # No Supabase identity to sync yet for a pre-registered roster row that
+    # hasn't completed its first Google sign-in (`supabase_user_id` is only
+    # ever set by `current_user()`'s auto-link on that first login - see
+    # `app.auth`). Editing the local roster row is still valid and expected
+    # in that window (e.g. correcting a typo'd invite email before the
+    # person has signed in) - there is simply nothing on the Supabase side
+    # to push the change to yet; it self-resolves once they do sign in,
+    # since auto-link matches against whatever email is on this row then.
+    if target.supabase_user_id:
+        try:
+            admin_update_user(str(target.supabase_user_id), {
+                "email": target.email,
+                "user_metadata": {"name": target.name, "siteops_role": target.role.value},
+            })
+        except SupabaseAuthError as exc:
+            db.rollback()
+            raise HTTPException(exc.status_code, exc.public_message) from exc
 
     add_event(db, target, actor, "ROLE_CHANGED" if role_changed else "PROFILE_UPDATED", (payload.reason or "Profile details updated.").strip(), old_role if role_changed else None, target_role if role_changed else None)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        try:
-            admin_update_user(str(target.supabase_user_id), {"email": old_email})
-        except SupabaseAuthError:
-            pass
+        if target.supabase_user_id:
+            try:
+                admin_update_user(str(target.supabase_user_id), {"email": old_email})
+            except SupabaseAuthError:
+                pass
         raise HTTPException(409, "Email or employee code is already in use.") from exc
     return public_user(target, db)
 
@@ -235,12 +243,16 @@ def set_account_active(db: Session, target: User, actor: User, active: bool, rea
         blocked = active_accountability_message(db, target)
         if blocked:
             raise HTTPException(409, blocked)
-    if not target.supabase_user_id:
-        raise HTTPException(409, "This legacy account is not linked to Supabase Auth.")
-    try:
-        admin_update_user(str(target.supabase_user_id), {"ban_duration": "none" if active else "876000h"})
-    except SupabaseAuthError as exc:
-        raise HTTPException(exc.status_code, exc.public_message) from exc
+    # As in update_user above: a pre-registered row that hasn't signed in yet
+    # has no Supabase identity to ban/unban - `current_user()`'s own
+    # `if not user.active` check (app.auth) already blocks a linked-on-first-
+    # login attempt for an offboarded account regardless, so there is nothing
+    # unsafe about skipping the Supabase call here.
+    if target.supabase_user_id:
+        try:
+            admin_update_user(str(target.supabase_user_id), {"ban_duration": "none" if active else "876000h"})
+        except SupabaseAuthError as exc:
+            raise HTTPException(exc.status_code, exc.public_message) from exc
     target.active = active
     add_event(
         db,
