@@ -84,7 +84,7 @@ Create a plain **Web Service** (not a Blueprint - Blueprint deploys can prompt f
 - Health Check Path: `/api/health`
 - No persistent disk needed - evidence/uploads never touch local disk
 
-`render.yaml` documents the full set of environment variables this service expects (`DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`, `WHATSAPP_WEBHOOK_SECRET`, `BOOTSTRAP_SUPER_ADMIN_EMAIL`, `BOOTSTRAP_SUPER_ADMIN_PASSWORD`) - set the real values by hand in Render's dashboard; none of them belong in source control.
+`render.yaml` documents the full set of environment variables this service expects (`DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`, `WHATSAPP_WEBHOOK_SECRET`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN`, `BOOTSTRAP_SUPER_ADMIN_EMAIL`, `BOOTSTRAP_SUPER_ADMIN_PASSWORD`) - set the real values by hand in Render's dashboard; none of them belong in source control.
 
 Render's free plan spins the service down after ~15 minutes of no inbound traffic. That pauses the in-process schedulers in `backend/app/main.py` (daily task prompts, gate/meeting reminders, weekly summaries, evidence retention, outbox dispatch) and slows the WhatsApp inbound webhook's first response after a sleep. Point a free external keep-alive (e.g. cron-job.org, every ~10 minutes) at `/api/health` to keep it always warm.
 

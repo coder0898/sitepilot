@@ -39,6 +39,8 @@ services:
         value: v21.0
       - key: WHATSAPP_WEBHOOK_SECRET
         sync: false
+      - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        sync: false
       - key: BOOTSTRAP_SUPER_ADMIN_EMAIL
         sync: false
       - key: BOOTSTRAP_SUPER_ADMIN_PASSWORD
