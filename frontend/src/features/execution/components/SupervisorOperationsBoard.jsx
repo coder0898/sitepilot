@@ -161,7 +161,15 @@ export function SupervisorOperationsBoard({ projectId, user }) {
         <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
       </label>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      {/* items-start: without it, a CSS Grid row stretches every column to
+          match its tallest sibling by default. Each DayColumn is itself a
+          2-row grid (header, task list) with no fixed row heights, so once
+          "View all" made the columns' real task counts diverge, the leftover
+          stretch height landed as an uneven gap between a shorter column's
+          header and its first card instead of just trailing empty space
+          below it. Before expansion this was invisible - all columns are
+          capped at VISIBLE_PER_COLUMN and stay nearly the same height. */}
+      <div className="grid items-start gap-3 sm:grid-cols-3">
         {visibleColumns.map(column => <DayColumn
           key={column.key}
           label={column.label}
