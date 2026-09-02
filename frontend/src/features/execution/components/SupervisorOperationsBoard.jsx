@@ -31,8 +31,8 @@ const ATTENTION_KEYS = [
 
 function TaskCard({ task, onOpen }) {
   const late = task.variance?.status === "late";
-  return <button type="button" onClick={() => onOpen(task.id)} className="grid w-full gap-1 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:shadow-sm">
-    <div className="flex flex-wrap items-center gap-2">
+  return <button type="button" onClick={() => onOpen(task.id)} className="grid w-full min-w-0 gap-1 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:shadow-sm">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <span className="font-mono text-[11px] font-black text-blue-700">{task.original_code}</span>
       <span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{task.title}</span>
     </div>
@@ -52,7 +52,7 @@ function DayColumn({ label, tasks, expanded, onExpand, onOpen }) {
       <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">{label.kind}</div>
       <div className="text-xs font-bold text-slate-700">{label.formatted}</div>
     </header>
-    <div className="grid gap-2">
+    <div className="grid min-w-0 gap-2">
       {visible.length ? visible.map(task => <TaskCard key={task.id} task={task} onOpen={onOpen}/>) : <p className="rounded-xl border border-dashed border-slate-200 bg-white p-3 text-center text-xs text-slate-400">No tasks</p>}
     </div>
     {remaining > 0 && <Button size="sm" variant="ghost" onClick={onExpand}>View all ({tasks.length})</Button>}
@@ -161,7 +161,15 @@ export function SupervisorOperationsBoard({ projectId, user }) {
         <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
       </label>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      {/* items-start: without it, a CSS Grid row stretches every column to
+          match its tallest sibling by default. Each DayColumn is itself a
+          2-row grid (header, task list) with no fixed row heights, so once
+          "View all" made the columns' real task counts diverge, the leftover
+          stretch height landed as an uneven gap between a shorter column's
+          header and its first card instead of just trailing empty space
+          below it. Before expansion this was invisible - all columns are
+          capped at VISIBLE_PER_COLUMN and stay nearly the same height. */}
+      <div className="grid items-start gap-3 sm:grid-cols-3">
         {visibleColumns.map(column => <DayColumn
           key={column.key}
           label={column.label}

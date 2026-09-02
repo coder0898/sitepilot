@@ -106,7 +106,7 @@ export function PendingRoleChangesPanel({ projectId, user, onChanged }) {
       <h3 className="font-black text-slate-950">Pending role changes</h3>
       <div className="mt-3 grid gap-3">{pending.map(change => <article key={change.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div><strong className="text-slate-900">{ROLE_LABEL[change.role_type] || change.role_type}</strong><span className="ml-2 text-sm text-slate-600">→ {change.replacement_name}</span></div>
+          <div><strong className="text-slate-900">{ROLE_LABEL[change.role_type] || change.role_type}</strong><span className="ml-2 text-sm text-slate-600">{change.change_type === "vacate" ? "→ Vacate (no replacement named)" : `→ ${change.replacement_name}`}</span></div>
           <Pill tone="orange">Pending approval</Pill>
         </div>
         <p className="mt-2 text-sm text-slate-600">{change.reason_code}</p>

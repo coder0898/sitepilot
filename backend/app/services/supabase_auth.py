@@ -95,3 +95,25 @@ def admin_find_user_by_email(email: str) -> dict[str, Any] | None:
     users = result.get("users", result if isinstance(result, list) else [])
     return next((item for item in users if item.get("email", "").lower() == email.lower()), None)
 
+
+def dev_login_session(email: str) -> dict[str, Any]:
+    """Local-dev-only: mints a real session for `email` without a browser
+    round trip, via the same magic-link mechanism a real "check your email"
+    flow uses - admin_generate_link (service key) issues a one-time code,
+    then /verify (anon key, like any client would) exchanges it for a
+    session in one direct JSON response. See app/routes/auth.py's
+    dev_login for the caller's local-only gating; this function itself
+    performs no such check.
+
+    GoTrue's actual `verification_type` on the generate_link response can
+    differ from the requested "magiclink" - an email with no existing
+    auth.users row comes back "signup" instead, since generate_link also
+    creates that row - and /verify only accepts the type it actually issued
+    the code under, so this must be read back rather than assumed."""
+    link = _request("/admin/generate_link", method="POST", admin=True, payload={"type": "magiclink", "email": email})
+    otp = link.get("email_otp")
+    verification_type = link.get("verification_type") or "magiclink"
+    if not otp:
+        raise SupabaseAuthError("Supabase Auth did not return a one-time code.", 502)
+    return _request("/verify", method="POST", payload={"type": verification_type, "email": email, "token": otp})
+

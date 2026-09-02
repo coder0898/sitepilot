@@ -226,6 +226,12 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
             json={"role_type": role_type, "replacement_employee_id": str(replacement_employee_id), "reason": reason},
         )
 
+    def request_vacate(self, project_id, role_type, reason="Employee has left the organisation."):
+        return self.client.post(
+            f"/api/v2/projects/{project_id}/role-changes",
+            json={"role_type": role_type, "change_type": "vacate", "reason": reason},
+        )
+
     def approve_role_change(self, project_id, change_id):
         return self.client.post(f"/api/v2/projects/{project_id}/role-changes/{change_id}/approve")
 
@@ -337,6 +343,113 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
                 )
             )
             self.assertEqual(active_pm.employee_id, self.employee_id_for(PM_ID))
+
+    # ---- "vacate now, fill later" (empty the seat with no named replacement) --
+
+    def test_admin_vacates_pm_and_approval_leaves_the_role_unassigned(self):
+        """The 'someone left the organisation with nobody lined up yet'
+        case: a vacate request names no replacement, and approving it just
+        ends the current PM's membership - no new membership row, no
+        active PM left on the project afterward."""
+        project = self.create_draft()
+        self.act_as_admin()
+        self.activate(project["id"])
+
+        requested = self.request_vacate(project["id"], "project_manager")
+        self.assertEqual(requested.status_code, 200, requested.text)
+        change = requested.json()
+        self.assertEqual(change["change_type"], "vacate")
+        self.assertIsNone(change["replacement_employee_id"])
+
+        self.act_as_admin(admin_id=SECOND_ADMIN_ID, name="Admin Two")
+        approved = self.approve_role_change(project["id"], change["id"])
+        self.assertEqual(approved.status_code, 200, approved.text)
+        # The approve response is the now-ended prior membership, not a new one.
+        self.assertIsNotNone(approved.json()["ends_at"])
+        self.assertEqual(approved.json()["employee_id"], str(self.employee_id_for(PM_ID)))
+
+        with self.Session() as session:
+            active_pm = session.scalar(
+                select(V2ProjectMembership).where(
+                    V2ProjectMembership.project_id == uuid.UUID(project["id"]),
+                    V2ProjectMembership.project_role == "project_manager",
+                    V2ProjectMembership.ends_at.is_(None),
+                )
+            )
+            self.assertIsNone(active_pm)
+
+            change_row = session.get(ProjectRoleChange, uuid.UUID(change["id"]))
+            self.assertEqual(change_row.status, "approved")
+            self.assertIsNone(change_row.replacement_employee_id)
+
+    def test_vacating_an_already_vacant_role_is_rejected(self):
+        project = self.create_draft()
+        self.act_as_admin()
+        self.activate(project["id"])
+        vacate_first = self.request_vacate(project["id"], "project_manager")
+        approve_first = self.approve_role_change(project["id"], vacate_first.json()["id"])
+        self.assertEqual(approve_first.status_code, 200, approve_first.text)
+
+        response = self.request_vacate(project["id"], "project_manager")
+        self.assertEqual(response.status_code, 422, response.text)
+
+    def test_a_replacement_request_can_fill_a_role_vacated_earlier(self):
+        """'Fill it later' is not a new action - it's the ordinary
+        replacement request/approve flow, just with no current holder for
+        approve to end first."""
+        project = self.create_draft()
+        self.act_as_admin()
+        self.activate(project["id"])
+        vacate = self.request_vacate(project["id"], "project_manager")
+        self.approve_role_change(project["id"], vacate.json()["id"])
+
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+        fill = self.request_role_change(project["id"], "project_manager", replacement_id)
+        self.assertEqual(fill.status_code, 200, fill.text)
+        approved = self.approve_role_change(project["id"], fill.json()["id"])
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(approved.json()["employee_id"], str(replacement_id))
+
+        with self.Session() as session:
+            active_pm = session.scalar(
+                select(V2ProjectMembership).where(
+                    V2ProjectMembership.project_id == uuid.UUID(project["id"]),
+                    V2ProjectMembership.project_role == "project_manager",
+                    V2ProjectMembership.ends_at.is_(None),
+                )
+            )
+            self.assertEqual(active_pm.employee_id, replacement_id)
+
+    def test_rejecting_a_vacate_request_leaves_the_current_holder_in_place(self):
+        project = self.create_draft()
+        self.act_as_admin()
+        self.activate(project["id"])
+        requested = self.request_vacate(project["id"], "project_manager")
+
+        rejected = self.reject_role_change(project["id"], requested.json()["id"])
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["status"], "rejected")
+
+        with self.Session() as session:
+            active_pm = session.scalar(
+                select(V2ProjectMembership).where(
+                    V2ProjectMembership.project_id == uuid.UUID(project["id"]),
+                    V2ProjectMembership.project_role == "project_manager",
+                    V2ProjectMembership.ends_at.is_(None),
+                )
+            )
+            self.assertEqual(active_pm.employee_id, self.employee_id_for(PM_ID))
+
+    def test_vacate_and_replacement_requests_cannot_both_be_pending_for_the_same_role(self):
+        project = self.create_draft()
+        self.act_as_admin()
+        self.activate(project["id"])
+        first = self.request_vacate(project["id"], "project_manager")
+        self.assertEqual(first.status_code, 200, first.text)
+
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+        second = self.request_role_change(project["id"], "project_manager", replacement_id)
+        self.assertEqual(second.status_code, 409, second.text)
 
     # ---- error paths ---------------------------------------------------------
 

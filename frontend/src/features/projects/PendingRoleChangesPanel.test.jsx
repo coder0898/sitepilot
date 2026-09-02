@@ -84,4 +84,12 @@ describe("PendingRoleChangesPanel", () => {
     render(<PendingRoleChangesPanel projectId="p1" user={{ role: "admin" }} onChanged={vi.fn()}/>);
     expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
+
+  it("shows a vacate pending change without a replacement name", async () => {
+    const vacateChange = { ...pendingChange, id: "rc3", replacement_employee_id: null, replacement_name: null, change_type: "vacate" };
+    projectsApi.roleChanges.mockResolvedValue([vacateChange]);
+    render(<PendingRoleChangesPanel projectId="p1" user={{ role: "admin" }} onChanged={vi.fn()}/>);
+    expect(await screen.findByText(/Vacate \(no replacement named\)/)).toBeInTheDocument();
+    expect(screen.queryByText("Priya Singh")).not.toBeInTheDocument();
+  });
 });

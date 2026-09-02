@@ -1,4 +1,5 @@
 import { supabase, supabaseConfigured } from "../lib/supabase";
+import { api } from "./client";
 
 function ensureConfigured() {
   if (!supabaseConfigured) throw new Error("Supabase Auth is not configured for this build.");
@@ -21,4 +22,11 @@ export const authApi = {
   },
   getSession: () => supabase.auth.getSession(),
   onAuthStateChange: callback => supabase.auth.onAuthStateChange(callback),
+  provider: () => api("/api/auth/provider"),
+  // Local-dev-only shortcut (backend/app/routes/auth.py dev_login, gated
+  // off outside a local Supabase stack) - mints a real session for any
+  // email without going through Google, then hands it to setSession below
+  // exactly like a real OAuth callback would.
+  devLogin: email => api("/api/auth/dev-login", { method: "POST", body: JSON.stringify({ email }) }),
+  setSession: session => supabase.auth.setSession({ access_token: session.access_token, refresh_token: session.refresh_token }),
 };

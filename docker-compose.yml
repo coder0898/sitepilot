@@ -19,6 +19,9 @@ services:
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v21.0}
       WHATSAPP_WEBHOOK_SECRET: ${WHATSAPP_WEBHOOK_SECRET:-}
       WHATSAPP_WEBHOOK_VERIFY_TOKEN: ${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
+      # Local-only "sign in as any local test account" shortcut (see
+      # backend/app/routes/auth.py dev_login) - never set in render.yaml/prod.
+      LOCAL_DEV_LOGIN_ENABLED: "true"
     ports:
       - "8000:8000"
     extra_hosts:

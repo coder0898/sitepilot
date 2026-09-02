@@ -154,15 +154,21 @@ def membership_json(db: Session, item: V2ProjectMembership) -> dict:
 
 
 def role_change_json(db: Session, change: ProjectRoleChange) -> dict:
-    employee = db.get(EmployeeProfile, change.replacement_employee_id)
+    employee = db.get(EmployeeProfile, change.replacement_employee_id) if change.replacement_employee_id else None
     user = db.get(User, employee.user_id) if employee else None
+    if user:
+        replacement_name = user.name
+    elif change.change_type == "vacate":
+        replacement_name = None
+    else:
+        replacement_name = "Unknown employee"
     return {
         "id": str(change.id),
         "project_id": str(change.project_id),
         "role_type": change.role_type,
         "previous_membership_id": str(change.previous_membership_id) if change.previous_membership_id else None,
-        "replacement_employee_id": str(change.replacement_employee_id),
-        "replacement_name": user.name if user else "Unknown employee",
+        "replacement_employee_id": str(change.replacement_employee_id) if change.replacement_employee_id else None,
+        "replacement_name": replacement_name,
         "change_type": change.change_type,
         "reason_code": change.reason_code,
         "reason_detail": change.reason_detail,

@@ -84,7 +84,9 @@ class ProjectRoleChangeRequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role_type: str
-    replacement_employee_id: uuid.UUID
+    # None for change_type="vacate" (empty the seat now, fill it later) -
+    # required for "replacement". See ProjectRoleChangeService.request_role_change.
+    replacement_employee_id: uuid.UUID | None = None
     change_type: str = "replacement"
     reason: str = Field(min_length=4)
 
