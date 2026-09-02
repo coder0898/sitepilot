@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
-import { Button, Field, Input, Select } from "../../../components/ui";
+import { Button, Field, Input, Modal, Select } from "../../../components/ui";
 import { PendingRoleChangesPanel } from "./PendingRoleChangesPanel";
 import { ProjectTeamReplaceModal } from "./ProjectTeamReplaceModal";
 
@@ -81,14 +81,79 @@ function AddTeamMemberForm({ project, user, references, onChanged }) {
   </section>;
 }
 
+// Internal Employee can always be removed directly (subject to the actor
+// permission check the caller already applied). project_manager and
+// site_supervisor are the "accountable role" singularities (BR-004/BR-007):
+// end_membership itself only allows a direct end for them while the project
+// is draft or on_hold - once active, BR-007's replace/approve flow
+// (ProjectTeamReplaceModal, including its "Vacate now" option) is the only
+// path, so vacating a live project's accountable role is always audited via
+// a role-change record rather than silent. The caller only renders this for
+// a role/status combination end_membership will actually accept.
+function RemoveMembershipModal({ project, membership, onClose, onChanged }) {
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function submit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await projectsApi.endMembership(project.id, membership.id, reason);
+      await onChanged();
+      onClose();
+    } catch (caught) {
+      setError(caught?.message || "Could not remove this team member.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <Modal title={`Remove ${membership.name}`} onClose={onClose}>
+    <form onSubmit={submit} className="grid gap-4">
+      <p className="text-sm text-slate-500">This ends {membership.name}'s {roleLabel[membership.project_role]} assignment on this project. They can be re-added later if needed.</p>
+      <Field label="Reason">
+        <Input value={reason} onChange={event => setReason(event.target.value)} minLength={4} required placeholder="Why is this person leaving the project team?"/>
+      </Field>
+      {error && <p className="text-sm font-bold text-rose-700">{error}</p>}
+      <div className="flex justify-end gap-3">
+        <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button type="submit" variant="danger" loading={saving} disabled={reason.trim().length < 4}>Remove</Button>
+      </div>
+    </form>
+  </Modal>;
+}
+
 export function ProjectTeamPane({ project, references, user, onChanged }) {
   const [replaceRole, setReplaceRole] = useState(null);
+  const [removingMembership, setRemovingMembership] = useState(null);
+  const isAdmin = user.role === "admin" || user.role === "super_admin";
+  const isPmOnProject = project.memberships?.some(item => item.project_role === "project_manager" && item.user_id === user.id);
+  const isSupervisorOnProject = project.memberships?.some(item => item.project_role === "site_supervisor" && item.user_id === user.id);
+  const canRemoveInternalEmployee = (isAdmin || isPmOnProject || isSupervisorOnProject) && !["completed", "archived"].includes(project.status);
   const pm = project.memberships?.find(item => item.project_role === "project_manager");
   const supervisor = project.memberships?.find(item => item.project_role === "site_supervisor");
-  // U6: the two-step request/approval flow (BR-007) specifically governs
-  // replacement on ACTIVE projects - gating "Change" to draft-only left
-  // this unit's flow with no UI entry point once a project goes active.
-  const canRequestChange = ["draft", "active"].includes(project.status) && user.role === "admin";
+  // Mirrors _require_hierarchy_actor (backend/app/services/project_role_change.py)
+  // exactly: PM replacement is Admin-only; Supervisor replacement is Admin
+  // or the project's own PM. U6: this two-step request/approval flow
+  // (BR-007) specifically governs replacement on ACTIVE projects - gating
+  // "Change" to draft-only left this unit's flow with no UI entry point
+  // once a project goes active.
+  const canReplace = {
+    project_manager: ["draft", "active"].includes(project.status) && isAdmin,
+    site_supervisor: ["draft", "active"].includes(project.status) && (isAdmin || isPmOnProject),
+  };
+  // Direct removal (no named replacement) works on draft AND on_hold
+  // projects - end_membership only rejects it when project.status ===
+  // "active" (see backend/app/routes/projects_v2.py). On an active project,
+  // vacating still requires the audited role-change flow below (via
+  // "Change" -> "Vacate now"), even with no replacement named. Same
+  // hierarchy as canReplace otherwise.
+  const canRemoveAccountableRole = {
+    project_manager: ["draft", "on_hold"].includes(project.status) && isAdmin,
+    site_supervisor: ["draft", "on_hold"].includes(project.status) && (isAdmin || isPmOnProject),
+  };
 
   return <div className="grid gap-3">
     <section className="grid gap-2 sm:grid-cols-3">
@@ -99,7 +164,7 @@ export function ProjectTeamPane({ project, references, user, onChanged }) {
       ].map(([label, value, changeRole]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-4">
         <p className="font-mono text-[10px] uppercase tracking-[.1em] text-slate-400">{label}</p>
         <h4 className="mt-1.5 truncate text-sm font-black text-slate-950">{value}</h4>
-        {changeRole && canRequestChange && <Button variant="secondary" className="mt-3" onClick={() => setReplaceRole(changeRole)}>Change</Button>}
+        {changeRole && canReplace[changeRole] && <Button variant="secondary" className="mt-3" onClick={() => setReplaceRole(changeRole)}>Change</Button>}
       </article>)}
     </section>
 
@@ -111,7 +176,11 @@ export function ProjectTeamPane({ project, references, user, onChanged }) {
             <strong className="block truncate text-sm font-semibold text-slate-900">{item.name}</strong>
             <span className="block truncate text-[11px] text-slate-400">{item.designation || item.employee_code}</span>
           </div>
-          <span className="shrink-0 text-xs font-bold text-slate-500">{roleLabel[item.project_role]}</span>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="text-xs font-bold text-slate-500">{roleLabel[item.project_role]}</span>
+            {item.project_role === "internal_employee" && canRemoveInternalEmployee && <Button size="sm" variant="ghost" className="!text-rose-700 hover:!bg-rose-50" onClick={() => setRemovingMembership(item)}>Remove</Button>}
+            {canRemoveAccountableRole[item.project_role] && <Button size="sm" variant="ghost" className="!text-rose-700 hover:!bg-rose-50" onClick={() => setRemovingMembership(item)}>Remove</Button>}
+          </div>
         </div>)}
         {!(project.memberships || []).length && <p className="py-3 text-xs text-slate-400">Nobody is assigned to this project yet.</p>}
       </div>
@@ -121,6 +190,7 @@ export function ProjectTeamPane({ project, references, user, onChanged }) {
 
     <PendingRoleChangesPanel projectId={project.id} user={user} onChanged={onChanged}/>
 
-    {replaceRole && <ProjectTeamReplaceModal project={project} role={replaceRole} references={references} onClose={() => setReplaceRole(null)} onChanged={onChanged}/>}
+    {replaceRole && <ProjectTeamReplaceModal project={project} role={replaceRole} references={references} hasCurrentHolder={Boolean(replaceRole === "project_manager" ? pm : supervisor)} onClose={() => setReplaceRole(null)} onChanged={onChanged}/>}
+    {removingMembership && <RemoveMembershipModal project={project} membership={removingMembership} onClose={() => setRemovingMembership(null)} onChanged={onChanged}/>}
   </div>;
 }

@@ -10,14 +10,26 @@ audited request/approval flow:
   who is currently accountable (BR-004's derived-accountability model
   reads only active membership rows).
 - `approve_role_change`: atomically ends the previous active membership
-  (if any) for that role on the project and starts the replacement,
-  reusing the same "end prior active membership in the same transaction"
-  shape `assign_membership()` (`backend/app/routes/projects_v2.py`)
-  already uses for immediate changes. Deliberately re-implemented here
-  rather than imported, to avoid a routes<->services circular import
-  (`routes/projects_v2.py` needs to call into this service for its new
-  role-change routes).
+  (if any) for that role on the project and, for a "replacement" change,
+  starts the replacement - reusing the same "end prior active membership
+  in the same transaction" shape `assign_membership()`
+  (`backend/app/routes/projects_v2.py`) already uses for immediate
+  changes. Deliberately re-implemented here rather than imported, to
+  avoid a routes<->services circular import (`routes/projects_v2.py`
+  needs to call into this service for its new role-change routes).
 - `reject_role_change`: marks the record `rejected`; no membership change.
+
+Two `change_type`s:
+- "replacement": names a successor up front; approval ends the current
+  holder and starts the named replacement in the same step.
+- "vacate": "empty the seat now, fill it later" - for the case where an
+  accountable role's holder leaves (resigns, is offboarded) with no
+  successor lined up yet. Approval ends the current holder and leaves the
+  role vacant (surfaced via the project's ordinary "Not assigned" PM/
+  Supervisor display) - no replacement_employee_id is stored or required.
+  Filling a vacant role later is not a new action: it's the same
+  "replacement" request/approve flow, just with no current holder to end
+  (already handled - `current` is simply `None` in that case).
 
 Requester/approver hierarchy per BR-007:
 - PM replacement: only Admin/Super Admin may request or approve.
@@ -133,7 +145,7 @@ class ProjectRoleChangeService:
             "project_id": str(change.project_id),
             "role_type": change.role_type,
             "previous_membership_id": str(change.previous_membership_id) if change.previous_membership_id else None,
-            "replacement_employee_id": str(change.replacement_employee_id),
+            "replacement_employee_id": str(change.replacement_employee_id) if change.replacement_employee_id else None,
             "change_type": change.change_type,
             "reason_code": change.reason_code,
             "reason_detail": change.reason_detail,
@@ -150,7 +162,7 @@ class ProjectRoleChangeService:
         self,
         project_id: uuid.UUID,
         role_type: str,
-        replacement_employee_id: uuid.UUID,
+        replacement_employee_id: uuid.UUID | None,
         reason_code: str,
         actor: User,
         change_type: str = "replacement",
@@ -160,19 +172,27 @@ class ProjectRoleChangeService:
 
         if role_type not in ROLE_TYPES:
             raise HTTPException(422, "Unknown project role.")
-        if change_type not in ("replacement", "temporary"):
+        if change_type not in ("replacement", "vacate"):
             raise HTTPException(422, "Unknown role change type.")
+        if change_type == "replacement" and replacement_employee_id is None:
+            raise HTTPException(422, "Select a replacement employee.")
+        if change_type == "vacate" and replacement_employee_id is not None:
+            raise HTTPException(422, "A vacate request does not name a replacement.")
 
         clean_reason_code = (reason_code or "").strip()
         if not clean_reason_code:
             raise HTTPException(422, "A reason is required to request a role change.")
 
         self._require_hierarchy_actor(project, role_type, actor)
-        self._require_eligible_replacement(role_type, replacement_employee_id)
 
         current = self._active_membership(project.id, role_type)
-        if current is not None and current.employee_id == replacement_employee_id:
-            raise HTTPException(409, "This employee already holds this project role.")
+        if change_type == "vacate":
+            if current is None:
+                raise HTTPException(422, f"There is no active {role_type.replace('_', ' ')} to vacate.")
+        else:
+            self._require_eligible_replacement(role_type, replacement_employee_id)
+            if current is not None and current.employee_id == replacement_employee_id:
+                raise HTTPException(409, "This employee already holds this project role.")
 
         pending = self.db.scalar(
             select(ProjectRoleChange).where(
@@ -210,7 +230,8 @@ class ProjectRoleChangeService:
                     "project_id": str(project.id),
                     "change_id": str(change.id),
                     "role_type": role_type,
-                    "replacement_employee_id": str(replacement_employee_id),
+                    "change_type": change_type,
+                    "replacement_employee_id": str(replacement_employee_id) if replacement_employee_id else None,
                     "reason_code": clean_reason_code,
                 },
                 idempotency_key=f"project:{project.id}:project.role_change_requested:{change.id}",
@@ -238,22 +259,32 @@ class ProjectRoleChangeService:
             raise HTTPException(409, "This role change request has already been decided.")
 
         self._require_hierarchy_actor(project, change.role_type, actor)
-        self._require_eligible_replacement(change.role_type, change.replacement_employee_id)
+        is_vacate = change.replacement_employee_id is None
+        if not is_vacate:
+            self._require_eligible_replacement(change.role_type, change.replacement_employee_id)
 
         now = datetime.now(timezone.utc)
         current = self._active_membership(project.id, change.role_type)
+        if is_vacate and current is None:
+            # Only reachable if the seat was somehow vacated another way
+            # while this request sat pending - request_role_change already
+            # requires a current holder to exist at request time.
+            raise HTTPException(409, f"There is no active {change.role_type.replace('_', ' ')} left to vacate.")
         if current is not None:
             current.ends_at = now
 
-        membership = V2ProjectMembership(
-            project_id=project.id,
-            employee_id=change.replacement_employee_id,
-            project_role=change.role_type,
-            assigned_by=actor.id,
-            assignment_reason=change.reason_code,
-        )
-        self.db.add(membership)
-        self.db.flush()
+        if is_vacate:
+            result_membership = current
+        else:
+            result_membership = V2ProjectMembership(
+                project_id=project.id,
+                employee_id=change.replacement_employee_id,
+                project_role=change.role_type,
+                assigned_by=actor.id,
+                assignment_reason=change.reason_code,
+            )
+            self.db.add(result_membership)
+            self.db.flush()
 
         change.status = "approved"
         change.decided_by = actor.id
@@ -262,7 +293,7 @@ class ProjectRoleChangeService:
 
         self._add_audit(
             project, actor, "PROJECT_ROLE_CHANGE_APPROVED", change.reason_code,
-            self._role_change_json(change), {"membership_id": str(membership.id)}, change.id,
+            self._role_change_json(change), {"membership_id": str(result_membership.id)}, change.id,
         )
 
         try:
@@ -274,7 +305,8 @@ class ProjectRoleChangeService:
                     "project_id": str(project.id),
                     "change_id": str(change.id),
                     "role_type": change.role_type,
-                    "membership_id": str(membership.id),
+                    "change_type": change.change_type,
+                    "membership_id": str(result_membership.id),
                 },
                 idempotency_key=f"project:{project.id}:project.role_change_approved:{change.id}",
             )
@@ -283,8 +315,8 @@ class ProjectRoleChangeService:
             self.db.rollback()
             raise HTTPException(409, "This project role already has an active assignment.") from exc
 
-        self.db.refresh(membership)
-        return membership
+        self.db.refresh(result_membership)
+        return result_membership
 
     # ---- reject -----------------------------------------------------------
 

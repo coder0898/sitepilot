@@ -222,12 +222,19 @@ class ProjectRoleChange(Base):
     __tablename__ = "project_role_changes"
     __table_args__ = (
         CheckConstraint("role_type in ('project_manager', 'site_supervisor')", name="ck_v2_project_role_changes_role_type"),
-        CheckConstraint("change_type in ('replacement', 'temporary')", name="ck_v2_project_role_changes_change_type"),
+        CheckConstraint("change_type in ('replacement', 'vacate')", name="project_role_changes_change_type_check"),
         CheckConstraint("status in ('pending', 'approved', 'rejected')", name="ck_v2_project_role_changes_status"),
         CheckConstraint(
             "(status = 'pending' and decided_by is null and decided_at is null) or "
             "(status in ('approved', 'rejected') and decided_by is not null and decided_at is not null)",
             name="ck_v2_project_role_changes_decision_pair",
+        ),
+        # 'replacement' always names who steps in; 'vacate' never does - see
+        # 202609020001_v2_project_role_change_vacate.sql.
+        CheckConstraint(
+            "(change_type = 'replacement' and replacement_employee_id is not null) or "
+            "(change_type = 'vacate' and replacement_employee_id is null)",
+            name="ck_v2_project_role_changes_replacement_pair",
         ),
         Index("ix_v2_project_role_changes_project", "project_id"),
         Index("ix_v2_project_role_changes_project_status", "project_id", "status"),
@@ -238,7 +245,8 @@ class ProjectRoleChange(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
     role_type: Mapped[str] = mapped_column(Text, nullable=False)
     previous_membership_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_memberships.id", ondelete="RESTRICT"))
-    replacement_employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"), nullable=False)
+    # Null for a 'vacate' change - see ck_v2_project_role_changes_replacement_pair above.
+    replacement_employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"))
     change_type: Mapped[str] = mapped_column(Text, nullable=False, default="replacement")
     reason_code: Mapped[str] = mapped_column(Text, nullable=False)
     reason_detail: Mapped[str | None] = mapped_column(Text)
