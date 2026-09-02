@@ -31,8 +31,8 @@ const ATTENTION_KEYS = [
 
 function TaskCard({ task, onOpen }) {
   const late = task.variance?.status === "late";
-  return <button type="button" onClick={() => onOpen(task.id)} className="grid w-full gap-1 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:shadow-sm">
-    <div className="flex flex-wrap items-center gap-2">
+  return <button type="button" onClick={() => onOpen(task.id)} className="grid w-full min-w-0 gap-1 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:shadow-sm">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <span className="font-mono text-[11px] font-black text-blue-700">{task.original_code}</span>
       <span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{task.title}</span>
     </div>
@@ -52,7 +52,7 @@ function DayColumn({ label, tasks, expanded, onExpand, onOpen }) {
       <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">{label.kind}</div>
       <div className="text-xs font-bold text-slate-700">{label.formatted}</div>
     </header>
-    <div className="grid gap-2">
+    <div className="grid min-w-0 gap-2">
       {visible.length ? visible.map(task => <TaskCard key={task.id} task={task} onOpen={onOpen}/>) : <p className="rounded-xl border border-dashed border-slate-200 bg-white p-3 text-center text-xs text-slate-400">No tasks</p>}
     </div>
     {remaining > 0 && <Button size="sm" variant="ghost" onClick={onExpand}>View all ({tasks.length})</Button>}
