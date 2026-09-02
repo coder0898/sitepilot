@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     bootstrap_super_admin_password: str = ""
     migration_temp_password: str = ""
     frontend_url: str = "http://localhost:3000"
+    # Local-only "sign in as any local test account" shortcut (see
+    # app/routes/auth.py's dev_login), for testing without real Google OAuth
+    # credentials configured locally. Off by default; only docker-compose.yml
+    # (local dev stack) sets this true - render.yaml (prod) never does, and
+    # the route itself independently re-checks that supabase_url points at a
+    # local host before doing anything, so a stray env var alone can't
+    # expose it against a real deployment.
+    local_dev_login_enabled: bool = False
 
 
 settings = Settings()

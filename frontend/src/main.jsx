@@ -18,11 +18,20 @@ function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(initialAuthError);
+  // Local-only "sign in as any local test account" shortcut - the backend
+  // reports whether it's actually reachable (gated to a local Supabase
+  // stack; always false against a real deployment), so this never shows
+  // up as an option outside local dev.
+  const [devLoginEnabled, setDevLoginEnabled] = useState(false);
 
   async function loadPortalIdentity(session) {
     if (!session) { setUser(null); return; }
     setUser(await api("/api/me"));
   }
+
+  useEffect(() => {
+    authApi.provider().then(info => setDevLoginEnabled(Boolean(info?.dev_login_enabled))).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -73,13 +82,25 @@ function App() {
     }
   }
 
+  async function loginAsDev(email) {
+    setError("");
+    try {
+      const session = await authApi.devLogin(email);
+      const { error: sessionError } = await authApi.setSession(session);
+      if (sessionError) throw new Error(sessionError.message);
+      await loadPortalIdentity(session);
+    } catch (caught) {
+      setError(caught.message);
+    }
+  }
+
   async function logout() {
     await authApi.logout().catch(() => {});
     setUser(null);
   }
 
   if (loading && !user) return <main className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-blue-100">Opening secure workspace…</main>;
-  if (!user) return <LoginPage onGoogle={loginWithGoogle} error={error}/>;
+  if (!user) return <LoginPage onGoogle={loginWithGoogle} error={error} devLoginEnabled={devLoginEnabled} onDevLogin={loginAsDev}/>;
   return <Dashboard initialUser={user} onLogout={logout}/>;
 }
 

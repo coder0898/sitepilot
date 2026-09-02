@@ -1,4 +1,5 @@
-import { CheckCircle2, ShieldCheck } from "lucide-react";
+import { CheckCircle2, FlaskConical, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 
 function BrandPanel() {
   return <aside className="relative overflow-hidden bg-[#071a33] p-7 text-white sm:p-10 lg:p-12">
@@ -35,6 +36,60 @@ export function GoogleButton({ onClick, children = "Continue with Google" }) {
   return <button type="button" onClick={onClick} className="inline-flex min-h-13 w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-800 shadow-sm transition hover:border-blue-300 hover:bg-blue-50"><GoogleGlyph/>{children}</button>;
 }
 
-export function LoginPage({ onGoogle, error, message }) {
-  return <AuthShell eyebrow="Welcome back" title="Sign in to SiteOps" subtitle="One click with the Google account your administrator registered for you."><div className="mt-8 grid gap-5"><GoogleButton onClick={onGoogle}/><Notice error={error} message={message}/><p className="text-center text-xs leading-5 text-slate-400">New here? Ask your Admin or Super Admin to add you in User Management - you'll be able to sign in the moment they do.</p></div></AuthShell>;
+// Local-dev-only: mints a real session for any local test account (or any
+// typed email, to try a first-time-login/new-invite scenario) without
+// Google, via backend/app/routes/auth.py's dev_login. Only rendered at all
+// when the backend reports it's actually reachable - see App() in
+// main.jsx - so this is invisible against a real deployment.
+const DEV_ACCOUNTS = [
+  { label: "Super Admin", email: "superadmin@siteops.local" },
+  { label: "Admin", email: "interior.ops@siteops.local" },
+  { label: "Project Manager", email: "prachitk@siteops.local" },
+  { label: "Supervisor", email: "deepaks@sitesops.local" },
+  { label: "Internal Employee", email: "preetig@sitesops.local" },
+];
+
+function DevLoginPanel({ onDevLogin }) {
+  const [customEmail, setCustomEmail] = useState("");
+  const [busy, setBusy] = useState("");
+
+  async function signInAs(email) {
+    setBusy(email);
+    try { await onDevLogin(email); } finally { setBusy(""); }
+  }
+
+  return <div className="mt-6 rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50 p-4">
+    <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-amber-800"><FlaskConical size={14}/> Local dev sign-in</div>
+    <p className="mt-1 text-xs text-amber-700">Skips Google - only available against your local Supabase stack, never in production.</p>
+    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {DEV_ACCOUNTS.map(account => <button
+        key={account.email}
+        type="button"
+        onClick={() => signInAs(account.email)}
+        disabled={Boolean(busy)}
+        className="rounded-lg border border-amber-300 bg-white px-2.5 py-2 text-xs font-bold text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+      >{busy === account.email ? "Signing in…" : account.label}</button>)}
+    </div>
+    <form onSubmit={event => { event.preventDefault(); if (customEmail.trim()) signInAs(customEmail.trim()); }} className="mt-3 flex gap-2">
+      <input
+        type="email"
+        value={customEmail}
+        onChange={event => setCustomEmail(event.target.value)}
+        placeholder="or sign in as any email (test a new invite)"
+        className="min-h-9 flex-1 rounded-lg border border-amber-300 bg-white px-2.5 text-xs outline-none focus:border-amber-500"
+      />
+      <button type="submit" disabled={!customEmail.trim() || Boolean(busy)} className="rounded-lg bg-amber-600 px-3 text-xs font-bold text-white transition hover:bg-amber-700 disabled:opacity-50">Go</button>
+    </form>
+  </div>;
+}
+
+export function LoginPage({ onGoogle, error, message, devLoginEnabled = false, onDevLogin }) {
+  return <AuthShell eyebrow="Welcome back" title="Sign in to SiteOps" subtitle="One click with the Google account your administrator registered for you.">
+    <div className="mt-8 grid gap-5">
+      <GoogleButton onClick={onGoogle}/>
+      <Notice error={error} message={message}/>
+      <p className="text-center text-xs leading-5 text-slate-400">New here? Ask your Admin or Super Admin to add you in User Management - you'll be able to sign in the moment they do.</p>
+      {devLoginEnabled && <DevLoginPanel onDevLogin={onDevLogin}/>}
+    </div>
+  </AuthShell>;
 }
