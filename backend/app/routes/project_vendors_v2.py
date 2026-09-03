@@ -1,28 +1,27 @@
-"""Phase 2 U2/U3: project-vendor mapping, task vendor delegation, vendor
-acknowledgement, and vendor activity/incident capture routes (R2/R3/R4/R5).
+"""Phase 2 U2/U3: project-vendor mapping, task vendor delegation, and vendor
+acknowledgement routes (R2/R3/R4).
 
 Mirrors the router/route/dependency-injection pattern established in
 `app.routes.execution_tasks_v2`: a service instantiated per-request, plain
 `Depends(current_user)` / `Depends(get_db)`, and a Pydantic `_Out` schema on
-the response. The acknowledgement and activity routes are PM-authenticated
-portal actions only - a vendor cannot start/complete/verify/approve/close a
-task through this mechanism (R4); see
-`app.services.vendor_acknowledgement.VendorAcknowledgementService` and
-`app.services.vendor_activity.VendorActivityService`.
+the response. The acknowledgement route is a PM-authenticated portal action
+only - a vendor cannot start/complete/verify/approve/close a task through
+this mechanism (R4); see
+`app.services.vendor_acknowledgement.VendorAcknowledgementService`.
+
+Vendor activity/incident capture (presence/delay/rework/incident + evidence)
+was removed - Phase 2 scope, not this release.
 """
 
-import io
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user, require_roles
 from app.database import get_db
-from app.execution_models import FileObject, Task
-from app.services import evidence_storage
+from app.execution_models import Task
 from app.models import User, UserRole
 from app.routes.projects_v2 import get_project
 from app.schemas.vendor_assignment import (
@@ -36,14 +35,11 @@ from app.schemas.vendor_assignment import (
     V2VendorOut,
     VendorAcknowledgementIn,
     VendorAcknowledgementOut,
-    VendorActivityEventOut,
-    VendorActivityEvidenceOut,
     VendorCapabilitiesIn,
 )
 from app.services.project_vendor import ProjectVendorService
 from app.services.task_vendor_assignment import TaskVendorAssignmentService
 from app.services.vendor_acknowledgement import VendorAcknowledgementService
-from app.services.vendor_activity import VendorActivityService
 from app.template_models import V2TemplateTask, V2TemplateVersion
 from app.vendor_models import (
     ProjectVendor,
@@ -52,8 +48,6 @@ from app.vendor_models import (
     V2Vendor,
     V2VendorCapability,
     VendorAcknowledgement,
-    VendorActivityEvent,
-    VendorActivityEvidence,
 )
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-vendors"])
@@ -62,34 +56,6 @@ router = APIRouter(prefix="/api/v2/projects", tags=["v2-vendors"])
 # the `/api/v2/projects`-prefixed router above - registered separately in
 # main.py alongside it.
 vendors_router = APIRouter(prefix="/api/v2/vendors", tags=["v2-vendors"])
-
-
-def _activity_event_out(db: Session, event) -> VendorActivityEventOut:
-    evidence_rows = db.scalars(
-        select(VendorActivityEvidence).where(VendorActivityEvidence.vendor_activity_event_id == event.id)
-    ).all()
-    evidence_out = []
-    for evidence in evidence_rows:
-        file_object = db.get(FileObject, evidence.file_id)
-        if not file_object:
-            continue
-        evidence_out.append(VendorActivityEvidenceOut(
-            id=evidence.id,
-            file_id=file_object.id,
-            original_filename=file_object.original_filename,
-            mime_type=file_object.mime_type,
-            size_bytes=file_object.size_bytes,
-        ))
-    return VendorActivityEventOut(
-        id=event.id,
-        task_vendor_assignment_id=event.task_vendor_assignment_id,
-        event_type=event.event_type,
-        description=event.description,
-        responsibility_decision=event.responsibility_decision,
-        recorded_by=event.recorded_by,
-        created_at=event.created_at,
-        evidence=evidence_out,
-    )
 
 
 def _ensure_phase_categories(db: Session) -> None:
@@ -291,11 +257,10 @@ def list_task_vendor_assignments(
     actor: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Read surface for TaskVendorDelegationForm/VendorAcknowledgementForm/
-    VendorActivityForm - a task's vendor assignment(s) with full
-    acknowledgement and activity history, so the UI reflects the updated
-    status immediately after a portal action (plan U3 frontend test
-    scenario)."""
+    """Read surface for TaskVendorDelegationForm/VendorAcknowledgementForm -
+    a task's vendor assignment(s) with full acknowledgement history, so the
+    UI reflects the updated status immediately after a portal action (plan
+    U3 frontend test scenario)."""
     project = get_project(db, project_id, actor)
     task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project.id))
     if not task:
@@ -324,14 +289,6 @@ def list_task_vendor_assignments(
                     .order_by(VendorAcknowledgement.created_at.asc())
                 ).all()
             ],
-            activity_events=[
-                _activity_event_out(db, event)
-                for event in db.scalars(
-                    select(VendorActivityEvent)
-                    .where(VendorActivityEvent.task_vendor_assignment_id == assignment.id)
-                    .order_by(VendorActivityEvent.created_at.desc())
-                ).all()
-            ],
         )
         for assignment, vendor in rows
     ]
@@ -353,88 +310,3 @@ def acknowledge_vendor_assignment(
         project_id, task_id, assignment_id, payload.response, actor,
         channel=payload.channel, note=payload.note,
     )
-
-
-@router.post(
-    "/{project_id}/tasks/{task_id}/vendor-assignment/{assignment_id}/activity",
-    response_model=VendorActivityEventOut,
-)
-async def log_vendor_activity(
-    project_id: uuid.UUID,
-    task_id: uuid.UUID,
-    assignment_id: uuid.UUID,
-    event_type: str = Form(...),
-    description: str = Form(...),
-    responsibility_decision: str | None = Form(default=None),
-    evidence: UploadFile | None = File(default=None),
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    evidence_bytes = await evidence.read() if evidence is not None else None
-    event = VendorActivityService(db).log_activity(
-        project_id,
-        task_id,
-        assignment_id,
-        actor,
-        event_type=event_type,
-        description=description,
-        responsibility_decision=responsibility_decision,
-        evidence_bytes=evidence_bytes,
-        evidence_filename=evidence.filename if evidence is not None else None,
-        evidence_content_type=evidence.content_type if evidence is not None else None,
-    )
-    return _activity_event_out(db, event)
-
-
-@router.get("/{project_id}/tasks/{task_id}/vendor-assignment/{assignment_id}/activity/{file_id}")
-def download_vendor_activity_evidence(
-    project_id: uuid.UUID,
-    task_id: uuid.UUID,
-    assignment_id: uuid.UUID,
-    file_id: uuid.UUID,
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    """Mirrors execution_tasks_v2.py's download_task_evidence - re-checks
-    project access and that the requested file is actually linked to an
-    activity event on *this* vendor assignment before streaming bytes."""
-    project = get_project(db, project_id, actor)
-    assignment = db.scalar(
-        select(TaskVendorAssignment).where(
-            TaskVendorAssignment.id == assignment_id,
-            TaskVendorAssignment.task_id == task_id,
-            TaskVendorAssignment.project_id == project.id,
-        )
-    )
-    if not assignment:
-        raise HTTPException(404, "Vendor assignment not found.")
-
-    evidence = db.scalar(
-        select(VendorActivityEvidence)
-        .join(VendorActivityEvent, VendorActivityEvidence.vendor_activity_event_id == VendorActivityEvent.id)
-        .where(
-            VendorActivityEvidence.file_id == file_id,
-            VendorActivityEvent.task_vendor_assignment_id == assignment.id,
-        )
-    )
-    if not evidence:
-        raise HTTPException(404, "Evidence file not found for this vendor activity event.")
-
-    file_object = db.get(FileObject, file_id)
-    if not file_object:
-        raise HTTPException(404, "Evidence file not found for this vendor activity event.")
-
-    data = evidence_storage.read(file_object.storage_key)
-    if data is None:
-        raise HTTPException(404, "Evidence file is no longer available.")
-
-    safe_filename = file_object.original_filename.replace('"', "").replace("\\", "").replace("\n", "").replace("\r", "")
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type=file_object.mime_type,
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_filename}"',
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
-    return _activity_event_out(db, event)

@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { vendorAssignmentApi } from "../../../api/vendorAssignmentApi";
 import { Button, Field, Pill, Select } from "../../../components/ui";
 import { VendorAcknowledgementForm } from "./VendorAcknowledgementForm";
-import { VendorActivityForm } from "./VendorActivityForm";
 
 const STATUS_TONE = { pending_ack: "orange", acknowledged: "green", declined: "red" };
 
@@ -74,7 +73,6 @@ export function TaskVendorDelegationForm({ projectId, task, user, onChanged }) {
     {assignments.length === 0 ? <p className="mt-2 text-sm text-slate-500">No vendor delegated to this task.</p> : <div className="mt-3 grid gap-3">{assignments.map(assignment => <article key={assignment.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-slate-900">{assignment.vendor_name}</strong><Pill tone={STATUS_TONE[assignment.status] || "gray"}>{assignment.status.replaceAll("_", " ")}</Pill></div>
       <VendorAcknowledgementForm projectId={projectId} task={task} assignment={assignment} canManage={canManage} onChanged={refresh}/>
-      <VendorActivityForm projectId={projectId} task={task} assignment={assignment} canManage={canManage} onChanged={refresh}/>
     </article>)}</div>}
 
     {canManage && <form className="mt-3 grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_auto]" onSubmit={delegate}>

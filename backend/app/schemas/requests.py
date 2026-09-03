@@ -91,13 +91,6 @@ class ContractorProfileIn(BaseModel):
     gst_number: str | None = None
     notes: str | None = None
 
-class CommunicationLogIn(BaseModel):
-    vendor_id: uuid.UUID
-    contact_id: uuid.UUID | None = None
-    project_id: uuid.UUID | None = None
-    channel: str
-    note: str
-
 class ProjectIn(BaseModel):
     name: str
     client_name: str

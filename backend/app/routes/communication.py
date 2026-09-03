@@ -34,14 +34,13 @@ from app.auth import current_user, require_roles
 from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
-from app.schemas.requests import CommunicationLogIn, ContractorProfileIn, ContractorRelationshipIn, VendorContactIn
+from app.schemas.requests import ContractorProfileIn, ContractorRelationshipIn, VendorContactIn
 from app.vendor_models import (
     ProjectVendor,
     V2CapabilityCategory,
     V2Vendor,
     V2VendorCapability,
     V2VendorContact,
-    V2VendorNote,
 )
 
 router = APIRouter(prefix="/api/communication-hub", tags=["communication-hub"])
@@ -64,13 +63,6 @@ def visible_v2_projects(user, db):
         )
         statement = statement.where(V2Project.id.in_(visible_ids))
     return db.scalars(statement).all()
-
-
-def require_project(project_id, user, db):
-    project = db.get(V2Project, project_id)
-    if not project or project_id not in {item.id for item in visible_v2_projects(user, db)}:
-        raise HTTPException(403, "Project is not assigned to you.")
-    return project
 
 
 def record_vendor_audit(db: Session, actor: User, vendor: V2Vendor, action: str, reason: str, before=None, after=None) -> None:
@@ -139,13 +131,6 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
     contacts = db.scalars(
         select(V2VendorContact).where(V2VendorContact.vendor_id.in_(vendor_ids)).order_by(V2VendorContact.is_primary.desc(), V2VendorContact.name)
     ).all() if vendor_ids else []
-    notes = db.scalars(
-        select(V2VendorNote).where(V2VendorNote.vendor_id.in_(vendor_ids)).order_by(V2VendorNote.created_at.desc()).limit(200)
-    ).all() if vendor_ids else []
-    note_users = {
-        item.id: item.name
-        for item in db.scalars(select(User).where(User.id.in_({note.created_by for note in notes if note.created_by}))).all()
-    } if notes else {}
 
     categories = db.scalars(select(V2CapabilityCategory).order_by(V2CapabilityCategory.name)).all()
     category_by_id = {item.id: item.name for item in categories}
@@ -198,19 +183,7 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "child_count": 0,
         } for c in categories],
         "projects": [{"id": str(p.id), "name": p.name, "status": p.status} for p in projects],
-        # Notes now tag a real V2 project. The legacy column pointed at
-        # `execution_projects`, which nothing had populated since project
-        # creation moved to V2, so this list was previously always empty.
-        "note_projects": [{"id": str(p.id), "name": p.name, "status": p.status} for p in projects],
         "project_vendors": [{"id": str(link.id), "project_id": str(link.project_id), "vendor_id": str(link.vendor_id)} for link in project_links],
-        "logs": [{
-            "id": str(note.id), "vendor_id": str(note.vendor_id),
-            "contact_id": str(note.contact_id) if note.contact_id else None,
-            "project_id": str(note.project_id) if note.project_id else None,
-            "channel": note.channel, "note": note.note,
-            "created_by_name": note_users.get(note.created_by, "SiteOps user"),
-            "created_at": note.created_at.isoformat(),
-        } for note in notes],
     }
 
 
@@ -297,28 +270,3 @@ def delete_relationship(relationship_id: uuid.UUID, _: User = Depends(require_ro
     if not db.get(V2Vendor, relationship_id):
         raise HTTPException(404, "Vendor relationship not found.")
     raise HTTPException(409, "A sub-vendor cannot be made independent. Reassign it to another parent or mark it inactive.")
-
-
-@router.post("/logs")
-def add_log(payload: CommunicationLogIn, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    if not db.get(V2Vendor, payload.vendor_id):
-        raise HTTPException(404, "Contractor not found.")
-    if payload.project_id:
-        require_project(payload.project_id, actor, db)
-    if actor.role == UserRole.supervisor and payload.project_id:
-        vendor = db.get(V2Vendor, payload.vendor_id)
-        candidate_ids = [payload.vendor_id] + ([vendor.parent_vendor_id] if vendor and vendor.parent_vendor_id else [])
-        linked = db.scalar(select(ProjectVendor.id).where(ProjectVendor.project_id == payload.project_id, ProjectVendor.vendor_id.in_(candidate_ids)))
-        if not linked:
-            raise HTTPException(403, "Vendor is not assigned to this project.")
-    note = V2VendorNote(
-        vendor_id=payload.vendor_id,
-        contact_id=payload.contact_id,
-        project_id=payload.project_id,
-        channel=payload.channel,
-        note=payload.note,
-        created_by=actor.id,
-    )
-    db.add(note)
-    db.commit()
-    return {"id": str(note.id)}

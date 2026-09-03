@@ -8,5 +8,4 @@ export const communicationApi = {
   // the legacy category create/update/delete endpoints no longer exist.
   linkSubcontractor: (payload) => api("/api/communication-hub/relationships", { method: "POST", body: JSON.stringify(payload) }),
   unlinkSubcontractor: (relationshipId) => api(`/api/communication-hub/relationships/${relationshipId}`, { method: "DELETE" }),
-  addLog: (payload) => api("/api/communication-hub/logs", { method: "POST", body: JSON.stringify(payload) }),
 };

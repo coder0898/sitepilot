@@ -10,7 +10,7 @@ import { ConfirmModal, EmptyState, LoadingSpinner, Modal, RefreshButton } from "
 import { cn } from "../../utils/cn";
 import { paginationItems } from "../../utils/pagination";
 
-const emptyHub = { vendors: [], contacts: [], categories: [], projects: [], note_projects: [], project_vendors: [], relationships: [], logs: [] };
+const emptyHub = { vendors: [], contacts: [], categories: [], projects: [], project_vendors: [], relationships: [] };
 import { CategoryChip, CompanyModal, Metric, ProfileModal, VendorRow } from "./components/CommunicationDirectory";
 import { VendorDetailPanel } from "./components/VendorDetailPanel";
 
@@ -300,11 +300,10 @@ export function CommunicationHubPage({ user, action }) {
     {selectedVendor && <VendorDetailPanel vendor={selectedVendor} parentVendor={vendorById[selectedVendor.parent_vendor_id]} subVendors={childrenFor(selectedVendor.id).map(item => item.vendor)}
       contacts={contactsFor(selectedVendor.id)} projects={projectsFor(selectedVendor.id)}
       unmappedProjects={hub.projects.filter(project => project.status === "active" && !projectsFor(selectedVendor.id).some(mapped => mapped.id === project.id))}
-      mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} noteProjects={hub.note_projects} categories={hub.categories}
-      logs={hub.logs.filter(log => log.vendor_id === selectedVendor.id)} canManage={canManage} onClose={() => setSelected(null)}
+      mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} categories={hub.categories}
+      canManage={canManage} onClose={() => setSelected(null)}
       remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} deactivate={() => deactivateVendor(selectedVendor)}
-      addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected}
-      addNote={event => submit(event, payload => communicationApi.addLog({ ...payload, vendor_id: selectedVendor.id, project_id: payload.project_id || null, contact_id: payload.contact_id || null }), "Communication note added")}/>}
+      addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected}/>}
 
     {form === "main" && <CompanyModal title="Add main vendor" categories={hub.categories} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "main")}/>}
     {form === "sub" && selectedVendor?.engagement_type === "main" && <CompanyModal title="Add sub-vendor" categories={hub.categories} fixedMainContractor={selectedVendor} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "sub")}/>}
