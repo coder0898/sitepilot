@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock3, ShieldAlert, Truck, UserX } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, ShieldAlert, UserX } from "lucide-react";
 import { projectsApi } from "../../../api/projectsApi";
 import { EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
 
@@ -59,7 +59,7 @@ export function ProjectDashboard({ project }) {
   if (error) return <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-700">{error}</div>;
   if (!data) return null;
 
-  const { summary, vendor_risks: vendorRisks } = data;
+  const { summary } = data;
 
   return <div className="grid gap-4">
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -114,16 +114,6 @@ export function ProjectDashboard({ project }) {
         </p>)}
       </div>
     </div>}
-
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="flex items-center gap-2 font-black text-slate-950"><Truck size={16}/> Vendor risks <Pill tone={vendorRisks.length ? "rose" : "slate"}>{vendorRisks.length}</Pill></h3>
-      {vendorRisks.length === 0
-        ? <EmptyState title="No vendor risks recorded" description="Delay, rework, and incident events logged against this project's vendors will appear here."/>
-        : <div className="mt-3 grid gap-2">{vendorRisks.map(item => <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-            <div className="flex items-center justify-between gap-2"><Pill tone="rose">{item.event_type}</Pill><span className="text-xs text-slate-500">{new Date(item.created_at).toLocaleDateString()}</span></div>
-            <p className="mt-1 text-slate-700">{item.description}</p>
-          </div>)}</div>}
-    </div>
 
     {summary.total_count === 0 && <EmptyState icon={<CheckCircle2 size={20}/>} title="No execution tasks yet" description="This project has not generated execution tasks - counts will populate once it is activated."/>}
   </div>;

@@ -111,34 +111,11 @@ class VendorAcknowledgementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class VendorActivityEvidenceOut(BaseModel):
-    id: uuid.UUID
-    file_id: uuid.UUID
-    original_filename: str
-    mime_type: str
-    size_bytes: int
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class VendorActivityEventOut(BaseModel):
-    id: uuid.UUID
-    task_vendor_assignment_id: uuid.UUID
-    event_type: str
-    description: str
-    responsibility_decision: str | None
-    recorded_by: uuid.UUID
-    created_at: datetime
-    evidence: list[VendorActivityEvidenceOut] = Field(default_factory=list)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class TaskVendorAssignmentDetailOut(BaseModel):
-    """Read surface for TaskVendorDelegationForm/VendorAcknowledgementForm/
-    VendorActivityForm - a task's vendor assignment(s) plus their full
-    acknowledgement and activity history, so the UI can render current
-    state without re-deriving it from separate list calls."""
+    """Read surface for TaskVendorDelegationForm/VendorAcknowledgementForm -
+    a task's vendor assignment(s) plus their full acknowledgement history,
+    so the UI can render current state without re-deriving it from separate
+    list calls."""
 
     id: uuid.UUID
     task_id: uuid.UUID
@@ -149,4 +126,3 @@ class TaskVendorAssignmentDetailOut(BaseModel):
     assigned_by: uuid.UUID
     created_at: datetime
     acknowledgements: list[VendorAcknowledgementOut] = Field(default_factory=list)
-    activity_events: list[VendorActivityEventOut] = Field(default_factory=list)

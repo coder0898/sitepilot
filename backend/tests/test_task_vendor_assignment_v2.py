@@ -38,8 +38,6 @@ from app.vendor_models import (
     V2Vendor,
     V2VendorCapability,
     VendorAcknowledgement,
-    VendorActivityEvent,
-    VendorActivityEvidence,
 )
 
 
@@ -99,8 +97,6 @@ class TaskVendorAssignmentApiTests(unittest.TestCase):
             TaskVendorAssignment.__table__,
             VendorAcknowledgement.__table__,
             FileObject.__table__,
-            VendorActivityEvent.__table__,
-            VendorActivityEvidence.__table__,
             OutboxEvent.__table__,
             V2TemplateExternalGate.__table__,
             V2TemplateExternalGateTask.__table__,
@@ -427,7 +423,6 @@ class TaskVendorAssignmentApiTests(unittest.TestCase):
         self.assertEqual(body[0]["status"], "acknowledged")
         self.assertEqual(len(body[0]["acknowledgements"]), 1)
         self.assertEqual(body[0]["acknowledgements"][0]["response"], "accepted")
-        self.assertEqual(body[0]["activity_events"], [])
 
     def test_list_task_vendor_assignments_empty_before_any_assignment(self):
         project = self.activate_project()
