@@ -390,6 +390,17 @@ class MessageDispatchService:
                 vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
                 if vendor_task_recipient is not None:
                     recipients.append(vendor_task_recipient)
+            if event.event_type == "task.delay_recorded":
+                # A delay must reach everyone actually working this task, not
+                # just its PM/Supervisor: any Internal Employee support-
+                # assigned to it, and any vendor currently delegated to it
+                # (regardless of who the delay's own responsibility_type
+                # names - a vendor on the task is "concerned" by a delay on
+                # it either way).
+                recipients.extend(self._resolve_internal_employee_recipient(task))
+                vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
+                if vendor_task_recipient is not None:
+                    recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
             recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
             if event.event_type in _ADMIN_CC_PROJECT_EVENTS:

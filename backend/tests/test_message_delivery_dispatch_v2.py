@@ -788,6 +788,56 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
         self.assertNotIn(self.internal_employee_employee_id, employee_ids)
 
+    def test_delay_recorded_reaches_pm_supervisor_support_employee_and_vendor(self):
+        # A delay must reach everyone actually concerned with the task, not
+        # just PM/Supervisor: the support-assigned Internal Employee and any
+        # vendor currently delegated to the task too.
+        self._make_support_assignment(status="active")
+        self._make_vendor_assignment(status="pending_ack")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.delay_recorded", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={"task_id": str(self.task_id), "responsibility_type": "vendor", "impact_days": 2},
+                key="test:9-delay",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+        self.assertEqual(
+            {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id} & employee_ids,
+            {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
+        )
+        vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
+        self.assertEqual(len(vendor_rows), 1)
+        self.assertEqual(vendor_rows[0].recipient_vendor_contact_id, self.vendor_contact_id)
+
+    def test_delay_recorded_with_no_support_or_vendor_still_reaches_pm_supervisor(self):
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.delay_recorded", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={"task_id": str(self.task_id), "responsibility_type": "internal", "impact_days": 1},
+                key="test:9-delay-bare",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
+        self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
+                          {self.pm_employee_id, self.supervisor_employee_id})
+        self.assertEqual([d for d in deliveries if d.recipient_vendor_contact_id is not None], [])
+
 
 if __name__ == "__main__":
     unittest.main()
