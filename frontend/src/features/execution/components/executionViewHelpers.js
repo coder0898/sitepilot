@@ -70,15 +70,56 @@ export function gridColumnFor(span, range) {
   return `${offset + 1} / ${offset + 1 + Math.max(length, 1)}`;
 }
 
+// The span a DATED task actually occupies on the Supervisor board: its
+// planned range, stretched backward to cover an actual start earlier than
+// planned (so an early-started task shows up on the day it really started,
+// not just the day it was supposed to), and stretched forward to today
+// while it's still open past its planned end (so an overdue task keeps
+// appearing under Today every day it stays open, instead of quietly
+// falling off the board the moment its planned window is in the past - the
+// old behaviour, which is why a task delayed since yesterday never showed
+// up as delayed today: the card itself had already stopped rendering).
+// A task that has actually finished (or been cancelled) stops accruing
+// days - it's done, there is nothing left to carry forward.
+export function occupiedRange(task, today) {
+  const planned = plannedRange(task);
+  if (!planned) return null;
+
+  const actualStart = toDay(task.actual_start_at);
+  const start = actualStart && actualStart < planned.start ? actualStart : planned.start;
+
+  const finish = toDay(task.actual_finish_at);
+  if (finish) return { start, end: finish < start ? start : finish };
+  if (task.lifecycle_status === "cancelled") return { start, end: planned.end };
+
+  const end = today > planned.end ? today : planned.end;
+  return { start, end };
+}
+
 // Whether `day` (a UTC-midnight Date) falls inside a task's occupied span -
-// its planned range if dated, else its actual range. Used to bucket a task
+// `occupiedRange` if dated, else its actual range. Used to bucket a task
 // into the Supervisor board's Yesterday/Today/Tomorrow columns.
 export function taskOccupiesDay(task, day, today) {
-  const planned = plannedRange(task);
-  if (planned) return day >= planned.start && day <= planned.end;
+  const occupied = occupiedRange(task, today);
+  if (occupied) return day >= occupied.start && day <= occupied.end;
   const actual = actualRange(task, today);
   if (actual) return day >= actual.start && day <= actual.end;
   return false;
+}
+
+// Days a task's ACTUAL start beat its PLANNED start by - a different
+// question from `task.variance` (which only ever measures the FINISH date
+// against the plan; the backend has no notion of "started early"). Purely
+// derived from fields the task payload already carries, so no backend
+// change is needed for this one. 0 when the task hasn't started, started
+// on/after its planned date, or has no planned start date to compare
+// against.
+export function startedEarlyDays(task) {
+  const plannedStart = toDay(task.planned_start_date);
+  const actualStart = toDay(task.actual_start_at);
+  if (!plannedStart || !actualStart) return 0;
+  const days = daysBetween(actualStart, plannedStart);
+  return days > 0 ? days : 0;
 }
 
 // U19's readinessCounts, extended with the lifecycle/variance buckets the

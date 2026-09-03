@@ -1,16 +1,22 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
+import { vendorAssignmentApi } from "../../api/vendorAssignmentApi";
 import { TaskBlockerDelayPanel } from "./components/TaskBlockerDelayPanel";
 
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
   logBlocker: vi.fn(), resolveBlocker: vi.fn(), logDelay: vi.fn(),
 } }));
+vi.mock("../../api/vendorAssignmentApi", () => ({ vendorAssignmentApi: { listProjectVendors: vi.fn() } }));
 
 const task = { id: "t1", blockers: [], delays: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vendorAssignmentApi.listProjectVendors.mockResolvedValue([
+    { id: "pv1", project_id: "p1", vendor_id: "v-electric", vendor_name: "Electrical Co", engagement_type: "main", parent_vendor_id: null, mapped_by: "u1", created_at: "2026-08-01T00:00:00Z" },
+    { id: "pv2", project_id: "p1", vendor_id: "v-plumb", vendor_name: "Plumbing Co", engagement_type: "main", parent_vendor_id: null, mapped_by: "u1", created_at: "2026-08-01T00:00:00Z" },
+  ]);
 });
 
 describe("TaskBlockerDelayPanel", () => {
@@ -66,33 +72,39 @@ describe("TaskBlockerDelayPanel", () => {
     expect(screen.queryByRole("button", { name: "Resolve" })).not.toBeInTheDocument();
   });
 
-  it("shows the vendor id field only when responsibility is vendor", () => {
+  it("shows the vendor dropdown, populated from this project's mapped vendors, only when responsibility is vendor", async () => {
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
     fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
-    expect(screen.getByLabelText(/vendor id/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Vendor")).toBeInTheDocument();
+    await waitFor(() => expect(vendorAssignmentApi.listProjectVendors).toHaveBeenCalledWith("p1"));
+    await waitFor(() => expect(screen.getByRole("option", { name: "Electrical Co" })).toBeInTheDocument());
+    expect(screen.getByRole("option", { name: "Plumbing Co" })).toBeInTheDocument();
+
     fireEvent.change(screen.getByLabelText("Responsibility"), { target: { value: "client" } });
-    expect(screen.queryByLabelText("Vendor ID")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Vendor")).not.toBeInTheDocument();
   });
 
-  it("requires the vendor id and submits a vendor delay, then collapses the form", async () => {
+  it("requires a selected vendor and submits a vendor delay, then collapses the form", async () => {
     taskExecutionApi.logDelay.mockResolvedValue({});
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
     fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Cement delayed at source." } });
     expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "3fa85f64-5717-4562-b3fc-2c963f66afa6" } });
+    await waitFor(() => expect(screen.getByRole("option", { name: "Electrical Co" })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Vendor"), { target: { value: "v-electric" } });
     fireEvent.click(screen.getByRole("button", { name: /log delay/i }));
-    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", reason: "Cement delayed at source.", impact_days: 1 }));
+    await waitFor(() => expect(taskExecutionApi.logDelay).toHaveBeenCalledWith("p1", "t1", { responsibility_type: "vendor", responsible_vendor_id: "v-electric", reason: "Cement delayed at source.", impact_days: 1 }));
     await waitFor(() => expect(screen.queryByLabelText("Reason")).not.toBeInTheDocument());
   });
 
-  it("rejects a non-UUID vendor id before submitting", async () => {
+  it("disables the vendor dropdown and Log delay when this project has no mapped vendors", async () => {
+    vendorAssignmentApi.listProjectVendors.mockResolvedValue([]);
     render(<TaskBlockerDelayPanel projectId="p1" task={task} onChanged={vi.fn()}/>);
     fireEvent.click(screen.getByRole("button", { name: /report delay/i }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Cement delayed at source." } });
-    fireEvent.change(screen.getByLabelText(/vendor id/i), { target: { value: "vendor-123" } });
+    await waitFor(() => expect(screen.getByLabelText("Vendor")).toBeDisabled());
+    expect(screen.getByText(/no vendors are mapped to this project yet/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /log delay/i })).toBeDisabled();
-    expect(screen.getByText("Must be a valid UUID.")).toBeInTheDocument();
     expect(taskExecutionApi.logDelay).not.toHaveBeenCalled();
   });
 

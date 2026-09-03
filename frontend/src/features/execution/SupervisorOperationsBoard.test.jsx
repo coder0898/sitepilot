@@ -54,6 +54,63 @@ describe("SupervisorOperationsBoard", () => {
     expect(within(yesterdayColumn).queryByText("Electrical wiring first fix")).not.toBeInTheDocument();
   });
 
+  it("carries an unfinished task overdue since yesterday into Today, flagged as delayed", async () => {
+    taskExecutionApi.list.mockResolvedValue([task({
+      title: "Rebar fixing",
+      planned_start_date: isoOffsetDays(-1), planned_end_date: isoOffsetDays(-1),
+      lifecycle_status: "in_progress",
+      variance: { status: "late", days: 1, measured_against: "today" },
+    })]);
+    render(<SupervisorOperationsBoard projectId="p1" user={supervisor}/>);
+    const [yesterdayColumn, todayColumn] = await screen.findAllByRole("article");
+    expect(within(todayColumn).getByText("Rebar fixing")).toBeInTheDocument();
+    expect(within(todayColumn).getByText("1d late")).toBeInTheDocument();
+    expect(within(yesterdayColumn).getByText("Rebar fixing")).toBeInTheDocument();
+  });
+
+  it("does not carry a completed task forward past the day it actually finished", async () => {
+    taskExecutionApi.list.mockResolvedValue([task({
+      title: "Formwork removal",
+      planned_start_date: isoOffsetDays(-2), planned_end_date: isoOffsetDays(-2),
+      lifecycle_status: "completed",
+      actual_start_at: `${isoOffsetDays(-2)}T09:00:00Z`, actual_finish_at: `${isoOffsetDays(-2)}T17:00:00Z`,
+    })]);
+    render(<SupervisorOperationsBoard projectId="p1" user={supervisor}/>);
+    await screen.findByText("3-Day Operations Board");
+    const [, todayColumn] = screen.getAllByRole("article");
+    expect(within(todayColumn).queryByText("Formwork removal")).not.toBeInTheDocument();
+  });
+
+  it("shows a task started before its planned date under Today, flagged as early", async () => {
+    taskExecutionApi.list.mockResolvedValue([task({
+      title: "Plumbing rough-in",
+      planned_start_date: isoOffsetDays(2), planned_end_date: isoOffsetDays(3),
+      lifecycle_status: "in_progress",
+      actual_start_at: `${isoOffsetDays(0)}T08:00:00Z`,
+    })]);
+    render(<SupervisorOperationsBoard projectId="p1" user={supervisor}/>);
+    const [, todayColumn] = await screen.findAllByRole("article");
+    expect(within(todayColumn).getByText("Plumbing rough-in")).toBeInTheDocument();
+    expect(within(todayColumn).getByText("2d early")).toBeInTheDocument();
+  });
+
+  it("sorts delayed and early-started tasks ahead of routine tasks in the same column", async () => {
+    taskExecutionApi.list.mockResolvedValue([
+      task({ id: "t-routine", title: "Routine task" }),
+      task({
+        id: "t-late", title: "Overdue task",
+        planned_start_date: isoOffsetDays(-1), planned_end_date: isoOffsetDays(-1),
+        variance: { status: "late", days: 1, measured_against: "today" },
+      }),
+    ]);
+    render(<SupervisorOperationsBoard projectId="p1" user={supervisor}/>);
+    const [, todayColumn] = await screen.findAllByRole("article");
+    const titles = within(todayColumn).getAllByRole("button").map(button => button.textContent);
+    expect(titles.findIndex(text => text.includes("Overdue task"))).toBeLessThan(
+      titles.findIndex(text => text.includes("Routine task")),
+    );
+  });
+
   it("counts a blocked task under Attention Required and can filter to it", async () => {
     taskExecutionApi.list.mockResolvedValue([
       task({ id: "t1", title: "Install gypsum partition", readiness: { state: "blocked", reasons: [], advisories: [] } }),
