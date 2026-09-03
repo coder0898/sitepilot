@@ -1,18 +1,13 @@
 import { AlertTriangle, Clock3, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
+import { vendorAssignmentApi } from "../../../api/vendorAssignmentApi";
 import { Button, Field, Input, Pill, Select, Textarea } from "../../../components/ui";
 
 const DELAY_RESPONSIBILITY_OPTIONS = [
   ["vendor", "Vendor"], ["client", "Client"], ["approval", "Approval"],
   ["design", "Design"], ["site_readiness", "Site readiness"], ["internal", "Internal"], ["other", "Other"],
 ];
-
-// The backend column is a plain uuid.UUID (no vendor picker exists yet - see
-// the plan's Key Technical Decisions), so free text like a vendor code would
-// always 422. Validate the format client-side to fail fast with a clear
-// message instead of a confusing backend error.
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function BlockerRow({ projectId, task, blocker, onChanged }) {
   const [resolving, setResolving] = useState(false);
@@ -76,25 +71,34 @@ function BlockerForm({ projectId, task, onDone, onChanged }) {
 function DelayForm({ projectId, task, onDone, onChanged }) {
   const [responsibilityType, setResponsibilityType] = useState("vendor");
   const [vendorId, setVendorId] = useState("");
+  const [vendors, setVendors] = useState([]);
+  const [vendorsLoading, setVendorsLoading] = useState(true);
   const [reason, setReason] = useState("");
   const [impactDays, setImpactDays] = useState("1");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  const vendorIdInvalid = responsibilityType === "vendor" && vendorId.trim() && !UUID_PATTERN.test(vendorId.trim());
+  // Vendors mapped to THIS project only - mirrors TaskVendorDelegationForm's
+  // own picker, so "who caused this delay" only ever offers a vendor that
+  // could plausibly be responsible for work on this project.
+  useEffect(() => {
+    let active = true;
+    setVendorsLoading(true);
+    vendorAssignmentApi.listProjectVendors(projectId)
+      .then(list => { if (active) setVendors(list); })
+      .catch(() => { if (active) setVendors([]); })
+      .finally(() => { if (active) setVendorsLoading(false); });
+    return () => { active = false; };
+  }, [projectId]);
 
   async function submit(event) {
     event.preventDefault();
-    if (responsibilityType === "vendor" && !UUID_PATTERN.test(vendorId.trim())) {
-      setError("Vendor ID must be a valid UUID (the vendor's V2 record id, not a vendor code).");
-      return;
-    }
     setSubmitting(true);
     setError("");
     try {
       await taskExecutionApi.logDelay(projectId, task.id, {
         responsibility_type: responsibilityType,
-        responsible_vendor_id: responsibilityType === "vendor" ? vendorId.trim() : null,
+        responsible_vendor_id: responsibilityType === "vendor" ? vendorId : null,
         reason: reason.trim(),
         impact_days: Number(impactDays),
       });
@@ -110,10 +114,18 @@ function DelayForm({ projectId, task, onDone, onChanged }) {
   return <form className="mt-2 grid gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:grid-cols-2" onSubmit={submit}>
     <Field label="Responsibility"><Select value={responsibilityType} onChange={event => setResponsibilityType(event.target.value)}>{DELAY_RESPONSIBILITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>
     <Field label="Impact (days)"><Input type="number" min="1" value={impactDays} onChange={event => setImpactDays(event.target.value)} required/></Field>
-    {responsibilityType === "vendor" && <Field label="Vendor ID" className="sm:col-span-2" error={vendorIdInvalid ? "Must be a valid UUID." : null} hint={vendorIdInvalid ? null : "Vendor picker arrives with Phase 2's vendor integration; enter the vendor's V2 record UUID for now."}><Input value={vendorId} onChange={event => setVendorId(event.target.value)} placeholder="e.g. 3fa85f64-5717-4562-b3fc-2c963f66afa6" required/></Field>}
+    {responsibilityType === "vendor" && <Field
+      label="Vendor" className="sm:col-span-2"
+      hint={!vendorsLoading && vendors.length === 0 ? "No vendors are mapped to this project yet - map one from the Vendor Hub first." : null}
+    >
+      <Select value={vendorId} onChange={event => setVendorId(event.target.value)} disabled={vendorsLoading || vendors.length === 0} required>
+        <option value="">{vendorsLoading ? "Loading vendors..." : vendors.length ? "Select vendor" : "No vendors mapped to this project"}</option>
+        {vendors.map(vendor => <option key={vendor.vendor_id} value={vendor.vendor_id}>{vendor.vendor_name}</option>)}
+      </Select>
+    </Field>}
     <Field label="Reason" className="sm:col-span-2"><Textarea value={reason} onChange={event => setReason(event.target.value)} placeholder="What is causing the delay?" required/></Field>
     <div className="flex gap-2 sm:col-span-2">
-      <Button type="submit" size="sm" loading={submitting} disabled={!reason.trim() || (responsibilityType === "vendor" && (!vendorId.trim() || vendorIdInvalid))}>Log delay</Button>
+      <Button type="submit" size="sm" loading={submitting} disabled={!reason.trim() || (responsibilityType === "vendor" && !vendorId)}>Log delay</Button>
       <Button type="button" size="sm" variant="ghost" disabled={submitting} onClick={onDone}>Cancel</Button>
     </div>
     {error && <p className="text-xs font-bold text-rose-700 sm:col-span-2">{error}</p>}

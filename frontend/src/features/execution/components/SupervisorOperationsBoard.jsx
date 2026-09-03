@@ -1,4 +1,4 @@
-import { CalendarClock, ClipboardCheck, Clock3, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { CalendarClock, ClipboardCheck, Clock3, Rocket, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
@@ -6,7 +6,7 @@ import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui
 import { todayIso } from "../../../utils/format";
 import { STATUS_TONE } from "./TaskDetailContent";
 import { TaskDetailDrawer } from "./TaskDetailDrawer";
-import { needsReview, taskOccupiesDay, todayAsDay } from "./executionViewHelpers";
+import { needsReview, startedEarlyDays, taskOccupiesDay, todayAsDay } from "./executionViewHelpers";
 
 const VISIBLE_PER_COLUMN = 5;
 
@@ -24,13 +24,29 @@ function columnLabel(date, kind) {
 
 const ATTENTION_KEYS = [
   ["delayed", "Delayed", Clock3, task => task.variance?.status === "late"],
+  ["started_early", "Started Early", Rocket, task => startedEarlyDays(task) > 0],
   ["blocked", "Blocked", ShieldAlert, task => task.readiness?.state === "blocked"],
   ["needs_review", "Needs Review", ClipboardCheck, needsReview],
   ["approval_pending", "Approval Pending", ShieldCheck, task => task.lifecycle_status === "approval_pending"],
 ];
 
+// Delayed and early-started tasks need to be seen first, not buried
+// wherever their planned date happens to sort them - a Supervisor scanning
+// a 5-task column for the one thing that actually needs attention
+// shouldn't have to read past four routine cards to find it.
+function attentionRank(task) {
+  if (task.variance?.status === "late") return 0;
+  if (startedEarlyDays(task) > 0) return 1;
+  return 2;
+}
+
+export function sortByAttention(tasks) {
+  return [...tasks].sort((a, b) => attentionRank(a) - attentionRank(b));
+}
+
 function TaskCard({ task, onOpen }) {
   const late = task.variance?.status === "late";
+  const earlyDays = startedEarlyDays(task);
   return <button type="button" onClick={() => onOpen(task.id)} className="grid w-full min-w-0 gap-1 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:shadow-sm">
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <span className="font-mono text-[11px] font-black text-blue-700">{task.original_code}</span>
@@ -40,6 +56,7 @@ function TaskCard({ task, onOpen }) {
       {task.category && <span className="text-xs text-slate-500">{task.category}</span>}
       <Pill tone={STATUS_TONE[task.lifecycle_status] || "gray"}>{task.lifecycle_status.replaceAll("_", " ")}</Pill>
       {late && <Pill tone="orange">{task.variance.days}d late</Pill>}
+      {earlyDays > 0 && <Pill tone="blue">{earlyDays}d early</Pill>}
     </div>
   </button>;
 }
@@ -113,7 +130,7 @@ export function SupervisorOperationsBoard({ projectId, user }) {
     ].map(({ key, day, kind }) => ({
       key,
       label: columnLabel(day, kind),
-      tasks: searchedTasks.filter(task => taskOccupiesDay(task, day, today)),
+      tasks: sortByAttention(searchedTasks.filter(task => taskOccupiesDay(task, day, today))),
     }));
   }, [searchedTasks, today]);
 
