@@ -45,6 +45,13 @@ class TemplateSpec:
 
 DEFAULT_TEMPLATE = TemplateSpec("generic_notification", "en", ())
 
+# WhatsApp gate workflow plan (U14, KTD14): every new event type below is
+# registered with a `TBD_<event_name>` placeholder `meta_template_name` and
+# the correct `variable_order` only - no literal template body copy exists
+# anywhere in this codebase, blocked on management/Meta approval (tracked in
+# `todo.md` at the repo root). `grep -rn "TBD_" backend/app/services/message_templates.py`
+# finds every entry still needing a real, approved template name.
+
 
 TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
     # ---- task events ---------------------------------------------------
@@ -155,10 +162,18 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
     ),
     # ---- project_external_approval (gate) events -------------------------
     "project_external_approval.assigned": TemplateSpec(
-        "external_approval_assigned", "en", ("approval_id", "assigned_to_user_id"),
+        # WhatsApp gate workflow plan (U14): widened with gate_name/
+        # project_name/due_date - U4 already writes these three keys into
+        # this event's payload (project_gate_assignment.py), but without
+        # this widening render_components only emitted the original two
+        # parameters and the new fields never reached a rendered message.
+        "external_approval_assigned", "en",
+        ("approval_id", "assigned_to_user_id", "gate_name", "project_name", "due_date"),
     ),
     "project_external_approval.reassigned": TemplateSpec(
-        "external_approval_reassigned", "en", ("approval_id", "assigned_to_user_id"),
+        # Same widening as .assigned above, same reason.
+        "external_approval_reassigned", "en",
+        ("approval_id", "assigned_to_user_id", "gate_name", "project_name", "due_date"),
     ),
     "project_external_approval.unassigned": TemplateSpec(
         "external_approval_unassigned", "en", ("approval_id", "previous_assignee_id"),
@@ -198,6 +213,64 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
         # due-date reminder this maps to is emitted by a later dispatch's
         # `gate_reminder_scheduler.py`, not by anything in this dispatch.
         "external_approval_due_reminder", "en", ("approval_id", "assigned_to_user_id", "due_at"),
+    ),
+    # ---- WhatsApp gate workflow plan events (U14) -------------------------
+    # Every entry below is a TBD_ placeholder (KTD14) - no literal template
+    # body copy exists anywhere in this codebase; see the module-level note
+    # above DEFAULT_TEMPLATE.
+    "project.activated": TemplateSpec(
+        "TBD_project_activated", "en", ("project_id", "project_name"),
+    ),
+    "project.member_added": TemplateSpec(
+        "TBD_project_member_added", "en", ("project_id", "employee_id", "project_role"),
+    ),
+    "project.vendor_mapped": TemplateSpec(
+        # KTD19: a distinct event type from project.member_added, not the
+        # same type reused with different payload keys - the two shapes
+        # never overlap (person vs. vendor), so each gets its own entry.
+        "TBD_project_vendor_mapped", "en", ("project_id", "vendor_id"),
+    ),
+    "project_external_approval.accepted": TemplateSpec(
+        # U5: the assignee's WhatsApp acknowledgement - distinct from the
+        # U15 gate_confirmation.* entries below, which confirm back to
+        # whoever sent a gate command, not this Admin-facing overlay event.
+        "TBD_project_external_approval_accepted", "en",
+        ("approval_id", "project_id", "response", "note"),
+    ),
+    "project_external_approval.declined": TemplateSpec(
+        "TBD_project_external_approval_declined", "en",
+        ("approval_id", "project_id", "response", "note"),
+    ),
+    "user.created": TemplateSpec(
+        "TBD_user_created", "en", ("user_id", "name"),
+    ),
+    "user.offboarded": TemplateSpec(
+        "TBD_user_offboarded", "en", ("user_id", "name"),
+    ),
+    # ---- gate command WhatsApp confirmations (U15) -------------------------
+    # Sender-facing confirmations for the six gate commands
+    # (GATEACCEPT/DECLINE/STATUS/OPEN/CLOSE/DECIDE) - distinct from the
+    # Admin-facing project_external_approval.accepted/.declined above, which
+    # keep notifying Admin unchanged.
+    "gate_confirmation.accepted": TemplateSpec(
+        "TBD_gate_confirmation_accepted", "en", ("actor_user_id", "gate_name", "project_name"),
+    ),
+    "gate_confirmation.declined": TemplateSpec(
+        "TBD_gate_confirmation_declined", "en", ("actor_user_id", "gate_name", "project_name"),
+    ),
+    "gate_confirmation.status_recorded": TemplateSpec(
+        "TBD_gate_confirmation_status_recorded", "en",
+        ("actor_user_id", "gate_name", "project_name", "health"),
+    ),
+    "gate_confirmation.session_opened": TemplateSpec(
+        "TBD_gate_confirmation_session_opened", "en", ("actor_user_id", "gate_name", "project_name"),
+    ),
+    "gate_confirmation.session_closed": TemplateSpec(
+        "TBD_gate_confirmation_session_closed", "en", ("actor_user_id", "gate_name", "project_name"),
+    ),
+    "gate_confirmation.decided": TemplateSpec(
+        "TBD_gate_confirmation_decided", "en",
+        ("actor_user_id", "gate_name", "project_name", "decision"),
     ),
     # ---- report events ---------------------------------------------------
     "report.weekly_summary_generated": TemplateSpec(

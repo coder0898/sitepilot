@@ -507,6 +507,74 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         components = render_components(spec, {})
         self.assertEqual(components, [{"type": "body", "parameters": [{"type": "text", "text": ""}]}])
 
+    # ---- WhatsApp gate workflow plan (U14): new event-type registry entries
+
+    NEW_EVENT_TYPE_PAYLOADS = {
+        "project.activated": {"project_id": "p1", "project_name": "Futurex"},
+        "project.member_added": {"project_id": "p1", "employee_id": "e1", "project_role": "internal_employee"},
+        "project.vendor_mapped": {"project_id": "p1", "vendor_id": "v1"},
+        "project_external_approval.accepted": {
+            "approval_id": "a1", "project_id": "p1", "response": "accepted", "note": "ok",
+        },
+        "project_external_approval.declined": {
+            "approval_id": "a1", "project_id": "p1", "response": "declined", "note": "ok",
+        },
+        "user.created": {"user_id": "u1", "name": "Field Hand"},
+        "user.offboarded": {"user_id": "u1", "name": "Field Hand"},
+        "gate_confirmation.accepted": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.declined": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.status_recorded": {
+            "actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex", "health": "on_track",
+        },
+        "gate_confirmation.session_opened": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.session_closed": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.decided": {
+            "actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex", "decision": "approved",
+        },
+    }
+
+    def test_every_new_event_type_resolves_to_a_tbd_placeholder_template(self):
+        for event_type in self.NEW_EVENT_TYPE_PAYLOADS:
+            with self.subTest(event_type=event_type):
+                spec = resolve(event_type)
+                self.assertNotEqual(spec, DEFAULT_TEMPLATE)
+                self.assertTrue(
+                    spec.meta_template_name.startswith("TBD_"),
+                    f"{event_type} resolved to {spec.meta_template_name!r}, expected a TBD_ placeholder",
+                )
+
+    def test_every_new_event_type_renders_one_body_parameter_per_variable(self):
+        for event_type, payload in self.NEW_EVENT_TYPE_PAYLOADS.items():
+            with self.subTest(event_type=event_type):
+                spec = resolve(event_type)
+                components = render_components(spec, payload)
+                self.assertEqual(len(components[0]["parameters"]), len(spec.variable_order))
+
+    def test_widened_gate_assignment_spec_renders_five_body_parameters(self):
+        spec = resolve("project_external_approval.assigned")
+        payload = {
+            "approval_id": "a1", "assigned_to_user_id": "u1",
+            "gate_name": "Fire NOC", "project_name": "Futurex", "due_date": "2026-12-25",
+        }
+
+        components = render_components(spec, payload)
+
+        parameters = components[0]["parameters"]
+        self.assertEqual(len(parameters), 5)
+        rendered_text = [p["text"] for p in parameters]
+        self.assertIn("Fire NOC", rendered_text)
+        self.assertIn("Futurex", rendered_text)
+        self.assertIn("2026-12-25", rendered_text)
+
+    def test_widened_gate_reassignment_spec_also_renders_five_body_parameters(self):
+        spec = resolve("project_external_approval.reassigned")
+        payload = {
+            "approval_id": "a1", "assigned_to_user_id": "u2",
+            "gate_name": "Fire NOC", "project_name": "Futurex", "due_date": "No due date set",
+        }
+        components = render_components(spec, payload)
+        self.assertEqual(len(components[0]["parameters"]), 5)
+
     # ---- 8. Phase 1b: project_external_approval recipient resolution ------
 
     def test_project_external_approval_assigned_event_resolves_admin_and_assignee(self):
