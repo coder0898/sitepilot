@@ -43,6 +43,7 @@ exercise; a real product would need a friendlier conversational UX):
         STATUS <task_code> <target_status>
         GATEACCEPT <approval_ref>
         GATEDECLINE <approval_ref>
+        GATESTATUS <approval_ref> <health> [note...]
 
     where <task_code> is a `Task.original_code` (e.g. "T003" - unique only
     within a project, not globally) and <target_status> is passed through
@@ -54,10 +55,16 @@ exercise; a real product would need a friendlier conversational UX):
     `ProjectGateAcknowledgementService.record` (U5) with response
     "accepted"/"declined" - that service owns its own assignee-only access
     check (`_require_assignee`), so no project-role gate is applied here.
+    GATESTATUS (U7) calls the existing `ProjectGateStatusCheckService.record`
+    unchanged, with <health> lower-cased before being passed through - that
+    service is what actually validates it against `STATUS_CHECK_HEALTHS`
+    and owns its own assignee-only access check, so nothing here duplicates
+    either. <note...> (GATESTATUS only, optional) is whatever text follows
+    <health>, verbatim - same convention as CLARIFY's trailing note above.
 
-    A vendor contact sending STATUS/GATEACCEPT/GATEDECLINE, or an employee
-    sending ACCEPT/DECLINE/CLARIFY, is rejected as "not available for your
-    identity type" (BR-015). An unrecognized keyword is rejected as
+    A vendor contact sending STATUS/GATEACCEPT/GATEDECLINE/GATESTATUS, or an
+    employee sending ACCEPT/DECLINE/CLARIFY, is rejected as "not available
+    for your identity type" (BR-015). An unrecognized keyword is rejected as
     "Unrecognized command."
 
 Actor substitution for vendor acknowledgements (the one genuinely
@@ -93,6 +100,7 @@ from app.execution_models import InboundMessage, ProjectExternalApproval, Task
 from app.models import EmployeeProfile, User
 from app.project_models import V2ProjectMembership
 from app.services.project_gate_acknowledgement import ProjectGateAcknowledgementService
+from app.services.project_gate_status_check import ProjectGateStatusCheckService
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.vendor_acknowledgement import VendorAcknowledgementService
 from app.vendor_models import TaskVendorAssignment, V2VendorContact
@@ -105,7 +113,13 @@ EMPLOYEE_COMMAND = "STATUS"
 # own `_require_assignee` already enforces "only the specific assignee",
 # which is a narrower and sufficient check.
 GATE_COMMANDS = {"GATEACCEPT", "GATEDECLINE"}
-EMPLOYEE_COMMANDS = {EMPLOYEE_COMMAND, *GATE_COMMANDS}
+# U7: GATESTATUS is the WhatsApp analogue of a portal gate status check
+# (ProjectGateStatusCheckService, already existing) - kept as its own
+# constant rather than folded into GATE_COMMANDS because it routes to a
+# different handler (_handle_gate_status_command) and a different
+# downstream service call, not `_GATE_RESPONSE_BY_COMMAND`.
+GATE_STATUS_COMMAND = "GATESTATUS"
+EMPLOYEE_COMMANDS = {EMPLOYEE_COMMAND, *GATE_COMMANDS, GATE_STATUS_COMMAND}
 
 # The project roles that may drive a task-lifecycle transition at all
 # (TaskLifecycleService._require_role_for_transition) - reused verbatim as
@@ -207,6 +221,10 @@ class InboundMessageService:
             return self._handle_gate_command(
                 provider_message_id, sender_phone, message_text, user, employee, keyword, parts,
             )
+        if keyword == GATE_STATUS_COMMAND:
+            return self._handle_gate_status_command(
+                provider_message_id, sender_phone, message_text, user, employee, parts,
+            )
         if keyword != EMPLOYEE_COMMAND or len(parts) < 3:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
@@ -287,6 +305,51 @@ class InboundMessageService:
             # nothing here duplicates or narrows that.
             ProjectGateAcknowledgementService(self.db).record(
                 approval.project_id, approval.id, actor=user, response=_GATE_RESPONSE_BY_COMMAND[keyword],
+            )
+        except HTTPException as exc:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", str(exc.detail),
+            )
+
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    def _handle_gate_status_command(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        parts: list[str],
+    ) -> InboundMessage:
+        if len(parts) < 3:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Unrecognized command.",
+            )
+
+        ref = parts[1]
+        health = parts[2].lower()
+        note = " ".join(parts[3:]) if len(parts) > 3 else None
+
+        approval = self._resolve_gate_by_ref(ref)
+        if approval is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "No unique assignment matched this reference.",
+            )
+
+        try:
+            # The EXACT SAME service call a portal gate status-check action
+            # would make - ProjectGateStatusCheckService.record owns both
+            # the assignee-only access check (_require_assignee) and the
+            # `STATUS_CHECK_HEALTHS` validation itself; nothing here
+            # duplicates or narrows either.
+            ProjectGateStatusCheckService(self.db).record(
+                approval.project_id, approval.id, actor=user, health=health, note=note,
             )
         except HTTPException as exc:
             return self._save(

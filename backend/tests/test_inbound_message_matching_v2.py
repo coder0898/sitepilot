@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
-from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskSupportAssignment, ProjectExternalApproval, ProjectExternalApprovalTask, ProjectGateAcknowledgement
+from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskSupportAssignment, ProjectExternalApproval, ProjectExternalApprovalStatusCheck, ProjectExternalApprovalTask, ProjectGateAcknowledgement
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -106,6 +106,7 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             ProjectExternalApproval.__table__,
             ProjectExternalApprovalTask.__table__,
             ProjectGateAcknowledgement.__table__,
+            ProjectExternalApprovalStatusCheck.__table__,
             TaskDependency.__table__,
             TaskSupportAssignment.__table__,
             V2Vendor.__table__,
@@ -381,6 +382,10 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
     def gate_acknowledgement_rows(self) -> list[ProjectGateAcknowledgement]:
         with self.Session() as session:
             return list(session.scalars(select(ProjectGateAcknowledgement)).all())
+
+    def gate_status_check_rows(self) -> list[ProjectExternalApprovalStatusCheck]:
+        with self.Session() as session:
+            return list(session.scalars(select(ProjectExternalApprovalStatusCheck)).all())
 
     # ---- happy paths ------------------------------------------------------
 
@@ -869,6 +874,118 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         self.assertEqual(rows[0].processing_status, "rejected")
         self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
         self.assertEqual(self.gate_acknowledgement_rows(), [])
+
+    # ---- gate status-check commands (U7) -----------------------------------
+
+    def test_assignee_gatestatus_on_track_no_note_records_status_check(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatestatus-1",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATESTATUS {ref} on_track",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+        self.assertEqual(rows[0].matched_identity_type, "employee")
+
+        checks = self.gate_status_check_rows()
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].approval_id, approval.id)
+        self.assertEqual(checks[0].health, "on_track")
+        self.assertIsNone(checks[0].note)
+        self.assertEqual(checks[0].recorded_by, SUPERVISOR_ID)
+
+    def test_assignee_gatestatus_blocked_with_note_records_health_and_note(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatestatus-2",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATESTATUS {ref} blocked waiting on society signature",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+
+        checks = self.gate_status_check_rows()
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].health, "blocked")
+        self.assertEqual(checks[0].note, "waiting on society signature")
+
+    def test_gatestatus_invalid_health_is_rejected_no_row_created(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatestatus-invalid",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATESTATUS {ref} stuck",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "Unknown external-approval status-check health.")
+        self.assertEqual(self.gate_status_check_rows(), [])
+
+    def test_non_assignee_employee_gatestatus_is_rejected(self):
+        """Mirrors `test_non_assignee_employee_gateaccept_is_rejected`: the
+        Internal Employee is a real project member (the service's own
+        access check passes) but is not the specific assignee -
+        `ProjectGateStatusCheckService._require_assignee` rejects it, with
+        no status-check row ever created. No new inbound-layer logic is
+        involved - this is the service's existing check firing unchanged."""
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        with self.Session.begin() as session:
+            session.add(V2ProjectMembership(
+                project_id=uuid.UUID(project["id"]), employee_id=self.internal_employee_profile_id,
+                project_role="internal_employee", assigned_by=PM_ID, assignment_reason="seed",
+            ))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatestatus-non-assignee",
+            "sender_phone": INTERNAL_EMPLOYEE_PHONE,
+            "message_text": f"GATESTATUS {ref} on_track",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(
+            rows[0].rejection_reason,
+            "Only the employee this external approval is assigned to can record a status check for it.",
+        )
+        self.assertEqual(self.gate_status_check_rows(), [])
+
+    def test_vendor_contact_sending_gatestatus_is_rejected(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.vendor-gatestatus",
+            "sender_phone": VENDOR_ELECTRICAL_CONTACT_PHONE,
+            "message_text": f"GATESTATUS {ref} on_track",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
+        self.assertEqual(self.gate_status_check_rows(), [])
 
     # ---- duplicate delivery -------------------------------------------------
 
