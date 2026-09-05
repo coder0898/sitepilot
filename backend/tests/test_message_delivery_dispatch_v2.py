@@ -937,6 +937,68 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
         )
 
+    # ---- 11. U13: `user`-aggregate recipient resolution (R13) --------------
+
+    def test_user_created_event_resolves_only_the_named_user_not_the_actor(self):
+        # ADMIN_ID stands in for "the actor who performed the invite" here -
+        # the resolver must never pick them up just because they also have
+        # an EmployeeProfile; the sole recipient is the user named in the
+        # payload's `user_id` (INTERNAL_EMPLOYEE_ID).
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="user.created", aggregate_type="user",
+                aggregate_id=INTERNAL_EMPLOYEE_ID,
+                payload={"user_id": str(INTERNAL_EMPLOYEE_ID), "name": "Internal"},
+                key="test:11a",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.internal_employee_employee_id)
+        self.assertIsNone(deliveries[0].recipient_vendor_contact_id)
+        self.assertNotEqual(deliveries[0].recipient_employee_id, self.admin_employee_id)
+        self.assertEqual(deliveries[0].status, "sent")
+
+    def test_user_offboarded_event_with_no_phone_on_file_resolves_to_failed_delivery(self):
+        # Same resolve-then-fail-visibly discipline as every other resolver
+        # in this module: a missing phone must still produce a queryable
+        # `failed`/`missing_phone` delivery row, not a silent skip.
+        self._set_phone(INTERNAL_EMPLOYEE_ID, None)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="user.offboarded", aggregate_type="user",
+                aggregate_id=INTERNAL_EMPLOYEE_ID,
+                payload={"user_id": str(INTERNAL_EMPLOYEE_ID), "name": "Internal"},
+                key="test:11b",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.internal_employee_employee_id)
+        self.assertEqual(deliveries[0].status, "failed")
+        self.assertEqual(deliveries[0].failure_code, "missing_phone")
+
+    def test_user_event_with_no_user_id_in_payload_resolves_to_no_recipients(self):
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_user_recipient(
+                OutboxEvent(
+                    event_type="user.created", aggregate_type="user",
+                    aggregate_id=INTERNAL_EMPLOYEE_ID, payload={}, idempotency_key="test:11c",
+                )
+            )
+        self.assertEqual(recipients, [])
+
 
 if __name__ == "__main__":
     unittest.main()

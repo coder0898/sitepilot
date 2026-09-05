@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
+from app.execution_models import OutboxEvent
 from app.models import EmployeeProfile, User, UserAccountEvent, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.routes.users import router as users_router
@@ -56,6 +57,7 @@ class UnlinkedAccountEditTests(unittest.TestCase):
             V2TemplateVersion.__table__,
             V2Project.__table__,
             V2ProjectMembership.__table__,
+            OutboxEvent.__table__,
         ):
             table.create(self.engine)
 
@@ -99,6 +101,13 @@ class UnlinkedAccountEditTests(unittest.TestCase):
     def _actor(self, _app) -> User:
         with self.Session() as session:
             return session.get(User, ACTOR_ID)
+
+    def _outbox_events(self, *, event_type: str | None = None) -> list[OutboxEvent]:
+        with self.Session() as session:
+            stmt = select(OutboxEvent)
+            if event_type is not None:
+                stmt = stmt.where(OutboxEvent.event_type == event_type)
+            return list(session.scalars(stmt).all())
 
     # ---- the actual bug: editing/offboarding an unlinked (never-logged-in)
     # account must succeed, not 409 ------------------------------------------
@@ -153,6 +162,41 @@ class UnlinkedAccountEditTests(unittest.TestCase):
             })
         self.assertEqual(response.status_code, 200, response.text)
         mock_admin_update.assert_called_once_with(str(LINKED_SUPABASE_ID), {"ban_duration": "876000h"})
+
+    # ---- U13: user.offboarded outbox emission (R13, offboard-only) --------
+
+    def test_offboarding_emits_one_user_offboarded_event_naming_the_target(self):
+        with patch("app.routes.users.admin_update_user"):
+            response = self.client.post(f"/api/users/{UNLINKED_TARGET_ID}/offboard", json={
+                "reason": "No longer needed - never signed in.",
+            })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        events = self._outbox_events(event_type="user.offboarded")
+        self.assertEqual(len(events), 1)
+        emitted = events[0]
+        self.assertEqual(emitted.aggregate_type, "user")
+        self.assertEqual(emitted.aggregate_id, UNLINKED_TARGET_ID)
+        self.assertEqual(emitted.payload, {"user_id": str(UNLINKED_TARGET_ID), "name": "Invited Employee"})
+
+    def test_restoring_a_previously_offboarded_account_does_not_emit_offboarded_event(self):
+        with patch("app.routes.users.admin_update_user"):
+            offboard_response = self.client.post(f"/api/users/{UNLINKED_TARGET_ID}/offboard", json={
+                "reason": "No longer needed - never signed in.",
+            })
+            self.assertEqual(offboard_response.status_code, 200, offboard_response.text)
+
+            restore_response = self.client.post(f"/api/users/{UNLINKED_TARGET_ID}/restore", json={
+                "reason": "Rehired.",
+            })
+        self.assertEqual(restore_response.status_code, 200, restore_response.text)
+
+        # Exactly the one event from the offboard above - the restore branch
+        # (R13 is offboard-only) must not add a second `user.offboarded` row,
+        # nor emit any `user.restored`/`user.created`-shaped event of its own.
+        offboarded_events = self._outbox_events(event_type="user.offboarded")
+        self.assertEqual(len(offboarded_events), 1)
+        self.assertEqual(len(self._outbox_events()), 1)
 
 
 if __name__ == "__main__":

@@ -432,6 +432,35 @@ class MessageDispatchService:
             for employee_id, phone in rows
         ]
 
+    def _resolve_user_recipient(self, event: OutboxEvent) -> list[Recipient]:
+        """U13: resolves a `user`-aggregate event (`user.created`/
+        `user.offboarded`) straight to the one `User` named by the payload's
+        `user_id` - the affected user themselves, never the actor who
+        performed the invite/offboard action. Single-recipient resolution,
+        mirroring `_resolve_gate_assignee_recipient`'s shape for "resolve
+        exactly one specific person": `[]` (skipped, not resolved-then-
+        failed) when `user_id` is missing from the payload or the user has
+        no `EmployeeProfile`/`User` row to resolve - a genuinely
+        unresolvable recipient, same precedent as the gate resolver's
+        `unassigned`/missing-link cases.
+
+        A resolvable user with no phone on file is still returned as a
+        `Recipient` (phone `""`) - same resolve-then-fail-visibly
+        discipline as every other resolver in this module: a missing phone
+        surfaces as an explicit `failed`/`missing_phone` delivery, not a
+        silent skip."""
+        user_id_raw = (event.payload or {}).get("user_id")
+        if not user_id_raw:
+            return []
+        user_id = uuid.UUID(user_id_raw)
+        employee = self.db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == user_id))
+        if employee is None:
+            return []
+        user = self.db.get(User, user_id)
+        if user is None:
+            return []
+        return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
+
     def _resolve_recipients(self, event: OutboxEvent) -> list[Recipient]:
         recipients: list[Recipient] = []
         if event.aggregate_type == "task":
@@ -486,6 +515,11 @@ class MessageDispatchService:
             # is where doc #27's "Admin review-required push" falls out of,
             # `submitted` included (Phase 1b).
             recipients.extend(self._resolve_admin_recipients())
+        elif event.aggregate_type == "user":
+            # U13: `user.created`/`user.offboarded` - single-recipient,
+            # resolving straight to the affected user themselves (R13), not
+            # any role-based set.
+            recipients.extend(self._resolve_user_recipient(event))
         return recipients
 
     # ---- delivery -----------------------------------------------------
