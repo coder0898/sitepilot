@@ -461,6 +461,36 @@ class MessageDispatchService:
             return []
         return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
 
+    def _resolve_command_actor_recipient(self, event: OutboxEvent) -> list[Recipient]:
+        """U15: resolves a `gate_command_confirmation`-aggregate event
+        (the six `gate_confirmation.*` types) straight to the one `User`
+        named by the payload's `actor_user_id` - the employee/Admin who
+        actually sent the WhatsApp gate command being confirmed, never
+        Admin as a fixed role-based set the way `project_external_approval.*`
+        events resolve them via `_resolve_admin_recipients`. Same
+        single-recipient shape as `_resolve_user_recipient` (U13), keyed on
+        `actor_user_id` instead of `user_id` since this aggregate has no
+        `user`-shaped payload of its own: `[]` (skipped, not resolved-then-
+        failed) when `actor_user_id` is missing or unresolvable, same
+        precedent as `_resolve_user_recipient`'s own missing-link cases.
+
+        A resolvable actor with no phone on file is still returned as a
+        `Recipient` (phone `""`) - same resolve-then-fail-visibly
+        discipline as every other resolver in this module: a missing phone
+        surfaces as an explicit `failed`/`missing_phone` delivery, not a
+        silent skip."""
+        actor_user_id_raw = (event.payload or {}).get("actor_user_id")
+        if not actor_user_id_raw:
+            return []
+        actor_user_id = uuid.UUID(actor_user_id_raw)
+        employee = self.db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == actor_user_id))
+        if employee is None:
+            return []
+        user = self.db.get(User, actor_user_id)
+        if user is None:
+            return []
+        return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
+
     def _resolve_recipients(self, event: OutboxEvent) -> list[Recipient]:
         recipients: list[Recipient] = []
         if event.aggregate_type == "task":
@@ -520,6 +550,15 @@ class MessageDispatchService:
             # resolving straight to the affected user themselves (R13), not
             # any role-based set.
             recipients.extend(self._resolve_user_recipient(event))
+        elif event.aggregate_type == "gate_command_confirmation":
+            # U15: the six `gate_confirmation.*` events - single-recipient,
+            # resolving straight back to whoever sent the WhatsApp gate
+            # command (`payload["actor_user_id"]`), never Admin. Distinct
+            # from the `project_external_approval` branch above, which
+            # resolves the gate's assignee plus Admin for U5's Admin-facing
+            # `.accepted`/`.declined` events - those are unaffected by this
+            # branch and keep notifying Admin exactly as today.
+            recipients.extend(self._resolve_command_actor_recipient(event))
         return recipients
 
     # ---- delivery -----------------------------------------------------

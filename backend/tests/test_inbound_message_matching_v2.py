@@ -531,6 +531,10 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         with self.Session() as session:
             return list(session.scalars(select(ProjectGateAcknowledgement)).all())
 
+    def outbox_rows(self) -> list[OutboxEvent]:
+        with self.Session() as session:
+            return list(session.scalars(select(OutboxEvent)).all())
+
     def gate_status_check_rows(self) -> list[ProjectExternalApprovalStatusCheck]:
         with self.Session() as session:
             return list(session.scalars(select(ProjectExternalApprovalStatusCheck)).all())
@@ -1460,6 +1464,162 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             refreshed = session.get(ProjectExternalApproval, approval.id)
             self.assertEqual(refreshed.status, "submitted")
             self.assertIsNone(refreshed.decided_by)
+
+    # ---- gate command WhatsApp confirmations (U15) -------------------------
+
+    def confirmation_events(self, event_type: str) -> list[OutboxEvent]:
+        return [row for row in self.outbox_rows() if row.event_type == event_type]
+
+    def test_gateaccept_emits_accepted_confirmation_to_sender(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-gateaccept",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEACCEPT {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "processed")
+
+        events = self.confirmation_events("gate_confirmation.accepted")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].aggregate_type, "gate_command_confirmation")
+        self.assertEqual(events[0].aggregate_id, approval.id)
+        self.assertEqual(events[0].payload["actor_user_id"], str(SUPERVISOR_ID))
+        self.assertEqual(events[0].payload["gate_name"], "Fire NOC 1")
+        with self.Session() as session:
+            db_project = session.get(V2Project, uuid.UUID(project["id"]))
+            self.assertEqual(events[0].payload["project_name"], db_project.name)
+
+    def test_gatedecline_emits_declined_confirmation_to_sender(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-gatedecline",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEDECLINE {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "processed")
+
+        events = self.confirmation_events("gate_confirmation.declined")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["actor_user_id"], str(SUPERVISOR_ID))
+
+    def test_gatestatus_emits_status_recorded_confirmation_with_health(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-gatestatus",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATESTATUS {ref} blocked awaiting signature",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "processed")
+
+        events = self.confirmation_events("gate_confirmation.status_recorded")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["health"], "blocked")
+        self.assertEqual(events[0].payload["actor_user_id"], str(SUPERVISOR_ID))
+
+    def test_gateopen_emits_session_opened_confirmation(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-gateopen",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEOPEN {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "processed")
+
+        events = self.confirmation_events("gate_confirmation.session_opened")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["actor_user_id"], str(SUPERVISOR_ID))
+
+    def test_gateclose_emits_session_closed_confirmation(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.open_gate_session(approval, SUPERVISOR_ID)
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-gateclose",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "GATECLOSE all done",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "processed")
+
+        events = self.confirmation_events("gate_confirmation.session_closed")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["actor_user_id"], str(SUPERVISOR_ID))
+
+    def test_gatedecide_emits_decided_confirmation_with_decision_to_admin(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.set_approval_submitted(approval.id)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-gatedecide",
+            "sender_phone": ADMIN_PHONE,
+            "message_text": f"GATEDECIDE {ref} APPROVE",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "processed")
+
+        events = self.confirmation_events("gate_confirmation.decided")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["decision"], "approved")
+        # Resolved to the deciding Admin themselves, not the gate's assignee
+        # (SUPERVISOR_ID) - this is the sender-facing confirmation, distinct
+        # from U5's Admin-facing project_external_approval.* events.
+        self.assertEqual(events[0].payload["actor_user_id"], str(ADMIN_ID))
+
+    def test_rejected_gate_command_emits_no_confirmation_event(self):
+        """A non-assignee GATEACCEPT (rejected by the service's own
+        `_require_assignee`) never reaches `_emit_gate_confirmation` -
+        the rejection path is entirely unchanged by this unit."""
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        with self.Session.begin() as session:
+            session.add(V2ProjectMembership(
+                project_id=uuid.UUID(project["id"]), employee_id=self.internal_employee_profile_id,
+                project_role="internal_employee", assigned_by=PM_ID, assignment_reason="seed",
+            ))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-rejected",
+            "sender_phone": INTERNAL_EMPLOYEE_PHONE,
+            "message_text": f"GATEACCEPT {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "rejected")
+        self.assertEqual([row for row in self.outbox_rows() if row.event_type.startswith("gate_confirmation.")], [])
+
+    def test_invalid_gatestatus_health_emits_no_confirmation_event(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.confirm-invalid-status",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATESTATUS {ref} stuck",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.inbound_rows()[0].processing_status, "rejected")
+        self.assertEqual(self.confirmation_events("gate_confirmation.status_recorded"), [])
 
     # ---- duplicate delivery -------------------------------------------------
 

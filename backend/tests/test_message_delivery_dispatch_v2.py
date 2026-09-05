@@ -999,6 +999,71 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             )
         self.assertEqual(recipients, [])
 
+    # ---- 12. U15: `gate_command_confirmation`-aggregate recipient resolution --
+
+    def test_gate_command_confirmation_event_resolves_only_the_named_actor_not_admin(self):
+        # ADMIN_ID stands in for "Admin, who U5's project_external_approval.*
+        # events resolve as a fixed cc" here - this resolver must never pick
+        # Admin up just because they exist; the sole recipient is the actor
+        # named in the payload's `actor_user_id` (SUPERVISOR_ID, the sender
+        # of the WhatsApp gate command being confirmed).
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="gate_confirmation.accepted", aggregate_type="gate_command_confirmation",
+                aggregate_id=uuid.uuid4(),
+                payload={
+                    "actor_user_id": str(SUPERVISOR_ID), "gate_name": "Fire NOC", "project_name": "Test Project",
+                },
+                key="test:12a",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.supervisor_employee_id)
+        self.assertIsNone(deliveries[0].recipient_vendor_contact_id)
+        self.assertNotEqual(deliveries[0].recipient_employee_id, self.admin_employee_id)
+        self.assertEqual(deliveries[0].status, "sent")
+
+    def test_gate_command_confirmation_event_with_no_phone_on_file_resolves_to_failed_delivery(self):
+        # Same resolve-then-fail-visibly discipline as every other resolver
+        # in this module: a missing phone must still produce a queryable
+        # `failed`/`missing_phone` delivery row, not a silent skip.
+        self._set_phone(SUPERVISOR_ID, None)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="gate_confirmation.session_opened", aggregate_type="gate_command_confirmation",
+                aggregate_id=uuid.uuid4(),
+                payload={"actor_user_id": str(SUPERVISOR_ID), "gate_name": "Fire NOC", "project_name": "Test Project"},
+                key="test:12b",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.supervisor_employee_id)
+        self.assertEqual(deliveries[0].status, "failed")
+        self.assertEqual(deliveries[0].failure_code, "missing_phone")
+
+    def test_gate_command_confirmation_event_with_no_actor_user_id_resolves_to_no_recipients(self):
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_command_actor_recipient(
+                OutboxEvent(
+                    event_type="gate_confirmation.decided", aggregate_type="gate_command_confirmation",
+                    aggregate_id=uuid.uuid4(), payload={}, idempotency_key="test:12c",
+                )
+            )
+        self.assertEqual(recipients, [])
+
 
 if __name__ == "__main__":
     unittest.main()

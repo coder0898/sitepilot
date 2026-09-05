@@ -149,8 +149,9 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import FileObject, GateEvidenceSession, InboundMessage, ProjectExternalApproval, Task
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2ProjectMembership
+from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services import evidence_storage
+from app.services.outbox import OutboxService
 from app.services.project_gate_acknowledgement import ProjectGateAcknowledgementService
 from app.services.project_gate_decision import ProjectGateDecisionService
 from app.services.project_gate_evidence_session import GateEvidenceSessionService
@@ -392,6 +393,45 @@ class InboundMessageService:
             return None
         return matched[0]
 
+    def _emit_gate_confirmation(
+        self,
+        provider_message_id: str,
+        approval: ProjectExternalApproval,
+        user: User,
+        event_type: str,
+        extra_payload: dict | None = None,
+    ) -> None:
+        """U15: the sender-facing half KTD2 promised but no unit emitted -
+        one confirmation event per successful gate command, distinct from
+        U5's Admin-facing `project_external_approval.accepted`/`.declined`
+        (those keep notifying Admin unchanged; these notify the sender
+        back). `gate_name`/`project_name` are resolved the same way U4's
+        `project_gate_assignment.py` enriches its own payload
+        (`gate.approval_name`/`project.name`) - this module never already
+        holds those rows loaded the way U4's caller does, so they're
+        fetched fresh via `approval.project_gate_id`/`approval.project_id`.
+        Only ever called from a handler's success path, right before its
+        existing `processed` `_save` - a rejected command never reaches
+        this. `idempotency_key` is keyed on `provider_message_id`, which is
+        unique per inbound message and already the de-duplication key
+        `process()` uses before any handler ever runs."""
+        gate = self.db.get(V2ProjectExternalGate, approval.project_gate_id)
+        project = self.db.get(V2Project, approval.project_id)
+        payload = {
+            "actor_user_id": str(user.id),
+            "gate_name": gate.approval_name,
+            "project_name": project.name,
+        }
+        if extra_payload:
+            payload.update(extra_payload)
+        OutboxService(self.db).emit(
+            event_type=event_type,
+            aggregate_type="gate_command_confirmation",
+            aggregate_id=approval.id,
+            payload=payload,
+            idempotency_key=f"gate_command_confirmation:{approval.id}:{event_type}:{provider_message_id}",
+        )
+
     def _handle_gate_command(
         self,
         provider_message_id: str,
@@ -430,6 +470,9 @@ class InboundMessageService:
                 "rejected", str(exc.detail),
             )
 
+        self._emit_gate_confirmation(
+            provider_message_id, approval, user, f"gate_confirmation.{_GATE_RESPONSE_BY_COMMAND[keyword]}",
+        )
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
@@ -475,6 +518,9 @@ class InboundMessageService:
                 "rejected", str(exc.detail),
             )
 
+        self._emit_gate_confirmation(
+            provider_message_id, approval, user, "gate_confirmation.status_recorded", {"health": health},
+        )
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
@@ -517,6 +563,7 @@ class InboundMessageService:
                 "rejected", str(exc.detail),
             )
 
+        self._emit_gate_confirmation(provider_message_id, approval, user, "gate_confirmation.session_opened")
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
@@ -566,6 +613,7 @@ class InboundMessageService:
                 "rejected", str(exc.detail),
             )
 
+        self._emit_gate_confirmation(provider_message_id, approval, user, "gate_confirmation.session_closed")
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
@@ -631,6 +679,9 @@ class InboundMessageService:
                 "rejected", str(exc.detail),
             )
 
+        self._emit_gate_confirmation(
+            provider_message_id, approval, user, "gate_confirmation.decided", {"decision": decision},
+        )
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
