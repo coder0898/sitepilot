@@ -24,7 +24,7 @@ from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMember
 from app.services.message_dispatch import MessageDispatchService
 from app.services.message_templates import DEFAULT_TEMPLATE, TemplateSpec, render_components, resolve
 from app.template_models import V2Template, V2TemplateVersion
-from app.vendor_models import TaskVendorAssignment, V2Vendor, V2VendorContact
+from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2Vendor, V2VendorContact
 
 
 @compiles(JSONB, "sqlite")
@@ -79,6 +79,7 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             MessageDelivery.__table__,
             V2Vendor.__table__,
             V2VendorContact.__table__,
+            ProjectVendor.__table__,
             TaskVendorAssignment.__table__,
             TaskSupportAssignment.__table__,
         ):
@@ -837,6 +838,104 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
                           {self.pm_employee_id, self.supervisor_employee_id})
         self.assertEqual([d for d in deliveries if d.recipient_vendor_contact_id is not None], [])
+
+
+    # ---- 10. U1: all-project-members + vendor recipient resolver ----------
+
+    def test_resolve_all_project_members_returns_every_role_not_just_pm_supervisor(self):
+        # Add a second Internal Employee alongside the seeded PM, Supervisor
+        # and first Internal Employee - `_resolve_all_project_members` must
+        # return all four, not just the two `_ACCOUNTABLE_ROLES`.
+        second_internal_id = uuid.uuid4()
+        with self.Session.begin() as session:
+            second_internal = User(
+                id=second_internal_id, name="Internal 2", email="internal2@example.com",
+                phone="9000000070", role=UserRole.internal_employee, active=True,
+            )
+            session.add(second_internal)
+            session.flush()
+            second_internal_profile = EmployeeProfile(
+                user_id=second_internal_id, employee_code="INT-002",
+                designation="Internal Employee 2", availability="available",
+            )
+            session.add(second_internal_profile)
+            session.flush()
+            second_internal_employee_id = second_internal_profile.id
+            session.add(V2ProjectMembership(
+                project_id=self.project_id, employee_id=second_internal_profile.id,
+                project_role="internal_employee", assigned_by=PM_ID, assignment_reason="seed",
+            ))
+
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_members(self.project_id)
+
+        employee_ids = {r.employee_id for r in recipients}
+        self.assertEqual(
+            employee_ids,
+            {
+                self.pm_employee_id, self.supervisor_employee_id,
+                self.internal_employee_employee_id, second_internal_employee_id,
+            },
+        )
+
+    def test_resolve_all_project_members_resolves_phoneless_member_not_silently_dropped(self):
+        self._set_phone(SUPERVISOR_ID, None)
+
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_members(self.project_id)
+
+        by_employee = {r.employee_id: r for r in recipients}
+        self.assertIn(self.supervisor_employee_id, by_employee)
+        self.assertEqual(by_employee[self.supervisor_employee_id].phone, "")
+
+    def test_resolve_all_project_vendors_skips_vendor_with_no_primary_contact(self):
+        with self.Session.begin() as session:
+            session.add(ProjectVendor(project_id=self.project_id, vendor_id=self.vendor_id, mapped_by=PM_ID))
+
+            vendor_no_contact = V2Vendor(
+                name="Plumbing Co", contact_person="Sam", phone="9000000080",
+                status="active", engagement_type="main",
+            )
+            session.add(vendor_no_contact)
+            session.flush()
+            session.add(ProjectVendor(project_id=self.project_id, vendor_id=vendor_no_contact.id, mapped_by=PM_ID))
+
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_vendors(self.project_id)
+
+        self.assertEqual(len(recipients), 1)
+        self.assertEqual(recipients[0].vendor_contact_id, self.vendor_contact_id)
+
+    def test_resolve_all_project_vendors_with_no_mapped_vendors_returns_empty_list(self):
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_vendors(self.project2_id)
+
+        self.assertEqual(recipients, [])
+
+    def test_project_activated_event_uses_all_members_branch_not_pm_supervisor(self):
+        # `project.activated` is in `_ALL_MEMBERS_PROJECT_EVENTS` - the
+        # `project` branch must call `_resolve_all_project_members` INSTEAD
+        # OF `_resolve_pm_supervisor_recipients`, not both, since the former
+        # already includes every PM/Supervisor the latter would find.
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project.activated", aggregate_type="project",
+                aggregate_id=self.project_id, payload={}, key="test:10-activated",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        employee_ids = [d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None]
+        # No duplicate delivery targets from both resolvers firing.
+        self.assertEqual(len(employee_ids), len(set(employee_ids)))
+        self.assertEqual(
+            set(employee_ids),
+            {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
+        )
 
 
 if __name__ == "__main__":

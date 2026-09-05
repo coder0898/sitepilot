@@ -108,7 +108,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services.message_templates import TemplateSpec, render_components, resolve
-from app.vendor_models import TaskVendorAssignment, V2VendorContact
+from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
 
 # The only two `V2ProjectMembership.project_role` values this service ever
 # treats as notification recipients. `'super_admin'` is deliberately never
@@ -158,6 +158,22 @@ _VENDOR_ELIGIBLE_TASK_EVENTS: set[str] = {
     "task.readiness_check",
     "task.start_check",
     "task.midday_check",
+}
+
+# U1: the three `project`-aggregate event types (not emitted until later
+# units - see this unit's own plan note) whose audience is "every active
+# project member regardless of role, plus every vendor mapped to the
+# project" rather than the default PM/Supervisor-only audience. This is a
+# branch, not an addition: for these event types,
+# `_resolve_all_project_members` + `_resolve_all_project_vendors` are called
+# INSTEAD OF `_resolve_pm_supervisor_recipients` (whose entire result is
+# already a subset of `_resolve_all_project_members`'s), so a project-
+# activation-shaped event never resolves PM/Supervisor twice - see
+# `_resolve_recipients`'s `project` branch.
+_ALL_MEMBERS_PROJECT_EVENTS: set[str] = {
+    "project.activated",
+    "project.member_added",
+    "project.vendor_mapped",
 }
 
 
@@ -234,6 +250,51 @@ class MessageDispatchService:
             Recipient(employee_id=employee_id, vendor_contact_id=None, phone=phone or "")
             for employee_id, phone in rows
         ]
+
+    def _resolve_all_project_members(self, project_id: uuid.UUID) -> list[Recipient]:
+        """U1: every active project member regardless of `project_role` -
+        follows `_resolve_pm_supervisor_recipients`'s exact shape, but with
+        no `project_role` filter (only `ends_at IS NULL`), so its result is
+        a strict superset of what a plain `_resolve_pm_supervisor_recipients`
+        call for the same project would return. Used for the handful of
+        `project`-aggregate event types (`_ALL_MEMBERS_PROJECT_EVENTS`)
+        whose audience is "every project member", not just PM/Supervisor -
+        see `_resolve_recipients`'s `project` branch for why this replaces
+        rather than adds to that call for those event types."""
+        rows = self.db.execute(
+            select(V2ProjectMembership.employee_id, User.phone)
+            .join(EmployeeProfile, EmployeeProfile.id == V2ProjectMembership.employee_id)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .where(
+                V2ProjectMembership.project_id == project_id,
+                V2ProjectMembership.ends_at.is_(None),
+            )
+        ).all()
+        # Same resolve-then-fail-visibly discipline as
+        # `_resolve_pm_supervisor_recipients`: a missing phone still becomes
+        # a Recipient, surfacing as a queryable failed delivery rather than
+        # a silent skip.
+        return [
+            Recipient(employee_id=employee_id, vendor_contact_id=None, phone=phone or "")
+            for employee_id, phone in rows
+        ]
+
+    def _resolve_all_project_vendors(self, project_id: uuid.UUID) -> list[Recipient]:
+        """U1: every vendor mapped to the project (`ProjectVendor`, R2),
+        resolved to its primary contact via `_primary_vendor_contact_recipient`.
+        A mapped vendor with no primary contact is skipped - same "not an
+        error" precedent `_primary_vendor_contact_recipient` already
+        documents (a genuinely unresolvable recipient, no row to construct).
+        A project with no mapped vendors returns `[]`, not an error."""
+        vendor_ids = self.db.scalars(
+            select(ProjectVendor.vendor_id).where(ProjectVendor.project_id == project_id)
+        ).all()
+        recipients: list[Recipient] = []
+        for vendor_id in vendor_ids:
+            recipient = self._primary_vendor_contact_recipient(vendor_id)
+            if recipient is not None:
+                recipients.append(recipient)
+        return recipients
 
     def _primary_vendor_contact_recipient(self, vendor_id: uuid.UUID) -> Recipient | None:
         """Shared tail of vendor recipient resolution: given a `vendor_id`,
@@ -402,7 +463,18 @@ class MessageDispatchService:
                 if vendor_task_recipient is not None:
                     recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
-            recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
+            if event.event_type in _ALL_MEMBERS_PROJECT_EVENTS:
+                # Branch, not addition: `_resolve_all_project_members`'s
+                # result already includes every PM/Supervisor
+                # `_resolve_pm_supervisor_recipients` would have found, so
+                # calling both here would resolve PM/Supervisor twice -
+                # risking a real duplicate send if a retry pass re-resolves
+                # a first attempt that failed (see `_ALL_MEMBERS_PROJECT_EVENTS`'s
+                # comment).
+                recipients.extend(self._resolve_all_project_members(event.aggregate_id))
+                recipients.extend(self._resolve_all_project_vendors(event.aggregate_id))
+            else:
+                recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
             if event.event_type in _ADMIN_CC_PROJECT_EVENTS:
                 recipients.extend(self._resolve_admin_recipients())
         elif event.aggregate_type == "project_external_approval":
