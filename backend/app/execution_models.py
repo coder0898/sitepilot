@@ -458,6 +458,40 @@ class ProjectExternalApprovalStatusCheck(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ProjectGateAcknowledgement(Base):
+    """R3/R5/R6 (U5): a recorded 'accepted'/'declined' acknowledgement of a
+    `ProjectExternalApproval` gate, from the employee it is assigned to.
+
+    Append-only, mirroring `VendorAcknowledgement`'s own precedent exactly:
+    every response is kept as its own row, even a second one against the
+    same gate, and none is ever overwritten or deleted. Purely additive -
+    it stands entirely alongside the formal assign/submit/decide state
+    machine and never writes `ProjectExternalApproval.status`
+    (`project_gate_assignment.py`, `project_gate_submission.py`,
+    `project_gate_decision.py`), the same non-lifecycle framing already
+    applied to `ProjectExternalApprovalStatusCheck`.
+    """
+
+    __tablename__ = "project_gate_acknowledgements"
+    __table_args__ = (
+        CheckConstraint(
+            "response in ('accepted', 'declined')",
+            name="ck_v2_project_gate_acknowledgements_response",
+        ),
+        Index("ix_v2_project_gate_acknowledgements_approval", "approval_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approval_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="RESTRICT"), nullable=False
+    )
+    response: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class TaskProgressUpdate(Base):
     """U3: append-only progress note against an execution-layer task.
 
