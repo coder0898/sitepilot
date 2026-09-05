@@ -41,13 +41,22 @@ exercise; a real product would need a friendlier conversational UX):
 
     Employee identity only:
         STATUS <task_code> <target_status>
+        GATEACCEPT <approval_ref>
+        GATEDECLINE <approval_ref>
 
     where <task_code> is a `Task.original_code` (e.g. "T003" - unique only
     within a project, not globally) and <target_status> is passed through
     verbatim to `TaskLifecycleService.transition`, which validates it.
+    <approval_ref> is the first 8 hex characters of a
+    `ProjectExternalApproval.id` UUID with dashes stripped, matched the
+    exact same way <assignment_ref> is above (zero or more than one match
+    is an error). GATEACCEPT/GATEDECLINE call
+    `ProjectGateAcknowledgementService.record` (U5) with response
+    "accepted"/"declined" - that service owns its own assignee-only access
+    check (`_require_assignee`), so no project-role gate is applied here.
 
-    A vendor contact sending STATUS, or an employee sending
-    ACCEPT/DECLINE/CLARIFY, is rejected as "not available for your
+    A vendor contact sending STATUS/GATEACCEPT/GATEDECLINE, or an employee
+    sending ACCEPT/DECLINE/CLARIFY, is rejected as "not available for your
     identity type" (BR-015). An unrecognized keyword is rejected as
     "Unrecognized command."
 
@@ -80,15 +89,23 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.execution_models import InboundMessage, Task
+from app.execution_models import InboundMessage, ProjectExternalApproval, Task
 from app.models import EmployeeProfile, User
 from app.project_models import V2ProjectMembership
+from app.services.project_gate_acknowledgement import ProjectGateAcknowledgementService
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.vendor_acknowledgement import VendorAcknowledgementService
 from app.vendor_models import TaskVendorAssignment, V2VendorContact
 
 VENDOR_COMMANDS = {"ACCEPT", "DECLINE", "CLARIFY"}
 EMPLOYEE_COMMAND = "STATUS"
+# U6: GATEACCEPT/GATEDECLINE are the WhatsApp analogue of a portal gate
+# acknowledgement (ProjectGateAcknowledgementService, U5) - employee-identity
+# only, alongside STATUS. Not role-restricted at this layer: the service's
+# own `_require_assignee` already enforces "only the specific assignee",
+# which is a narrower and sufficient check.
+GATE_COMMANDS = {"GATEACCEPT", "GATEDECLINE"}
+EMPLOYEE_COMMANDS = {EMPLOYEE_COMMAND, *GATE_COMMANDS}
 
 # The project roles that may drive a task-lifecycle transition at all
 # (TaskLifecycleService._require_role_for_transition) - reused verbatim as
@@ -105,6 +122,11 @@ _RESPONSE_BY_COMMAND = {
     "ACCEPT": "accepted",
     "DECLINE": "declined",
     "CLARIFY": "clarification_requested",
+}
+
+_GATE_RESPONSE_BY_COMMAND = {
+    "GATEACCEPT": "accepted",
+    "GATEDECLINE": "declined",
 }
 
 EmployeeIdentity = tuple[User, EmployeeProfile]
@@ -181,6 +203,10 @@ class InboundMessageService:
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
                 "rejected", "This command is not available for your identity type.",
             )
+        if keyword in GATE_COMMANDS:
+            return self._handle_gate_command(
+                provider_message_id, sender_phone, message_text, user, employee, keyword, parts,
+            )
         if keyword != EMPLOYEE_COMMAND or len(parts) < 3:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
@@ -230,13 +256,55 @@ class InboundMessageService:
             return None
         return matched[0]
 
+    def _handle_gate_command(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        keyword: str,
+        parts: list[str],
+    ) -> InboundMessage:
+        if len(parts) < 2:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Unrecognized command.",
+            )
+
+        ref = parts[1]
+        approval = self._resolve_gate_by_ref(ref)
+        if approval is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "No unique assignment matched this reference.",
+            )
+
+        try:
+            # The EXACT SAME service call a portal gate-acknowledgement
+            # action would make - ProjectGateAcknowledgementService.record
+            # owns the assignee-only access check itself (_require_assignee);
+            # nothing here duplicates or narrows that.
+            ProjectGateAcknowledgementService(self.db).record(
+                approval.project_id, approval.id, actor=user, response=_GATE_RESPONSE_BY_COMMAND[keyword],
+            )
+        except HTTPException as exc:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", str(exc.detail),
+            )
+
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
     def _handle_vendor_contact(
         self, provider_message_id: str, sender_phone: str, message_text: str, vendor_contact: V2VendorContact,
     ) -> InboundMessage:
         parts = message_text.split()
         keyword = parts[0].upper() if parts else ""
 
-        if keyword == EMPLOYEE_COMMAND:
+        if keyword in EMPLOYEE_COMMANDS:
             return self._save(
                 provider_message_id, sender_phone, message_text, "vendor_contact", vendor_contact.id,
                 "rejected", "This command is not available for your identity type.",
@@ -295,6 +363,21 @@ class InboundMessageService:
         matched = [
             assignment for assignment in candidates
             if str(assignment.id).replace("-", "").lower()[:8] == ref_lower
+        ]
+        if len(matched) != 1:
+            return None
+        return matched[0]
+
+    def _resolve_gate_by_ref(self, ref: str) -> ProjectExternalApproval | None:
+        """Sibling of `_resolve_assignment_by_ref` for gate approvals -
+        same first-8-hex-chars-of-id convention, same ambiguity handling
+        (zero or more than one match is unresolved, never heuristically
+        picked). Reused by later units (U7/U10/U12)."""
+        ref_lower = ref.lower()
+        candidates = self.db.scalars(select(ProjectExternalApproval)).all()
+        matched = [
+            approval for approval in candidates
+            if str(approval.id).replace("-", "").lower()[:8] == ref_lower
         ]
         if len(matched) != 1:
             return None

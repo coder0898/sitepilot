@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
-from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskSupportAssignment, ProjectExternalApproval, ProjectExternalApprovalTask
+from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskSupportAssignment, ProjectExternalApproval, ProjectExternalApprovalTask, ProjectGateAcknowledgement
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -105,6 +105,7 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             Task.__table__,
             ProjectExternalApproval.__table__,
             ProjectExternalApprovalTask.__table__,
+            ProjectGateAcknowledgement.__table__,
             TaskDependency.__table__,
             TaskSupportAssignment.__table__,
             V2Vendor.__table__,
@@ -303,6 +304,33 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
     def assignment_ref(self, assignment_id: str) -> str:
         return assignment_id.replace("-", "")[:8]
 
+    def make_gate_approval(self, project_id: str, *, assigned_to_user_id, sequence: int = 1) -> ProjectExternalApproval:
+        """U6: seeds a `V2ProjectExternalGate` + its runtime
+        `ProjectExternalApproval` directly (the WORKVED-45 template used by
+        this test class defines no external gates), mirroring
+        `test_project_gate_acknowledgement_v2.py`'s own `make_approval`
+        helper."""
+        with self.Session.begin() as session:
+            gate = V2ProjectExternalGate(
+                id=uuid.uuid4(), project_id=uuid.UUID(project_id),
+                original_code=f"E{sequence:03d}", template_sequence=sequence,
+                approval_name=f"Fire NOC {sequence}", mapping_classification="exact",
+                applicability_state="applicable", blocking=True,
+                accountable_pm_user_id=PM_ID, source_type="project_manual",
+            )
+            session.add(gate)
+            session.flush()
+            approval = ProjectExternalApproval(
+                id=uuid.uuid4(), project_id=gate.project_id, project_gate_id=gate.id,
+                status="assigned", assigned_to_user_id=assigned_to_user_id,
+                assigned_by=PM_ID, assigned_at=datetime.now(timezone.utc),
+            )
+            session.add(approval)
+            session.flush()
+            approval_id = approval.id
+        with self.Session() as session:
+            return session.get(ProjectExternalApproval, approval_id)
+
     # ---- webhook helpers -------------------------------------------------
 
     def post_inbound(self, payload: dict, secret: str | None = None, header: str | None = ...):
@@ -349,6 +377,10 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
     def acknowledgement_rows(self) -> list[VendorAcknowledgement]:
         with self.Session() as session:
             return list(session.scalars(select(VendorAcknowledgement)).all())
+
+    def gate_acknowledgement_rows(self) -> list[ProjectGateAcknowledgement]:
+        with self.Session() as session:
+            return list(session.scalars(select(ProjectGateAcknowledgement)).all())
 
     # ---- happy paths ------------------------------------------------------
 
@@ -730,6 +762,113 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         self.assertEqual(rows[0].processing_status, "rejected")
         self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
         self.assertEqual(self.acknowledgement_rows(), [])
+
+    # ---- gate acknowledgement commands (U6) --------------------------------
+
+    def test_assignee_gateaccept_produces_identical_acknowledgement_row(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gateaccept-1",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEACCEPT {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+        self.assertEqual(rows[0].matched_identity_type, "employee")
+
+        acks = self.gate_acknowledgement_rows()
+        self.assertEqual(len(acks), 1)
+        self.assertEqual(acks[0].approval_id, approval.id)
+        self.assertEqual(acks[0].response, "accepted")
+        self.assertEqual(acks[0].recorded_by, SUPERVISOR_ID)
+
+    def test_assignee_gatedecline_produces_identical_acknowledgement_row(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatedecline-1",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEDECLINE {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+
+        acks = self.gate_acknowledgement_rows()
+        self.assertEqual(len(acks), 1)
+        self.assertEqual(acks[0].response, "declined")
+
+    def test_non_assignee_employee_gateaccept_is_rejected(self):
+        """The Internal Employee is a real member of this project (so the
+        service's access check passes) but is not the specific assignee -
+        `ProjectGateAcknowledgementService._require_assignee` (U5) rejects
+        it, with no acknowledgement row ever created."""
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        with self.Session.begin() as session:
+            session.add(V2ProjectMembership(
+                project_id=uuid.UUID(project["id"]), employee_id=self.internal_employee_profile_id,
+                project_role="internal_employee", assigned_by=PM_ID, assignment_reason="seed",
+            ))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gateaccept-non-assignee",
+            "sender_phone": INTERNAL_EMPLOYEE_PHONE,
+            "message_text": f"GATEACCEPT {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(
+            rows[0].rejection_reason,
+            "Only the employee this external approval is assigned to can record an acknowledgement for it.",
+        )
+        self.assertEqual(self.gate_acknowledgement_rows(), [])
+
+    def test_gateaccept_unresolvable_ref_is_rejected(self):
+        project = self.activate_project()
+        self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gateaccept-bad-ref",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "GATEACCEPT ffffffff",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "No unique assignment matched this reference.")
+        self.assertEqual(self.gate_acknowledgement_rows(), [])
+
+    def test_vendor_contact_sending_gateaccept_is_rejected(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.vendor-gateaccept",
+            "sender_phone": VENDOR_ELECTRICAL_CONTACT_PHONE,
+            "message_text": f"GATEACCEPT {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
+        self.assertEqual(self.gate_acknowledgement_rows(), [])
 
     # ---- duplicate delivery -------------------------------------------------
 
