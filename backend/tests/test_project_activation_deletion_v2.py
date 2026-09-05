@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
-from app.execution_models import BaselineTask, ProjectBaseline, Task, TaskDependency, ProjectExternalApproval, ProjectExternalApprovalTask
+from app.execution_models import BaselineTask, OutboxEvent, ProjectBaseline, Task, TaskDependency, ProjectExternalApproval, ProjectExternalApprovalTask
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import (
     V2AuditEvent,
@@ -27,6 +27,7 @@ from app.project_models import (
 )
 from app.routes.projects_v2 import router
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.vendor_models import ProjectVendor, V2Vendor
 
 
 @compiles(JSONB, "sqlite")
@@ -37,6 +38,7 @@ def compile_jsonb_sqlite(_type, _compiler, **_kw):
 ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
+EMPLOYEE_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
 
 
 class ProjectActivationDeletionApiTests(unittest.TestCase):
@@ -83,6 +85,9 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             V2TemplateExternalGate.__table__,
             V2TemplateExternalGateTask.__table__,
             V2ProjectExternalGateTask.__table__,
+            OutboxEvent.__table__,
+            V2Vendor.__table__,
+            ProjectVendor.__table__,
         ):
             table.create(self.engine)
 
@@ -114,12 +119,18 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
                 id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
                 role=UserRole.supervisor, active=True,
             )
-            session.add_all([admin, pm, supervisor])
+            employee = User(
+                id=EMPLOYEE_ID, name="Employee", email="employee@example.com", role=UserRole.internal_employee, active=True,
+            )
+            session.add_all([admin, pm, supervisor, employee])
             session.flush()
             session.add_all([
                 EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
                 EmployeeProfile(
                     user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
+                ),
+                EmployeeProfile(
+                    user_id=EMPLOYEE_ID, employee_code="EMP-001", designation="Internal Employee", availability="available",
                 ),
             ])
             template = V2Template(code="WORKVED-45", name="Workved 45 Day")
@@ -212,6 +223,79 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
         self.assertIn("already active", second.json()["detail"])
         with self.Session() as session:
             count = session.scalar(select(func.count()).select_from(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_ACTIVATED"))
+            self.assertEqual(count, 1)
+
+    # ---- U2: project.activated outbox emission --------------------------
+
+    def test_activate_emits_project_activated_outbox_event(self):
+        """3 members (PM, Supervisor, an internal employee) + 1 mapped
+        vendor - the U1 resolver's audience for `project.activated`. This
+        unit only proves the event itself and its payload; U1's own tests
+        cover resolving that payload to actual recipients."""
+        project = self.create_draft()
+        with self.Session.begin() as session:
+            third_employee = session.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == EMPLOYEE_ID))
+            vendor = V2Vendor(
+                id=uuid.uuid4(), name="Fitout Vendor Co", contact_person="Vendor Contact",
+                phone="9000000099", status="active", engagement_type="main",
+            )
+            session.add(vendor)
+            session.flush()
+            session.add(ProjectVendor(project_id=uuid.UUID(project["id"]), vendor_id=vendor.id, mapped_by=ADMIN_ID))
+            third_employee_id = third_employee.id
+
+        member_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships",
+            json={"employee_id": str(third_employee_id), "project_role": "internal_employee", "reason": "Add third member."},
+        )
+        self.assertEqual(member_response.status_code, 200, member_response.text)
+
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Setup complete, ready to start."})
+        self.assertEqual(response.status_code, 200, response.text)
+
+        with self.Session() as session:
+            events = session.scalars(select(OutboxEvent).where(OutboxEvent.event_type == "project.activated")).all()
+            self.assertEqual(len(events), 1)
+            event = events[0]
+            self.assertEqual(event.aggregate_type, "project")
+            self.assertEqual(event.aggregate_id, uuid.UUID(project["id"]))
+            self.assertEqual(event.payload["project_id"], project["id"])
+            self.assertEqual(event.status, "pending")
+
+    def test_activate_that_fails_validation_emits_no_event(self):
+        project = self.create_draft()
+        with self.Session.begin() as session:
+            session.get(V2Project, uuid.UUID(project["id"])).target_handover_date = None
+        response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt activation."})
+        self.assertEqual(response.status_code, 409, response.text)
+        with self.Session() as session:
+            count = session.scalar(select(func.count()).select_from(OutboxEvent).where(OutboxEvent.event_type == "project.activated"))
+            self.assertEqual(count, 0)
+
+    def test_re_entering_active_from_on_hold_does_not_re_emit_project_activated(self):
+        """Only the draft-to-active `activate_project` route (this unit's
+        change) fires `project.activated`. `POST /{project_id}/status` has
+        its own independent draft-to-active path (see its U1 comment) and an
+        on_hold-to-active path, and this unit does not touch that route at
+        all - so re-entering "active" from "on_hold" through it must not
+        produce a second event."""
+        project = self.create_draft()
+        activate_response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(activate_response.status_code, 200, activate_response.text)
+
+        hold_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/status", json={"status": "on_hold", "reason": "Pausing for a bit."},
+        )
+        self.assertEqual(hold_response.status_code, 200, hold_response.text)
+
+        resume_response = self.client.post(
+            f"/api/v2/projects/{project['id']}/status", json={"status": "active", "reason": "Resuming."},
+        )
+        self.assertEqual(resume_response.status_code, 200, resume_response.text)
+        self.assertEqual(resume_response.json()["status"], "active")
+
+        with self.Session() as session:
+            count = session.scalar(select(func.count()).select_from(OutboxEvent).where(OutboxEvent.event_type == "project.activated"))
             self.assertEqual(count, 1)
 
     def test_only_admin_can_activate(self):
