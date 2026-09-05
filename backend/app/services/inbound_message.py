@@ -44,6 +44,7 @@ exercise; a real product would need a friendlier conversational UX):
         GATEACCEPT <approval_ref>
         GATEDECLINE <approval_ref>
         GATESTATUS <approval_ref> <health> [note...]
+        GATEDECIDE <approval_ref> APPROVE|REJECT [reason...] (Admin/Super Admin only)
 
     where <task_code> is a `Task.original_code` (e.g. "T003" - unique only
     within a project, not globally) and <target_status> is passed through
@@ -64,6 +65,7 @@ exercise; a real product would need a friendlier conversational UX):
 
         GATEOPEN <approval_ref>
         GATECLOSE [note...]
+        GATEDECIDE <approval_ref> APPROVE|REJECT [reason...]
 
     (U10) GATEOPEN calls `GateEvidenceSessionService.open_session` (U8),
     <approval_ref> resolved the same way GATEACCEPT/GATEDECLINE's is above.
@@ -71,6 +73,23 @@ exercise; a real product would need a friendlier conversational UX):
     constraint) already identifies the gate; an optional trailing note is
     appended to that session before it is closed. Both delegate every
     access/state check to `GateEvidenceSessionService` itself.
+
+    (U12) GATEDECIDE is the WhatsApp analogue of a portal Admin decision on
+    a submitted gate - `ProjectGateDecisionService.decide` (already
+    existing) unchanged. Unlike every other employee-identity gate command
+    above, it is role-gated at THIS layer FIRST, before the ref is even
+    resolved: only `UserRole.admin`/`UserRole.super_admin` may send it - any
+    other employee (PM, Supervisor, Internal Employee) is rejected with
+    "This command is not available for your role.", a wording deliberately
+    distinct from BR-015's cross-identity "not available for your identity
+    type" below, so the two rejection reasons stay distinguishable in
+    `InboundMessage.rejection_reason`. This role gate is a WhatsApp-layer
+    pre-check for that distinguishable reason, not a substitute for
+    `decide`'s own Admin-only `_require_approver` - the service's check is
+    left in place unchanged. `APPROVE`/`REJECT` (case-insensitive) map to
+    `decide`'s own `"approved"`/`"rejected"` decision values; anything after
+    them is the optional `reason`, verbatim - same trailing-text convention
+    as CLARIFY's/GATESTATUS's/GATECLOSE's own note.
 
     Any OTHER inbound message from an employee - free text with no
     recognized keyword, or an attachment (U9's media metadata: `id`,
@@ -93,9 +112,10 @@ exercise; a real product would need a friendlier conversational UX):
     oversized).
 
     A vendor contact sending STATUS/GATEACCEPT/GATEDECLINE/GATESTATUS/
-    GATEOPEN/GATECLOSE, or an employee sending ACCEPT/DECLINE/CLARIFY, is
-    rejected as "not available for your identity type" (BR-015). An
-    unrecognized keyword is rejected as "Unrecognized command."
+    GATEOPEN/GATECLOSE/GATEDECIDE, or an employee sending
+    ACCEPT/DECLINE/CLARIFY, is rejected as "not available for your identity
+    type" (BR-015). An unrecognized keyword is rejected as "Unrecognized
+    command."
 
 Actor substitution for vendor acknowledgements (the one genuinely
 non-obvious design decision here): `VendorAcknowledgementService.
@@ -128,10 +148,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.execution_models import FileObject, GateEvidenceSession, InboundMessage, ProjectExternalApproval, Task
-from app.models import EmployeeProfile, User
+from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services import evidence_storage
 from app.services.project_gate_acknowledgement import ProjectGateAcknowledgementService
+from app.services.project_gate_decision import ProjectGateDecisionService
 from app.services.project_gate_evidence_session import GateEvidenceSessionService
 from app.services.project_gate_status_check import ProjectGateStatusCheckService
 from app.services.project_gate_submission import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES
@@ -160,9 +181,16 @@ GATE_STATUS_COMMAND = "GATESTATUS"
 # route to their own handlers and a different downstream service.
 GATE_SESSION_OPEN_COMMAND = "GATEOPEN"
 GATE_SESSION_CLOSE_COMMAND = "GATECLOSE"
+# U12: the WhatsApp analogue of a portal Admin decision on a submitted gate
+# (ProjectGateDecisionService.decide, already existing) - kept as its own
+# constant rather than folded into GATE_COMMANDS because it routes to its
+# own handler and, unlike every other GATE* command, is additionally
+# role-gated at this layer (Admin/Super Admin only) before anything else.
+GATE_DECIDE_COMMAND = "GATEDECIDE"
+GATE_DECIDE_DECISION_BY_KEYWORD = {"APPROVE": "approved", "REJECT": "rejected"}
 EMPLOYEE_COMMANDS = {
     EMPLOYEE_COMMAND, *GATE_COMMANDS, GATE_STATUS_COMMAND,
-    GATE_SESSION_OPEN_COMMAND, GATE_SESSION_CLOSE_COMMAND,
+    GATE_SESSION_OPEN_COMMAND, GATE_SESSION_CLOSE_COMMAND, GATE_DECIDE_COMMAND,
 }
 
 # The project roles that may drive a task-lifecycle transition at all
@@ -292,6 +320,10 @@ class InboundMessageService:
             )
         if keyword == GATE_SESSION_CLOSE_COMMAND:
             return self._handle_gate_close_command(
+                provider_message_id, sender_phone, message_text, user, employee, parts,
+            )
+        if keyword == GATE_DECIDE_COMMAND:
+            return self._handle_gate_decide_command(
                 provider_message_id, sender_phone, message_text, user, employee, parts,
             )
         if keyword == EMPLOYEE_COMMAND:
@@ -528,6 +560,71 @@ class InboundMessageService:
             # re-check (KTD7) and the empty-session guard (KTD9) itself;
             # nothing here duplicates either.
             service.close_session(approval.project_id, session, actor=user)
+        except HTTPException as exc:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", str(exc.detail),
+            )
+
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    def _handle_gate_decide_command(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        parts: list[str],
+    ) -> InboundMessage:
+        """U12: role-gated to Admin/Super Admin FIRST, before the <ref> is
+        even resolved or `ProjectGateDecisionService.decide` is ever called
+        - a non-admin employee is rejected with a role-specific reason
+        ("not available for your role") that stays distinguishable from
+        BR-015's cross-identity "not available for your identity type"
+        rejection (used when a vendor contact sends an employee-only
+        command). This is a WhatsApp-layer pre-check for that
+        distinguishable reason, not a substitute for `decide`'s own
+        Admin-only `_require_approver` - which is left in place unchanged
+        and still runs inside the service call below."""
+        if user.role not in (UserRole.super_admin, UserRole.admin):
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "This command is not available for your role.",
+            )
+
+        if len(parts) < 3:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Unrecognized command.",
+            )
+
+        ref = parts[1]
+        decision = GATE_DECIDE_DECISION_BY_KEYWORD.get(parts[2].upper())
+        if decision is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Unrecognized command.",
+            )
+        reason = " ".join(parts[3:]) if len(parts) > 3 else None
+
+        approval = self._resolve_gate_by_ref(ref)
+        if approval is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "No unique assignment matched this reference.",
+            )
+
+        try:
+            # The EXACT SAME service call a portal Admin gate-decision
+            # action would make - ProjectGateDecisionService.decide owns
+            # its own Admin-only approver check and status/reason
+            # validation itself; nothing here duplicates or narrows either.
+            ProjectGateDecisionService(self.db).decide(
+                approval.project_id, approval.id, decision=decision, actor=user, reason=reason,
+            )
         except HTTPException as exc:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,

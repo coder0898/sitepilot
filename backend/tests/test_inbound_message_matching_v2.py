@@ -76,9 +76,12 @@ PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 OUTSIDER_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
 INTERNAL_EMPLOYEE_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
+SUPER_ADMIN_ID = uuid.UUID("ffffffff-ffff-4fff-8fff-fffffffffff6")
 
 SUPERVISOR_PHONE = "+9000000011"
 INTERNAL_EMPLOYEE_PHONE = "+9000000012"
+ADMIN_PHONE = "+9000000013"
+SUPER_ADMIN_PHONE = "+9000000014"
 UNKNOWN_PHONE = "+9999999999"
 VENDOR_ELECTRICAL_CONTACT_PHONE = "+9100000001"
 VENDOR_OTHER_CONTACT_PHONE = "+9100000002"
@@ -230,7 +233,14 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         than one identity" case.
         """
         with self.Session.begin() as session:
-            admin = User(id=ADMIN_ID, name="Admin", email="admin@example.com", role=UserRole.admin, active=True)
+            admin = User(
+                id=ADMIN_ID, name="Admin", email="admin@example.com",
+                role=UserRole.admin, active=True, phone=ADMIN_PHONE,
+            )
+            super_admin = User(
+                id=SUPER_ADMIN_ID, name="Super Admin", email="superadmin@example.com",
+                role=UserRole.super_admin, active=True, phone=SUPER_ADMIN_PHONE,
+            )
             pm = User(id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True)
             supervisor = User(
                 id=SUPERVISOR_ID, name="Supervisor", email="supervisor@example.com",
@@ -244,12 +254,21 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
                 id=INTERNAL_EMPLOYEE_ID, name="Internal Employee", email="internal@example.com",
                 role=UserRole.internal_employee, active=True, phone=INTERNAL_EMPLOYEE_PHONE,
             )
-            session.add_all([admin, pm, supervisor, outsider, internal_employee])
+            session.add_all([admin, super_admin, pm, supervisor, outsider, internal_employee])
             session.flush()
             internal_employee_profile = EmployeeProfile(
                 user_id=INTERNAL_EMPLOYEE_ID, employee_code="INT-001", designation="Internal Employee", availability="available",
             )
             session.add_all([
+                # U12: KTD11 - every `User` gets an `EmployeeProfile`
+                # regardless of role, Admin/Super Admin included, so
+                # GATEDECIDE (employee-identity, role-gated) matches them
+                # via the same `_match_employees` join every other
+                # employee command uses.
+                EmployeeProfile(user_id=ADMIN_ID, employee_code="ADM-001", designation="Admin", availability="available"),
+                EmployeeProfile(
+                    user_id=SUPER_ADMIN_ID, employee_code="SADM-001", designation="Super Admin", availability="available",
+                ),
                 EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
                 EmployeeProfile(
                     user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
@@ -385,6 +404,17 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             session.add(approval)
             session.flush()
             approval_id = approval.id
+        with self.Session() as session:
+            return session.get(ProjectExternalApproval, approval_id)
+
+    def set_approval_submitted(self, approval_id) -> ProjectExternalApproval:
+        """U12: `ProjectGateDecisionService.decide` only accepts a
+        `submitted` gate - moves a `make_gate_approval`-seeded row there
+        directly (bypassing the full GATEOPEN/GATECLOSE evidence flow,
+        which is not what these decide()-focused tests are exercising)."""
+        with self.Session.begin() as session:
+            approval = session.get(ProjectExternalApproval, approval_id)
+            approval.status = "submitted"
         with self.Session() as session:
             return session.get(ProjectExternalApproval, approval_id)
 
@@ -1300,6 +1330,136 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         self.assertEqual(rows[0].processing_status, "rejected")
         self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
         self.assertEqual(self.gate_session_rows(), [])
+
+    # ---- gate decision commands (U12) --------------------------------------
+
+    def test_admin_gatedecide_approve_approves_submitted_gate(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.set_approval_submitted(approval.id)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatedecide-approve",
+            "sender_phone": ADMIN_PHONE,
+            "message_text": f"GATEDECIDE {ref} APPROVE",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+        self.assertEqual(rows[0].matched_identity_type, "employee")
+
+        with self.Session() as session:
+            refreshed = session.get(ProjectExternalApproval, approval.id)
+            self.assertEqual(refreshed.status, "approved")
+            self.assertEqual(refreshed.decided_by, ADMIN_ID)
+            self.assertIsNotNone(refreshed.decided_at)
+
+    def test_super_admin_gatedecide_reject_records_reason_and_reopens(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.set_approval_submitted(approval.id)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatedecide-reject",
+            "sender_phone": SUPER_ADMIN_PHONE,
+            "message_text": f"GATEDECIDE {ref} REJECT missing society NOC",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+
+        with self.Session() as session:
+            refreshed = session.get(ProjectExternalApproval, approval.id)
+            # ProjectGateDecisionService.decide's own two-step reject-then-
+            # reopen transition (see that module's docstring): the gate ends
+            # up back at 'assigned' with decided_by/decided_at reset to
+            # null, but rejection_reason survives the reset.
+            self.assertEqual(refreshed.status, "assigned")
+            self.assertIsNone(refreshed.decided_by)
+            self.assertIsNone(refreshed.decided_at)
+            self.assertEqual(refreshed.rejection_reason, "missing society NOC")
+
+    def test_non_admin_employee_gatedecide_is_rejected_before_service_called(self):
+        """The role gate fires FIRST, before the <ref> is even resolved -
+        a distinct rejection reason from BR-015's cross-identity wording,
+        and the approval/decision state is untouched."""
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.set_approval_submitted(approval.id)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatedecide-non-admin",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEDECIDE {ref} APPROVE",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "This command is not available for your role.")
+
+        with self.Session() as session:
+            refreshed = session.get(ProjectExternalApproval, approval.id)
+            self.assertEqual(refreshed.status, "submitted")
+            self.assertIsNone(refreshed.decided_by)
+            self.assertIsNone(refreshed.decided_at)
+            self.assertEqual(
+                session.scalars(
+                    select(ProjectExternalApprovalSubmission).where(
+                        ProjectExternalApprovalSubmission.approval_id == approval.id
+                    )
+                ).all(),
+                [],
+            )
+
+    def test_gatedecide_against_non_submitted_gate_is_rejected_by_service(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))  # still 'assigned', never submitted
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gatedecide-not-submitted",
+            "sender_phone": ADMIN_PHONE,
+            "message_text": f"GATEDECIDE {ref} APPROVE",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(
+            rows[0].rejection_reason,
+            "This external approval is assigned; only a submitted gate can be decided.",
+        )
+        with self.Session() as session:
+            refreshed = session.get(ProjectExternalApproval, approval.id)
+            self.assertEqual(refreshed.status, "assigned")
+            self.assertIsNone(refreshed.decided_by)
+
+    def test_vendor_contact_sending_gatedecide_is_rejected(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.set_approval_submitted(approval.id)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.vendor-gatedecide",
+            "sender_phone": VENDOR_ELECTRICAL_CONTACT_PHONE,
+            "message_text": f"GATEDECIDE {ref} APPROVE",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
+        with self.Session() as session:
+            refreshed = session.get(ProjectExternalApproval, approval.id)
+            self.assertEqual(refreshed.status, "submitted")
+            self.assertIsNone(refreshed.decided_by)
 
     # ---- duplicate delivery -------------------------------------------------
 
