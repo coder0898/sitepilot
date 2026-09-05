@@ -10,8 +10,13 @@ This file covers only what U9 added:
     - `_extract_media_metadata` / `_extract_errors`, unit-tested directly
       (no DB, no HTTP) since they are pure parsing helpers.
     - An end-to-end image/document webhook delivery: parsed without ever
-      calling `download_inbound_media` (parsing and downloading are
-      separate concerns - see `whatsapp_media.py`).
+      calling `download_inbound_media` itself in this route (parsing and
+      downloading are separate concerns - see `whatsapp_media.py`); since
+      U10, the parsed metadata is threaded into `InboundMessageService`,
+      which decides whether a download is warranted (an open evidence
+      session's attachment) - see test_inbound_message_matching_v2.py for
+      that session-routing behavior, this file only pins the route's own
+      parse-don't-download boundary.
     - An `errors[]`-only delivery: handled without raising and without
       reaching `InboundMessageService.process()`.
 """
@@ -33,7 +38,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.database import get_db
-from app.execution_models import InboundMessage
+from app.execution_models import GateEvidenceSession, InboundMessage
 from app.models import EmployeeProfile, User, UserRole
 from app.routes.whatsapp_webhook_v2 import (
     _extract_errors,
@@ -113,7 +118,10 @@ class WebhookMediaAndErrorsApiTests(unittest.TestCase):
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
 
-        for table in (User.__table__, EmployeeProfile.__table__, V2VendorContact.__table__, InboundMessage.__table__):
+        for table in (
+            User.__table__, EmployeeProfile.__table__, V2VendorContact.__table__, InboundMessage.__table__,
+            GateEvidenceSession.__table__,
+        ):
             table.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -197,11 +205,14 @@ class WebhookMediaAndErrorsApiTests(unittest.TestCase):
         rows = self.inbound_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].provider_message_id, "wamid.image-1")
-        # Not yet threaded through to InboundMessageService (a later unit's
-        # job, per the code comment at the call site) - same "Unrecognized
-        # command" outcome the pre-U9 non-text path already produced.
+        # U10 threads this metadata through to InboundMessageService, which
+        # routes a bare attachment into the sender's open evidence session
+        # if one exists - this employee has none, so it is rejected with
+        # that distinct reason rather than "Unrecognized command.", and
+        # still never calls download_inbound_media for it (no session to
+        # download into).
         self.assertEqual(rows[0].processing_status, "rejected")
-        self.assertEqual(rows[0].rejection_reason, "Unrecognized command.")
+        self.assertEqual(rows[0].rejection_reason, "You have no open evidence session. Send GATEOPEN <ref> first.")
 
     @patch("app.services.whatsapp_media.download_inbound_media")
     def test_document_message_parsed_without_downloading_media(self, mock_download):
@@ -235,7 +246,11 @@ class WebhookMediaAndErrorsApiTests(unittest.TestCase):
 
         rows = self.inbound_rows()
         self.assertEqual(len(rows), 1)
+        # Same U10 routing as the image case above - no open session for
+        # this employee, so this is rejected before download_inbound_media
+        # is ever called.
         self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "You have no open evidence session. Send GATEOPEN <ref> first.")
 
     @patch("app.routes.whatsapp_webhook_v2.InboundMessageService")
     def test_top_level_errors_array_is_handled_without_calling_inbound_service(self, mock_service_cls):

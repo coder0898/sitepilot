@@ -62,10 +62,40 @@ exercise; a real product would need a friendlier conversational UX):
     either. <note...> (GATESTATUS only, optional) is whatever text follows
     <health>, verbatim - same convention as CLARIFY's trailing note above.
 
-    A vendor contact sending STATUS/GATEACCEPT/GATEDECLINE/GATESTATUS, or an
-    employee sending ACCEPT/DECLINE/CLARIFY, is rejected as "not available
-    for your identity type" (BR-015). An unrecognized keyword is rejected as
-    "Unrecognized command."
+        GATEOPEN <approval_ref>
+        GATECLOSE [note...]
+
+    (U10) GATEOPEN calls `GateEvidenceSessionService.open_session` (U8),
+    <approval_ref> resolved the same way GATEACCEPT/GATEDECLINE's is above.
+    GATECLOSE takes no ref - the sender's one open session (KTD4's DB
+    constraint) already identifies the gate; an optional trailing note is
+    appended to that session before it is closed. Both delegate every
+    access/state check to `GateEvidenceSessionService` itself.
+
+    Any OTHER inbound message from an employee - free text with no
+    recognized keyword, or an attachment (U9's media metadata: `id`,
+    `mime_type`, `filename`, no bytes yet) - is routed into the sender's
+    currently open evidence session instead of being rejected as
+    "Unrecognized command", provided one is open (a genuinely empty message
+    - no text AND no attachment, e.g. a location pin - is still
+    "Unrecognized command" unconditionally). Plain text appends verbatim via
+    `append_text`. An attachment is checked against
+    `ALLOWED_EVIDENCE_MIME_TYPES` first (a miss is rejected without ever
+    calling `download_inbound_media`); only a supported mime_type is
+    downloaded, then checked against `MAX_EVIDENCE_SIZE_BYTES` (KTD18 - the
+    same cap `project_gate_submission.py` enforces on the portal path)
+    before being written to storage as a `FileObject` and linked via
+    `append_attachment`. An employee with NO open session gets a distinct
+    "no open session - send GATEOPEN first" rejection, checked before the
+    mime_type check even runs - see `_handle_gate_session_fallback`/
+    `_handle_gate_attachment` below for the exact ordering and the three
+    distinct rejection reasons (unsupported type / download failure /
+    oversized).
+
+    A vendor contact sending STATUS/GATEACCEPT/GATEDECLINE/GATESTATUS/
+    GATEOPEN/GATECLOSE, or an employee sending ACCEPT/DECLINE/CLARIFY, is
+    rejected as "not available for your identity type" (BR-015). An
+    unrecognized keyword is rejected as "Unrecognized command."
 
 Actor substitution for vendor acknowledgements (the one genuinely
 non-obvious design decision here): `VendorAcknowledgementService.
@@ -90,19 +120,24 @@ outcome, not a crash - there is no one to record on the vendor's behalf.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.execution_models import InboundMessage, ProjectExternalApproval, Task
+from app.execution_models import FileObject, GateEvidenceSession, InboundMessage, ProjectExternalApproval, Task
 from app.models import EmployeeProfile, User
 from app.project_models import V2ProjectMembership
+from app.services import evidence_storage
 from app.services.project_gate_acknowledgement import ProjectGateAcknowledgementService
+from app.services.project_gate_evidence_session import GateEvidenceSessionService
 from app.services.project_gate_status_check import ProjectGateStatusCheckService
+from app.services.project_gate_submission import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES
 from app.services.task_lifecycle import TaskLifecycleService
 from app.services.vendor_acknowledgement import VendorAcknowledgementService
+from app.services.whatsapp_media import download_inbound_media
 from app.vendor_models import TaskVendorAssignment, V2VendorContact
 
 VENDOR_COMMANDS = {"ACCEPT", "DECLINE", "CLARIFY"}
@@ -119,7 +154,16 @@ GATE_COMMANDS = {"GATEACCEPT", "GATEDECLINE"}
 # different handler (_handle_gate_status_command) and a different
 # downstream service call, not `_GATE_RESPONSE_BY_COMMAND`.
 GATE_STATUS_COMMAND = "GATESTATUS"
-EMPLOYEE_COMMANDS = {EMPLOYEE_COMMAND, *GATE_COMMANDS, GATE_STATUS_COMMAND}
+# U10: GATEOPEN/GATECLOSE are the WhatsApp analogue of starting/finishing a
+# portal evidence submission (GateEvidenceSessionService, U8) - kept as
+# their own constants rather than folded into GATE_COMMANDS because they
+# route to their own handlers and a different downstream service.
+GATE_SESSION_OPEN_COMMAND = "GATEOPEN"
+GATE_SESSION_CLOSE_COMMAND = "GATECLOSE"
+EMPLOYEE_COMMANDS = {
+    EMPLOYEE_COMMAND, *GATE_COMMANDS, GATE_STATUS_COMMAND,
+    GATE_SESSION_OPEN_COMMAND, GATE_SESSION_CLOSE_COMMAND,
+}
 
 # The project roles that may drive a task-lifecycle transition at all
 # (TaskLifecycleService._require_role_for_transition) - reused verbatim as
@@ -152,7 +196,19 @@ class InboundMessageService:
 
     # ---- entry point ----------------------------------------------------
 
-    def process(self, provider_message_id: str, sender_phone: str, message_text: str) -> InboundMessage:
+    def process(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        media_metadata: dict | None = None,
+    ) -> InboundMessage:
+        """`media_metadata` (U10, optional - defaults to `None` so U15's
+        call site does not need it) is U9's `_extract_media_metadata` output
+        for an `"image"`/`"document"` inbound message (`id`, `mime_type`,
+        and, document-only, `filename` - no bytes yet). It only ever
+        matters to the employee-identity branch's session-fallback routing
+        below; a vendor contact's commands are all text-only."""
         existing = self.db.scalar(
             select(InboundMessage).where(InboundMessage.provider_message_id == provider_message_id)
         )
@@ -178,7 +234,7 @@ class InboundMessageService:
 
         if employee_matches:
             return self._handle_employee(
-                provider_message_id, sender_phone, message_text, employee_matches[0],
+                provider_message_id, sender_phone, message_text, employee_matches[0], media_metadata,
             )
         return self._handle_vendor_contact(
             provider_message_id, sender_phone, message_text, vendor_matches[0],
@@ -206,7 +262,12 @@ class InboundMessageService:
     # ---- command parsing + dispatch ---------------------------------------
 
     def _handle_employee(
-        self, provider_message_id: str, sender_phone: str, message_text: str, identity: EmployeeIdentity,
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        identity: EmployeeIdentity,
+        media_metadata: dict | None = None,
     ) -> InboundMessage:
         user, employee = identity
         parts = message_text.split()
@@ -225,35 +286,60 @@ class InboundMessageService:
             return self._handle_gate_status_command(
                 provider_message_id, sender_phone, message_text, user, employee, parts,
             )
-        if keyword != EMPLOYEE_COMMAND or len(parts) < 3:
+        if keyword == GATE_SESSION_OPEN_COMMAND:
+            return self._handle_gate_open_command(
+                provider_message_id, sender_phone, message_text, user, employee, parts,
+            )
+        if keyword == GATE_SESSION_CLOSE_COMMAND:
+            return self._handle_gate_close_command(
+                provider_message_id, sender_phone, message_text, user, employee, parts,
+            )
+        if keyword == EMPLOYEE_COMMAND:
+            if len(parts) < 3:
+                return self._save(
+                    provider_message_id, sender_phone, message_text, "employee", employee.id,
+                    "rejected", "Unrecognized command.",
+                )
+
+            task_code, target_status = parts[1], parts[2]
+            task = self._resolve_task_for_employee(task_code, employee)
+            if task is None:
+                return self._save(
+                    provider_message_id, sender_phone, message_text, "employee", employee.id,
+                    "rejected", "Could not uniquely resolve this task code to one of your projects.",
+                )
+
+            try:
+                # The EXACT SAME service call a portal status-update action
+                # would make - transition() owns all role/dependency/state
+                # checks itself; nothing here duplicates that logic.
+                TaskLifecycleService(self.db).transition(
+                    task.project_id, task.id, target_status, actor=user, reason="Reported via WhatsApp.",
+                )
+            except HTTPException as exc:
+                return self._save(
+                    provider_message_id, sender_phone, message_text, "employee", employee.id,
+                    "rejected", str(exc.detail),
+                )
+
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+            )
+
+        # U10: not one of the keywords above at all (as opposed to a
+        # recognized keyword used with too few args, handled by each
+        # branch's own check above). A genuinely empty message - no text
+        # AND no attachment, e.g. a location pin - stays "Unrecognized
+        # command." unconditionally; anything else (free text, or a bare
+        # attachment - neither of which carries a keyword of its own)
+        # routes into the sender's open evidence session, if one exists.
+        if not message_text.strip() and media_metadata is None:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
                 "rejected", "Unrecognized command.",
             )
-
-        task_code, target_status = parts[1], parts[2]
-        task = self._resolve_task_for_employee(task_code, employee)
-        if task is None:
-            return self._save(
-                provider_message_id, sender_phone, message_text, "employee", employee.id,
-                "rejected", "Could not uniquely resolve this task code to one of your projects.",
-            )
-
-        try:
-            # The EXACT SAME service call a portal status-update action
-            # would make - transition() owns all role/dependency/state
-            # checks itself; nothing here duplicates that logic.
-            TaskLifecycleService(self.db).transition(
-                task.project_id, task.id, target_status, actor=user, reason="Reported via WhatsApp.",
-            )
-        except HTTPException as exc:
-            return self._save(
-                provider_message_id, sender_phone, message_text, "employee", employee.id,
-                "rejected", str(exc.detail),
-            )
-
-        return self._save(
-            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        return self._handle_gate_session_fallback(
+            provider_message_id, sender_phone, message_text, user, employee, media_metadata,
         )
 
     def _resolve_task_for_employee(self, task_code: str, employee: EmployeeProfile) -> Task | None:
@@ -359,6 +445,208 @@ class InboundMessageService:
 
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    # ---- evidence session commands (U10) -----------------------------------
+
+    def _handle_gate_open_command(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        parts: list[str],
+    ) -> InboundMessage:
+        if len(parts) < 2:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Unrecognized command.",
+            )
+
+        ref = parts[1]
+        approval = self._resolve_gate_by_ref(ref)
+        if approval is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "No unique assignment matched this reference.",
+            )
+
+        try:
+            # The EXACT SAME service call a portal "start an evidence
+            # session" action would make (U8) - open_session owns the
+            # assignee-only access check and the approval.status ==
+            # 'assigned' guard (KTD8) itself; nothing here duplicates
+            # either.
+            GateEvidenceSessionService(self.db).open_session(approval.project_id, approval.id, actor=user)
+        except HTTPException as exc:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", str(exc.detail),
+            )
+
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    def _handle_gate_close_command(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        parts: list[str],
+    ) -> InboundMessage:
+        # GATECLOSE takes no <ref> - the sender's one open session (KTD4's
+        # DB constraint) already identifies the gate. Everything after the
+        # keyword is an optional trailing note, verbatim - same convention
+        # as CLARIFY's/GATESTATUS's trailing note.
+        note = " ".join(parts[1:]) if len(parts) > 1 else None
+
+        session = self._open_session_for_employee(user.id)
+        if session is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "You have no open evidence session to close.",
+            )
+
+        approval = self.db.get(ProjectExternalApproval, session.approval_id)
+        if approval is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "The external approval for this evidence session no longer exists.",
+            )
+
+        service = GateEvidenceSessionService(self.db)
+        if note:
+            service.append_text(session, note)
+
+        try:
+            # The EXACT SAME service call a portal submission close would
+            # make (U8/KTD17) - close_session owns the assignee-only
+            # re-check (KTD7) and the empty-session guard (KTD9) itself;
+            # nothing here duplicates either.
+            service.close_session(approval.project_id, session, actor=user)
+        except HTTPException as exc:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", str(exc.detail),
+            )
+
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    def _handle_gate_session_fallback(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        media_metadata: dict | None,
+    ) -> InboundMessage:
+        """Neither a recognized keyword nor an empty message (see
+        `_handle_employee`'s own gate above this call) - routed into the
+        sender's open evidence session instead of "Unrecognized command."
+        No open session is a distinct rejection reason, checked BEFORE the
+        mime_type check `_handle_gate_attachment` runs (so a wrong-type
+        attachment sent with no open session still reports "no session",
+        never a mime-type reason)."""
+        session = self._open_session_for_employee(user.id)
+        if session is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "You have no open evidence session. Send GATEOPEN <ref> first.",
+            )
+
+        if media_metadata is not None:
+            return self._handle_gate_attachment(
+                provider_message_id, sender_phone, message_text, user, employee, session, media_metadata,
+            )
+
+        # Plain text, no keyword - appended verbatim to the session's note.
+        GateEvidenceSessionService(self.db).append_text(session, message_text)
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    def _handle_gate_attachment(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+        session: GateEvidenceSession,
+        media_metadata: dict,
+    ) -> InboundMessage:
+        """KTD10/KTD18: downloads and stores one WhatsApp attachment against
+        an already-open evidence session. Three distinct rejection reasons
+        stay distinguishable in `InboundMessage.rejection_reason` - an
+        unsupported mime_type (never even calls `download_inbound_media`),
+        a download failure (U9's `ok=False`), and an oversized download
+        (KTD18, discarded without ever being written to storage)."""
+        mime_type = media_metadata.get("mime_type")
+        if mime_type not in ALLOWED_EVIDENCE_MIME_TYPES:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Unsupported attachment type; evidence must be JPG, PNG, WebP, or PDF.",
+            )
+
+        download = download_inbound_media(media_metadata.get("id"))
+        if not download.ok:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", f"Could not download the attachment: {download.failure_reason or download.failure_code}.",
+            )
+
+        if len(download.bytes) > MAX_EVIDENCE_SIZE_BYTES:
+            # KTD18: discarded, not stored - no FileObject is ever created
+            # for an oversized download, mirroring the portal upload path's
+            # own MAX_EVIDENCE_SIZE_BYTES rejection in
+            # project_gate_submission.py.
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "Attachment is too large; evidence must be 10 MB or smaller.",
+            )
+
+        # Same write -> checksum -> FileObject sequence
+        # ProjectGateSubmissionService.submit() uses for a portal upload
+        # (project_gate_submission.py), reused verbatim rather than
+        # re-derived - including its exact storage_key convention.
+        extension = ALLOWED_EVIDENCE_MIME_TYPES[mime_type]
+        storage_key = f"{session.approval_id}-{uuid.uuid4().hex}{extension}"
+        evidence_storage.write(storage_key, download.bytes, mime_type)
+        checksum = hashlib.sha256(download.bytes).hexdigest()
+        file_object = FileObject(
+            storage_key=storage_key,
+            original_filename=media_metadata.get("filename") or storage_key,
+            mime_type=mime_type,
+            size_bytes=len(download.bytes),
+            checksum=checksum,
+            uploaded_by=user.id,
+        )
+        self.db.add(file_object)
+        self.db.flush()
+
+        GateEvidenceSessionService(self.db).append_attachment(session, file_object)
+
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
+    def _open_session_for_employee(self, user_id: uuid.UUID) -> GateEvidenceSession | None:
+        """At most one open session per employee (KTD4's DB constraint) -
+        the lookup GATECLOSE and the session-fallback routing both need,
+        independent of any <ref> (GATECLOSE takes none)."""
+        return self.db.scalar(
+            select(GateEvidenceSession).where(
+                GateEvidenceSession.employee_id == user_id,
+                GateEvidenceSession.closed_at.is_(None),
+                GateEvidenceSession.expired_at.is_(None),
+            )
         )
 
     def _handle_vendor_contact(

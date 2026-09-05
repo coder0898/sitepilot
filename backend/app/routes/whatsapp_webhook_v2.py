@@ -61,10 +61,14 @@ found is processed.
 (document-only: `filename`) metadata pulled out by `_extract_media_metadata`
 below - parsing only, never a `download_inbound_media` (`whatsapp_media.py`)
 call from this module; downloading is a separate, later-triggered concern
-(see that function's own docstring). `message_text` for these types is still
-`""`, same as any other non-`"text"` type, which `InboundMessageService`
-already rejects as "Unrecognized command" rather than this route raising on
-a missing field.
+(see that function's own docstring), decided by `InboundMessageService`
+(U10) once it knows there is an open evidence session to attach the result
+to AND the mime_type is one this feature accepts. `message_text` for these
+types is still `""`, same as any other non-`"text"` type - `InboundMessageService`
+treats that as "no text", not necessarily "Unrecognized command": an
+attachment with metadata still routes into an open session; a message with
+neither text nor media metadata (a location pin, a reaction, etc.) is what
+actually gets rejected as "Unrecognized command."
 
 The payload's top-level `errors[]` array (distinct from
 `entry[].changes[].value.messages[]`) carries Meta-side delivery failures
@@ -219,16 +223,14 @@ async def receive_inbound_whatsapp_message(request: Request, db: Session = Depen
         if message.get("type") == "text":
             message_text = (message.get("text") or {}).get("body") or ""
 
-        # U9 extracts image/document metadata here for later use, but does
-        # not yet thread it into InboundMessageService.process(): a
-        # concurrently-developed unit is widening that signature, and this
-        # unit deliberately avoids touching inbound_message.py to prevent a
-        # collision. Once that signature is widened, this metadata should
-        # be passed through alongside the existing arguments below.
-        _media_metadata = _extract_media_metadata(message)  # noqa: F841
+        # U10: image/document metadata extracted above is threaded straight
+        # into InboundMessageService.process() - it decides whether/how to
+        # act on it (an open evidence session's attachment, or ignored
+        # otherwise); this route only ever parses, never downloads.
+        _media_metadata = _extract_media_metadata(message)
 
         InboundMessageService(db).process(
-            str(provider_message_id), f"+{sender_phone}", str(message_text),
+            str(provider_message_id), f"+{sender_phone}", str(message_text), _media_metadata,
         )
 
     return {"status": "received"}

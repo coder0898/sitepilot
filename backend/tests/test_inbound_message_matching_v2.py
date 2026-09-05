@@ -8,6 +8,7 @@ import json
 import unittest
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,8 +21,27 @@ from sqlalchemy.pool import StaticPool
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
-from app.execution_models import BaselineTask, InboundMessage, OutboxEvent, ProjectBaseline, Task, TaskDependency, TaskSupportAssignment, ProjectExternalApproval, ProjectExternalApprovalStatusCheck, ProjectExternalApprovalTask, ProjectGateAcknowledgement
+from app.execution_models import (
+    BaselineTask,
+    FileObject,
+    GateEvidenceSession,
+    GateEvidenceSessionAttachment,
+    InboundMessage,
+    OutboxEvent,
+    ProjectBaseline,
+    ProjectExternalApproval,
+    ProjectExternalApprovalEvidence,
+    ProjectExternalApprovalStatusCheck,
+    ProjectExternalApprovalSubmission,
+    ProjectExternalApprovalTask,
+    ProjectGateAcknowledgement,
+    Task,
+    TaskDependency,
+    TaskSupportAssignment,
+)
 from app.models import EmployeeProfile, User, UserRole
+from app.services.project_gate_submission import MAX_EVIDENCE_SIZE_BYTES
+from app.services.whatsapp_media import MediaDownloadResult
 from app.project_models import (
     V2AuditEvent,
     V2Project,
@@ -67,6 +87,12 @@ AMBIGUOUS_PHONE = "+9200000001"
 WEBHOOK_SECRET = "test-webhook-secret"
 WEBHOOK_VERIFY_TOKEN = "test-verify-token"
 
+TINY_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+    b"\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 class InboundMessageMatchingApiTests(unittest.TestCase):
     """Phase 2 U6: inbound WhatsApp message matching (R8/R9).
@@ -76,6 +102,31 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
     """
 
     def setUp(self):
+        # U10: evidence attachments write through the same
+        # app.services.evidence_storage module project_gate_submission.py's
+        # portal path uses - patched to an in-memory dict, same pattern as
+        # test_project_gate_submission_v2.py. download_inbound_media
+        # (whatsapp_media.py) is patched at its inbound_message.py import
+        # site so a test never makes a real Graph API call; individual
+        # tests override `self.mock_download_inbound_media.return_value`
+        # for a specific outcome (failure / oversized / mime_type).
+        self.evidence_store: dict[str, bytes] = {}
+        self._storage_patches = [
+            patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
+            patch("app.services.evidence_storage.read", side_effect=self.evidence_store.get),
+            patch("app.services.evidence_storage.delete", side_effect=lambda key: self.evidence_store.pop(key, None)),
+        ]
+        for storage_patch in self._storage_patches:
+            storage_patch.start()
+        self.addCleanup(lambda: [p.stop() for p in self._storage_patches])
+
+        self._download_patch = patch("app.services.inbound_message.download_inbound_media")
+        self.mock_download_inbound_media = self._download_patch.start()
+        self.mock_download_inbound_media.return_value = MediaDownloadResult(
+            ok=True, bytes=TINY_PNG_BYTES, mime_type="image/jpeg",
+        )
+        self.addCleanup(self._download_patch.stop)
+
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -107,6 +158,11 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             ProjectExternalApprovalTask.__table__,
             ProjectGateAcknowledgement.__table__,
             ProjectExternalApprovalStatusCheck.__table__,
+            ProjectExternalApprovalSubmission.__table__,
+            ProjectExternalApprovalEvidence.__table__,
+            FileObject.__table__,
+            GateEvidenceSession.__table__,
+            GateEvidenceSessionAttachment.__table__,
             TaskDependency.__table__,
             TaskSupportAssignment.__table__,
             V2Vendor.__table__,
@@ -371,6 +427,68 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             headers["X-Hub-Signature-256"] = header
         return self.client.post("/api/v2/whatsapp/inbound", content=raw_body, headers=headers)
 
+    def post_inbound_image(
+        self, provider_message_id: str, sender_phone: str, media_id: str = "media-id-1",
+        mime_type: str = "image/jpeg",
+    ):
+        """U10: an `"image"` inbound message - `_extract_media_metadata`
+        pulls its `id`/`mime_type` out of the message payload itself (Meta
+        really does include a top-level `mime_type` on the message's
+        `image`/`document` object, ahead of the later media-lookup call
+        that also returns one)."""
+        envelope = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "test-waba-id",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {"phone_number_id": "test-phone-number-id"},
+                        "messages": [{
+                            "from": sender_phone.lstrip("+"),
+                            "id": provider_message_id,
+                            "timestamp": "1700000000",
+                            "type": "image",
+                            "image": {"id": media_id, "mime_type": mime_type},
+                        }],
+                    },
+                }],
+            }],
+        }
+        raw_body = json.dumps(envelope).encode("utf-8")
+        digest = hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+        return self.client.post(
+            "/api/v2/whatsapp/inbound",
+            content=raw_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": f"sha256={digest}"},
+        )
+
+    def open_gate_session(self, approval: ProjectExternalApproval, actor_id) -> GateEvidenceSession:
+        with self.Session.begin() as session:
+            gate_session = GateEvidenceSession(approval_id=approval.id, employee_id=actor_id)
+            session.add(gate_session)
+            session.flush()
+            gate_session_id = gate_session.id
+        with self.Session() as session:
+            return session.get(GateEvidenceSession, gate_session_id)
+
+    def gate_session_rows(self) -> list[GateEvidenceSession]:
+        with self.Session() as session:
+            return list(session.scalars(select(GateEvidenceSession)).all())
+
+    def gate_session_attachment_rows(self) -> list[GateEvidenceSessionAttachment]:
+        with self.Session() as session:
+            return list(session.scalars(select(GateEvidenceSessionAttachment)).all())
+
+    def file_object_rows(self) -> list[FileObject]:
+        with self.Session() as session:
+            return list(session.scalars(select(FileObject)).all())
+
+    def submission_rows(self) -> list[ProjectExternalApprovalSubmission]:
+        with self.Session() as session:
+            return list(session.scalars(select(ProjectExternalApprovalSubmission)).all())
+
     def inbound_rows(self) -> list[InboundMessage]:
         with self.Session() as session:
             return list(session.scalars(select(InboundMessage)).all())
@@ -631,10 +749,15 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         self.assertEqual(rows["wamid.batch-2"].processing_status, "unmatched")
 
     def test_non_text_message_type_is_rejected_not_crashed(self):
-        """A message type other than `text` (image, location, etc.) carries
-        no `.text.body` - `message_text` falls back to `""`, which
-        `InboundMessageService` already rejects as "Unrecognized command"
-        rather than this route raising on the missing field."""
+        """A message type that is neither `text` nor an image/document
+        attachment (location, reaction, etc.) carries no `.text.body` -
+        `message_text` falls back to `""`, and `_extract_media_metadata`
+        returns `None` for it too - genuinely empty, so
+        `InboundMessageService` rejects it as "Unrecognized command" rather
+        than this route raising on a missing field. (An `"image"`/
+        `"document"` message is NOT "empty" in this sense - see U10's
+        session-fallback-routing tests in test_inbound_message_matching_v2.py's
+        evidence-session section below.)"""
         envelope = {
             "object": "whatsapp_business_account",
             "entry": [{
@@ -646,10 +769,10 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
                         "metadata": {"phone_number_id": "test-phone-number-id"},
                         "messages": [{
                             "from": SUPERVISOR_PHONE.lstrip("+"),
-                            "id": "wamid.image-1",
+                            "id": "wamid.location-1",
                             "timestamp": "1700000000",
-                            "type": "image",
-                            "image": {"id": "media-id-123"},
+                            "type": "location",
+                            "location": {"latitude": 12.9, "longitude": 77.6},
                         }],
                     },
                 }],
@@ -986,6 +1109,197 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
         self.assertEqual(rows[0].processing_status, "rejected")
         self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
         self.assertEqual(self.gate_status_check_rows(), [])
+
+    # ---- evidence session commands (U10) -----------------------------------
+
+    def test_gateopen_against_assigned_gate_creates_session(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gateopen-1",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": f"GATEOPEN {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+        self.assertEqual(rows[0].matched_identity_type, "employee")
+
+        sessions = self.gate_session_rows()
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].approval_id, approval.id)
+        self.assertEqual(sessions[0].employee_id, SUPERVISOR_ID)
+        self.assertIsNone(sessions[0].closed_at)
+        self.assertIsNone(sessions[0].expired_at)
+
+    def test_gateclose_with_accumulated_evidence_finalizes_submission(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        gate_session = self.open_gate_session(approval, SUPERVISOR_ID)
+
+        note_response = self.post_inbound({
+            "provider_message_id": "wamid.gateclose-note",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "Fire NOC obtained from society office.",
+        })
+        self.assertEqual(note_response.status_code, 200, note_response.text)
+
+        close_response = self.post_inbound({
+            "provider_message_id": "wamid.gateclose-1",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "GATECLOSE all done",
+        })
+        self.assertEqual(close_response.status_code, 200, close_response.text)
+
+        rows = {row.provider_message_id: row for row in self.inbound_rows()}
+        self.assertEqual(
+            rows["wamid.gateclose-note"].processing_status, "processed", rows["wamid.gateclose-note"].rejection_reason,
+        )
+        self.assertEqual(
+            rows["wamid.gateclose-1"].processing_status, "processed", rows["wamid.gateclose-1"].rejection_reason,
+        )
+
+        submissions = self.submission_rows()
+        self.assertEqual(len(submissions), 1)
+        self.assertEqual(submissions[0].note, "Fire NOC obtained from society office.\nall done")
+
+        with self.Session() as session:
+            refreshed_session = session.get(GateEvidenceSession, gate_session.id)
+            self.assertIsNotNone(refreshed_session.closed_at)
+            refreshed_approval = session.get(ProjectExternalApproval, approval.id)
+            self.assertEqual(refreshed_approval.status, "submitted")
+
+    def test_gateclose_with_no_open_session_is_rejected(self):
+        project = self.activate_project()
+        self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.gateclose-no-session",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "GATECLOSE",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "You have no open evidence session to close.")
+        self.assertEqual(self.submission_rows(), [])
+
+    def test_plain_text_with_open_session_appends_to_note(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        gate_session = self.open_gate_session(approval, SUPERVISOR_ID)
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.session-text-1",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "society signed off this morning",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+
+        with self.Session() as session:
+            refreshed_session = session.get(GateEvidenceSession, gate_session.id)
+            self.assertEqual(refreshed_session.note, "society signed off this morning")
+            self.assertIsNone(refreshed_session.closed_at)
+
+    def test_image_attachment_with_open_session_is_downloaded_stored_and_linked(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        gate_session = self.open_gate_session(approval, SUPERVISOR_ID)
+
+        response = self.post_inbound_image("wamid.session-image-1", SUPERVISOR_PHONE, media_id="media-abc")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.mock_download_inbound_media.assert_called_once_with("media-abc")
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "processed", rows[0].rejection_reason)
+
+        file_objects = self.file_object_rows()
+        self.assertEqual(len(file_objects), 1)
+        self.assertEqual(file_objects[0].mime_type, "image/jpeg")
+        self.assertEqual(file_objects[0].size_bytes, len(TINY_PNG_BYTES))
+        self.assertTrue(file_objects[0].storage_key.startswith(f"{approval.id}-"))
+        self.assertEqual(self.evidence_store[file_objects[0].storage_key], TINY_PNG_BYTES)
+
+        attachments = self.gate_session_attachment_rows()
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0].session_id, gate_session.id)
+        self.assertEqual(attachments[0].file_id, file_objects[0].id)
+
+    def test_oversized_attachment_is_rejected_distinct_reason_no_file_object(self):
+        """Covers KTD18: an oversized download is discarded, never written
+        to storage or turned into a `FileObject`, and reported with a
+        rejection reason distinct from an unsupported-mime-type or a
+        download-failure rejection."""
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.open_gate_session(approval, SUPERVISOR_ID)
+
+        oversized_bytes = b"x" * (MAX_EVIDENCE_SIZE_BYTES + 1)
+        self.mock_download_inbound_media.return_value = MediaDownloadResult(
+            ok=True, bytes=oversized_bytes, mime_type="image/jpeg",
+        )
+
+        response = self.post_inbound_image("wamid.session-image-big", SUPERVISOR_PHONE, media_id="media-big")
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "Attachment is too large; evidence must be 10 MB or smaller.")
+        self.assertEqual(self.file_object_rows(), [])
+        self.assertEqual(self.gate_session_attachment_rows(), [])
+
+    def test_unsupported_mime_type_attachment_is_rejected_without_download(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        self.open_gate_session(approval, SUPERVISOR_ID)
+
+        response = self.post_inbound_image(
+            "wamid.session-image-bad-mime", SUPERVISOR_PHONE, media_id="media-zip", mime_type="application/zip",
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "Unsupported attachment type; evidence must be JPG, PNG, WebP, or PDF.")
+        self.mock_download_inbound_media.assert_not_called()
+        self.assertEqual(self.file_object_rows(), [])
+
+    def test_image_attachment_with_no_open_session_is_rejected_even_if_mime_supported(self):
+        project = self.activate_project()
+        self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+
+        response = self.post_inbound_image("wamid.no-session-image", SUPERVISOR_PHONE, media_id="media-fine")
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "You have no open evidence session. Send GATEOPEN <ref> first.")
+        self.mock_download_inbound_media.assert_not_called()
+        self.assertEqual(self.file_object_rows(), [])
+
+    def test_vendor_contact_sending_gateopen_is_rejected(self):
+        project = self.activate_project()
+        approval = self.make_gate_approval(project["id"], assigned_to_user_id=SUPERVISOR_ID)
+        ref = self.assignment_ref(str(approval.id))
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.vendor-gateopen",
+            "sender_phone": VENDOR_ELECTRICAL_CONTACT_PHONE,
+            "message_text": f"GATEOPEN {ref}",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "This command is not available for your identity type.")
+        self.assertEqual(self.gate_session_rows(), [])
 
     # ---- duplicate delivery -------------------------------------------------
 
