@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -623,6 +624,82 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
                 assignment_reason="Legitimate replacement after the prior membership ended.",
             ))
         # No exception raised - success is the assertion.
+
+    # ---- U3 (WhatsApp gate workflow): project.member_added emission -------
+
+    def test_assigning_a_member_emits_project_member_added_event(self):
+        internal_employee_id = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
+        project = self.create_draft()
+        with self.Session.begin() as session:
+            session.add(User(
+                id=internal_employee_id, name="Field Hand", email="field-hand@example.com",
+                role=UserRole.internal_employee, active=True,
+            ))
+            session.flush()
+            session.add(EmployeeProfile(
+                user_id=internal_employee_id, employee_code="IE-001", designation="Internal Employee",
+                availability="available",
+            ))
+        employee_id = self.employee_id_for(internal_employee_id)
+
+        self.act_as_admin()
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships",
+            json={"employee_id": str(employee_id), "project_role": "internal_employee", "reason": "Adding field support."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.member_added")
+            ).all()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].aggregate_type, "project")
+            self.assertEqual(str(events[0].aggregate_id), project["id"])
+            self.assertEqual(events[0].payload["employee_id"], str(employee_id))
+            self.assertEqual(events[0].payload["project_role"], "internal_employee")
+
+    def test_assign_membership_integrity_error_persists_no_orphan_event(self):
+        """A concurrent second active-role insert - the same race
+        test_db_level_partial_unique_index_rejects_second_active_pm proves
+        the DB-level index rejects on its own - simulated here by patching
+        `active_memberships` to return `[]`, the same effect a genuine race
+        would have: assign_membership's own "is there already an active
+        holder of this role" check sees nothing, so it inserts a second
+        active `project_manager` row alongside the one `create_draft()`
+        already created.
+
+        `assign_membership` flushes its own insert (to get the new row's id
+        for the audit log and, since U3, the outbox idempotency key) before
+        `set_membership` ever reaches its own `db.commit()` - so the partial
+        unique index actually rejects at that flush, inside
+        `assign_membership` itself, not at `set_membership`'s later
+        try/except-wrapped commit. TestClient re-raises an unhandled server
+        exception rather than returning a response, so the assertion here
+        is on the exception, not a 409 (that mismatch between where the
+        constraint fires and where the 409 handler sits is a pre-existing
+        gap in this race path, unrelated to U3's scope - U3 only needs to
+        prove the outbox row doesn't survive it). Since the flush that adds
+        the membership row and the flush that adds the outbox event are the
+        same failed operation, neither is ever committed - the assertion
+        below confirms no `project.member_added` event leaked through.
+        """
+        project = self.create_draft()
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+
+        with patch("app.routes.projects_v2.active_memberships", return_value=[]):
+            self.act_as_admin()
+            with self.assertRaises(IntegrityError):
+                self.client.post(
+                    f"/api/v2/projects/{project['id']}/memberships",
+                    json={"employee_id": str(replacement_id), "project_role": "project_manager", "reason": "Racing assignment."},
+                )
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.member_added")
+            ).all()
+            self.assertEqual(events, [])
 
 
 if __name__ == "__main__":
