@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import ProjectExternalApproval
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.outbox import OutboxService
 
 
@@ -241,6 +241,9 @@ class ProjectGateAssignmentService:
         ))
         self.db.flush()
 
+        gate = self.db.get(V2ProjectExternalGate, approval.project_gate_id)
+        due_date = approval.due_at.isoformat() if approval.due_at else "No due date set"
+
         OutboxService(self.db).emit(
             event_type=event_type,
             aggregate_type="project_external_approval",
@@ -248,6 +251,9 @@ class ProjectGateAssignmentService:
             payload={
                 "approval_id": str(approval.id),
                 "project_id": str(project.id),
+                "gate_name": gate.approval_name,
+                "project_name": project.name,
+                "due_date": due_date,
                 "assigned_to_user_id": str(assignee_user_id),
                 "assigned_by": str(actor.id),
                 "assigned_at": assigned_at.isoformat(),

@@ -360,6 +360,83 @@ class ProjectGateSubmissionTests(unittest.TestCase):
             self.service.get_evidence_file(self.project_id, approval_b.id, evidence.file_id, self.pm_user())
         self.assertEqual(ctx.exception.status_code, 404)
 
+    # ---- existing_file_ids (U8, KTD17) ---------------------------------------
+
+    def make_existing_file_object(self, *, mime_type: str = "image/jpeg") -> FileObject:
+        """Stands in for a `FileObject` a `GateEvidenceSession` attachment
+        already wrote (U10 downloads WhatsApp bytes and stores them the
+        moment they arrive) - `submit(existing_file_ids=...)` must link it
+        directly rather than writing fresh bytes."""
+        file_object = FileObject(
+            storage_key=f"session-attachment-{uuid.uuid4().hex}.jpg",
+            original_filename="whatsapp-photo.jpg",
+            mime_type=mime_type,
+            size_bytes=2048,
+            checksum=uuid.uuid4().hex,
+            uploaded_by=INTERNAL_ID,
+        )
+        with self.Session() as session:
+            session.add(file_object)
+            session.commit()
+            session.refresh(file_object)
+        return file_object
+
+    def test_submit_with_existing_file_ids_and_no_note_succeeds(self):
+        approval = self.make_approval()
+        file_object = self.make_existing_file_object()
+        submission = self.service.submit(
+            self.project_id, approval.id, self.internal_user(), note=None,
+            existing_file_ids=[file_object.id],
+        )
+        self.assertIsNotNone(submission.id)
+        self.assertEqual(self.stored(approval.id).status, "submitted")
+        with self.Session() as session:
+            evidence = session.scalars(
+                select(ProjectExternalApprovalEvidence).where(ProjectExternalApprovalEvidence.submission_id == submission.id)
+            ).all()
+            self.assertEqual(len(evidence), 1)
+            self.assertEqual(evidence[0].file_id, file_object.id)
+            self.assertEqual(evidence[0].evidence_type, "photo")
+            all_files = session.scalars(select(FileObject)).all()
+            self.assertEqual(len(all_files), 1, "no new FileObject should be written for existing_file_ids")
+
+    def test_submit_with_existing_file_ids_writes_no_new_file_objects_for_multiple_ids(self):
+        approval = self.make_approval()
+        file_a = self.make_existing_file_object()
+        file_b = self.make_existing_file_object(mime_type="application/pdf")
+        submission = self.service.submit(
+            self.project_id, approval.id, self.internal_user(), note="Two session attachments.",
+            existing_file_ids=[file_a.id, file_b.id],
+        )
+        with self.Session() as session:
+            evidence = session.scalars(
+                select(ProjectExternalApprovalEvidence).where(ProjectExternalApprovalEvidence.submission_id == submission.id)
+            ).all()
+            self.assertEqual(len(evidence), 2)
+            by_file = {row.file_id: row.evidence_type for row in evidence}
+            self.assertEqual(by_file[file_a.id], "photo")
+            self.assertEqual(by_file[file_b.id], "document")
+            all_files = session.scalars(select(FileObject)).all()
+            self.assertEqual(len(all_files), 2, "no new FileObject should be written for existing_file_ids")
+
+    def test_submit_with_an_unknown_existing_file_id_is_refused(self):
+        approval = self.make_approval()
+        with self.assertRaises(HTTPException) as ctx:
+            self.service.submit(
+                self.project_id, approval.id, self.internal_user(), note=None,
+                existing_file_ids=[uuid.uuid4()],
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_submit_with_no_note_and_no_existing_file_ids_is_refused(self):
+        approval = self.make_approval()
+        with self.assertRaises(HTTPException) as ctx:
+            self.service.submit(
+                self.project_id, approval.id, self.internal_user(), note=None,
+                existing_file_ids=[],
+            )
+        self.assertEqual(ctx.exception.status_code, 422)
+
     def test_get_evidence_file_refuses_a_non_member(self):
         approval = self.make_approval()
         self.service.submit(

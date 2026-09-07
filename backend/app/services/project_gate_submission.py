@@ -113,11 +113,21 @@ class ProjectGateSubmissionService:
         approval_id: uuid.UUID,
         actor: User,
         note: str | None,
-        files: list[tuple[bytes, str | None, str | None]],
+        files: list[tuple[bytes, str | None, str | None]] = (),
+        existing_file_ids: list[uuid.UUID] = (),
     ) -> ProjectExternalApprovalSubmission:
         """`files` is a list of (bytes, filename, content_type) tuples -
         the router reads uploads before calling in, same shape
-        `submit_task_progress` uses for its single evidence file."""
+        `submit_task_progress` uses for its single evidence file.
+
+        `existing_file_ids` (KTD17) is the alternative shape
+        `GateEvidenceSessionService.close_session` uses: a WhatsApp
+        session's attachments were already downloaded and written to their
+        own `FileObject` rows the moment they arrived, so closing links
+        those rows directly instead of re-writing the same bytes to storage
+        a second time. Exactly one of `files`/`existing_file_ids` is ever
+        non-empty for a given call - never both; the portal's own upload
+        route (`execution_tasks_v2.py`) keeps passing `files` unchanged."""
         project = self._require_access(project_id, actor)
         approval = self._get_approval(project.id, approval_id)
         self._require_submitter(approval, actor)
@@ -129,41 +139,50 @@ class ProjectGateSubmissionService:
             )
 
         clean_note = (note or "").strip() or None
-        if not clean_note and not files:
+        if not clean_note and not files and not existing_file_ids:
             raise HTTPException(422, "A submission requires a note, evidence, or both.")
 
-        file_objects: list[tuple[FileObject, str | None]] = []
-        for evidence_bytes, evidence_filename, evidence_content_type in files:
-            if evidence_content_type not in ALLOWED_EVIDENCE_MIME_TYPES:
-                raise HTTPException(422, "Evidence must be JPG, PNG, WebP, or PDF.")
-            if len(evidence_bytes) == 0:
-                raise HTTPException(422, "Evidence file is empty.")
-            if len(evidence_bytes) > MAX_EVIDENCE_SIZE_BYTES:
-                raise HTTPException(422, "Evidence must be 10 MB or smaller.")
+        file_objects: list[tuple[FileObject, str]] = []
+        if existing_file_ids:
+            for existing_file_id in existing_file_ids:
+                file_object = self.db.get(FileObject, existing_file_id)
+                if not file_object:
+                    raise HTTPException(404, "Evidence file not found for this external approval.")
+                evidence_type = "photo" if file_object.mime_type != "application/pdf" else "document"
+                file_objects.append((file_object, evidence_type))
+        else:
+            for evidence_bytes, evidence_filename, evidence_content_type in files:
+                if evidence_content_type not in ALLOWED_EVIDENCE_MIME_TYPES:
+                    raise HTTPException(422, "Evidence must be JPG, PNG, WebP, or PDF.")
+                if len(evidence_bytes) == 0:
+                    raise HTTPException(422, "Evidence file is empty.")
+                if len(evidence_bytes) > MAX_EVIDENCE_SIZE_BYTES:
+                    raise HTTPException(422, "Evidence must be 10 MB or smaller.")
 
-            # See task_progress.py's identical call - mobile evidence
-            # photos are shrunk before checksum/storage_key/write. No-op
-            # for a PDF.
-            evidence_bytes, evidence_content_type = compress_evidence_image(evidence_bytes, evidence_content_type)
+                # See task_progress.py's identical call - mobile evidence
+                # photos are shrunk before checksum/storage_key/write. No-op
+                # for a PDF.
+                evidence_bytes, evidence_content_type = compress_evidence_image(evidence_bytes, evidence_content_type)
 
-            extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
-            storage_key = f"{approval.id}-{uuid.uuid4().hex}{extension}"
-            evidence_storage.write(storage_key, evidence_bytes, evidence_content_type)
+                extension = ALLOWED_EVIDENCE_MIME_TYPES[evidence_content_type]
+                storage_key = f"{approval.id}-{uuid.uuid4().hex}{extension}"
+                evidence_storage.write(storage_key, evidence_bytes, evidence_content_type)
 
-            checksum = hashlib.sha256(evidence_bytes).hexdigest()
-            file_object = FileObject(
-                storage_key=storage_key,
-                original_filename=(evidence_filename or storage_key),
-                mime_type=evidence_content_type,
-                size_bytes=len(evidence_bytes),
-                checksum=checksum,
-                uploaded_by=actor.id,
-            )
-            self.db.add(file_object)
-            file_objects.append((file_object, evidence_content_type))
+                checksum = hashlib.sha256(evidence_bytes).hexdigest()
+                file_object = FileObject(
+                    storage_key=storage_key,
+                    original_filename=(evidence_filename or storage_key),
+                    mime_type=evidence_content_type,
+                    size_bytes=len(evidence_bytes),
+                    checksum=checksum,
+                    uploaded_by=actor.id,
+                )
+                self.db.add(file_object)
+                evidence_type = "photo" if evidence_content_type != "application/pdf" else "document"
+                file_objects.append((file_object, evidence_type))
 
-        if file_objects:
-            self.db.flush()
+            if file_objects:
+                self.db.flush()
 
         submission = ProjectExternalApprovalSubmission(
             approval_id=approval.id,
@@ -173,11 +192,11 @@ class ProjectGateSubmissionService:
         self.db.add(submission)
         self.db.flush()
 
-        for file_object, evidence_content_type in file_objects:
+        for file_object, evidence_type in file_objects:
             self.db.add(ProjectExternalApprovalEvidence(
                 submission_id=submission.id,
                 file_id=file_object.id,
-                evidence_type="photo" if evidence_content_type != "application/pdf" else "document",
+                evidence_type=evidence_type,
                 caption=None,
             ))
         if file_objects:

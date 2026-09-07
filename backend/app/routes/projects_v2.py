@@ -30,6 +30,7 @@ from app.schemas.project_dependencies import ProjectDependencyGenerateOut, Proje
 from app.services.project_dependency_generation import ProjectDependencyGenerationService
 from app.services.project_baseline import ProjectBaselineService
 from app.services.project_role_change import ProjectRoleChangeService
+from app.services.outbox import OutboxService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
 
@@ -299,6 +300,20 @@ def assign_membership(db: Session, project: V2Project, employee_id: uuid.UUID, p
     db.add(membership)
     db.flush()
     add_audit(db, actor, project, "PROJECT_ROLE_REASSIGNED" if current else "PROJECT_ROLE_ASSIGNED", reason.strip(), {"memberships": before}, {"membership": membership_json(db, membership)}, "project_membership", membership.id)
+    # U3 (WhatsApp gate workflow): emit in the same transaction as the
+    # membership row itself, so the caller's IntegrityError -> 409 rollback
+    # (see assign_membership's callers) also rolls back this event, same
+    # discipline as U2's project.activated emit above. Keyed on the
+    # membership's own id - unlike activation this can happen many times per
+    # project, so the id (not just project/event type) is what makes repeat
+    # calls distinct.
+    OutboxService(db).emit(
+        event_type="project.member_added",
+        aggregate_type="project",
+        aggregate_id=project.id,
+        payload={"project_id": str(project.id), "employee_id": str(employee_id), "project_role": project_role},
+        idempotency_key=f"project:{project.id}:project.member_added:{membership.id}",
+    )
     return membership
 
 
@@ -952,6 +967,18 @@ def activate_project(project_id: uuid.UUID, payload: ProjectActivateIn, actor: U
         add_audit(
             db, actor, project, "PROJECT_ACTIVATED", payload.reason.strip(),
             before, {**project_snapshot(project), "template_version_locked": True, "baseline_id": str(baseline.id) if baseline else None},
+        )
+        # U2 (WhatsApp gate workflow): emit in the same transaction as the
+        # activation itself, so a rollback on any later failure in this
+        # block means the event never persists either (see OutboxService
+        # docstring). The draft-to-active guard above makes this a one-time
+        # transition per project, so the idempotency key needs no timestamp.
+        OutboxService(db).emit(
+            event_type="project.activated",
+            aggregate_type="project",
+            aggregate_id=project.id,
+            payload={"project_id": str(project.id), "project_name": project.name},
+            idempotency_key=f"project:{project.id}:project.activated",
         )
         db.commit()
     except Exception:

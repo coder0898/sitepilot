@@ -144,13 +144,16 @@ class ProjectGateAssignmentTests(unittest.TestCase):
                     assignment_reason="Seeded for tests.",
                 ))
 
-    def make_approval(self, *, status: str = "unassigned", assigned_to_user_id=None) -> ProjectExternalApproval:
+    def make_approval(
+        self, *, status: str = "unassigned", assigned_to_user_id=None,
+        gate_name: str | None = None, due_at: date | None = None,
+    ) -> ProjectExternalApproval:
         with self.Session.begin() as session:
             self._sequence += 1
             gate = V2ProjectExternalGate(
                 id=uuid.uuid4(), project_id=self.project_id,
                 original_code=f"E{self._sequence:03d}", template_sequence=self._sequence,
-                approval_name=f"Fire NOC {self._sequence}", mapping_classification="exact",
+                approval_name=gate_name or f"Fire NOC {self._sequence}", mapping_classification="exact",
                 applicability_state="applicable", blocking=True,
                 accountable_pm_user_id=PM_ID, source_type="project_manual",
             )
@@ -165,6 +168,7 @@ class ProjectGateAssignmentTests(unittest.TestCase):
                 assigned_at=None,
                 decided_by=ADMIN_ID if decided else None,
                 decided_at=datetime.now(timezone.utc) if decided else None,
+                due_at=due_at,
             )
             session.add(approval)
             session.flush()
@@ -232,6 +236,30 @@ class ProjectGateAssignmentTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].event_type, "project_external_approval.assigned")
 
+    # ---- assign: outbox payload enrichment (U4) ----------------------------
+
+    def test_assigning_with_a_due_date_includes_a_formatted_due_date_in_the_payload(self):
+        approval = self.make_approval(due_at=date(2026, 12, 25))
+        self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user())
+        with self.Session() as session:
+            event = session.scalars(select(OutboxEvent).where(OutboxEvent.aggregate_id == approval.id)).one()
+            self.assertEqual(event.payload["due_date"], "2026-12-25")
+
+    def test_assigning_with_no_due_date_marks_the_payload_explicitly(self):
+        approval = self.make_approval(due_at=None)
+        self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user())
+        with self.Session() as session:
+            event = session.scalars(select(OutboxEvent).where(OutboxEvent.aggregate_id == approval.id)).one()
+            self.assertEqual(event.payload["due_date"], "No due date set")
+
+    def test_assigning_payload_carries_the_real_gate_and_project_names(self):
+        approval = self.make_approval(gate_name="Fire NOC Clearance")
+        self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user())
+        with self.Session() as session:
+            event = session.scalars(select(OutboxEvent).where(OutboxEvent.aggregate_id == approval.id)).one()
+            self.assertEqual(event.payload["gate_name"], "Fire NOC Clearance")
+            self.assertEqual(event.payload["project_name"], "Project 1")
+
     # ---- reassign -----------------------------------------------------------
 
     def test_admin_can_reassign_a_submitted_gate(self):
@@ -257,6 +285,25 @@ class ProjectGateAssignmentTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             self.service.reassign(self.project_id, approval.id, OTHER_INTERNAL_ID, self.pm_user())
         self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_reassigning_also_produces_an_enriched_payload(self):
+        """Confirms the enrichment lives in the shared `_write_assignment`
+        helper, not duplicated (or missed) at the initial-assign call site."""
+        approval = self.make_approval(
+            status="assigned", assigned_to_user_id=INTERNAL_ID,
+            gate_name="Fire NOC Clearance", due_at=date(2026, 12, 25),
+        )
+        self.service.reassign(self.project_id, approval.id, OTHER_INTERNAL_ID, self.admin_user())
+        with self.Session() as session:
+            event = session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == approval.id,
+                    OutboxEvent.event_type == "project_external_approval.reassigned",
+                )
+            ).one()
+            self.assertEqual(event.payload["gate_name"], "Fire NOC Clearance")
+            self.assertEqual(event.payload["project_name"], "Project 1")
+            self.assertEqual(event.payload["due_date"], "2026-12-25")
 
     # ---- unassign -----------------------------------------------------------
 

@@ -1,5 +1,6 @@
 import re
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, inspect, or_, select, text
@@ -12,6 +13,7 @@ from app.models import AccessRequest, AccessRequestEvent, EmployeeProfile, User,
 from app.project_models import V2Project, V2ProjectMembership
 from app.schemas.requests import MyProfileUpdateIn, UserDeleteIn, UserInviteIn, UserLifecycleIn, UserUpdateIn
 from app.services.access_control import access_catalog, manageable_roles
+from app.services.outbox import OutboxService
 from app.services.serializers import public_user
 from app.services.supabase_auth import SupabaseAuthError, admin_delete_user, admin_update_user
 
@@ -151,6 +153,13 @@ def invite_user(payload: UserInviteIn, actor: User = Depends(require_roles(UserR
             department=(payload.department or "").strip() or None,
         ))
         add_event(db, user, actor, "ACCOUNT_INVITED", "Pre-registered for Google sign-in; awaiting first login.", to_role=payload.role)
+        OutboxService(db).emit(
+            event_type="user.created",
+            aggregate_type="user",
+            aggregate_id=user.id,
+            payload={"user_id": str(user.id), "name": user.name},
+            idempotency_key=f"user:{user.id}:user.created",
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -261,6 +270,16 @@ def set_account_active(db: Session, target: User, actor: User, active: bool, rea
         "ACCOUNT_RESTORED" if active else "ACCOUNT_OFFBOARDED",
         reason,
     )
+    if not active:
+        # R13 is offboard-only: the restore branch above never emits this -
+        # only the deactivation branch does.
+        OutboxService(db).emit(
+            event_type="user.offboarded",
+            aggregate_type="user",
+            aggregate_id=target.id,
+            payload={"user_id": str(target.id), "name": target.name},
+            idempotency_key=f"user:{target.id}:user.offboarded:{datetime.now(timezone.utc).isoformat()}",
+        )
     db.commit()
     return target
 

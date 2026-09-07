@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from app.config import settings
 from app.database import SessionLocal
 from app.services.escalation import EscalationService
+from app.services.project_gate_evidence_session import GateEvidenceSessionService
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,8 @@ def run_gate_reminder_pass() -> int:
 
     `now` is captured once here and threaded through every call in this
     pass, matching `daily_task_prompts_scheduler.py`'s own discipline.
-    Returns the total number of approvals that had an event emitted across
-    all three calls.
+    Returns the total number of approvals that had an event emitted (or, for
+    the evidence-session sweep, expired) across all four calls.
 
     Each call is isolated from the others: one raising is logged and
     skipped rather than aborting the remaining calls in the same tick.
@@ -45,6 +46,7 @@ def run_gate_reminder_pass() -> int:
             ("emit_gate_due_reminders", lambda: escalation.emit_gate_due_reminders(now)),
             ("sweep_approval_followups", lambda: escalation.sweep_approval_followups(now)),
             ("sweep_approval_escalations", lambda: escalation.sweep_approval_escalations(now)),
+            ("expire_stale_evidence_sessions", lambda: GateEvidenceSessionService(db).expire_stale_sessions(now)),
         ):
             try:
                 processed += len(call())

@@ -458,6 +458,40 @@ class ProjectExternalApprovalStatusCheck(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ProjectGateAcknowledgement(Base):
+    """R3/R5/R6 (U5): a recorded 'accepted'/'declined' acknowledgement of a
+    `ProjectExternalApproval` gate, from the employee it is assigned to.
+
+    Append-only, mirroring `VendorAcknowledgement`'s own precedent exactly:
+    every response is kept as its own row, even a second one against the
+    same gate, and none is ever overwritten or deleted. Purely additive -
+    it stands entirely alongside the formal assign/submit/decide state
+    machine and never writes `ProjectExternalApproval.status`
+    (`project_gate_assignment.py`, `project_gate_submission.py`,
+    `project_gate_decision.py`), the same non-lifecycle framing already
+    applied to `ProjectExternalApprovalStatusCheck`.
+    """
+
+    __tablename__ = "project_gate_acknowledgements"
+    __table_args__ = (
+        CheckConstraint(
+            "response in ('accepted', 'declined')",
+            name="ck_v2_project_gate_acknowledgements_response",
+        ),
+        Index("ix_v2_project_gate_acknowledgements_approval", "approval_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approval_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="RESTRICT"), nullable=False
+    )
+    response: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class TaskProgressUpdate(Base):
     """U3: append-only progress note against an execution-layer task.
 
@@ -1004,4 +1038,85 @@ class InboundMessage(Base):
     matched_identity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     processing_status: Mapped[str] = mapped_column(Text, nullable=False, default="unmatched")
     rejection_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class GateEvidenceSession(Base):
+    """Plan: WhatsApp Gate Workflow (U8, KTD4-KTD9).
+
+    A buffering session for evidence an employee sends over WhatsApp for one
+    `ProjectExternalApproval` gate - opened by `GATEOPEN <ref>` and closed by
+    `GATECLOSE` (`project_gate_evidence_session.py`). Every inbound text/
+    attachment while a session is open appends to it (`note`/
+    `GateEvidenceSessionAttachment`) rather than submitting on its own -
+    `close_session` is the only path that ever calls
+    `ProjectGateSubmissionService.submit()`.
+
+    Modeled on `EscalationTracking`'s "one open row, partial unique index on
+    the open state" pattern (KTD4): `uq_v2_gate_evidence_sessions_employee_open`
+    enforces at most one open session (`closed_at is null and expired_at is
+    null`) per employee at the database level, not just in application
+    logic. `GateEvidenceSessionService.open_session`'s own proactive check is
+    the first line of defense; it treats the `IntegrityError` this index
+    raises on a lost race as a benign rejection rather than a crash,
+    mirroring `EscalationTracking._commit_new_tracking`'s exact precedent
+    (`execution_models.py:737-770` above).
+
+    A session ends exactly one of two ways, never both: `closed_at` set by a
+    successful `GATECLOSE` (evidence submitted via `submit()`), or
+    `expired_at` set by the silence-expiry sweep (KTD5/KTD6 - buffered
+    evidence discarded, never submitted).
+    """
+
+    __tablename__ = "gate_evidence_sessions"
+    __table_args__ = (
+        Index("ix_v2_gate_evidence_sessions_approval", "approval_id"),
+        Index(
+            "uq_v2_gate_evidence_sessions_employee_open", "employee_id",
+            unique=True,
+            postgresql_where=text("closed_at is null and expired_at is null"),
+            sqlite_where=text("closed_at is null and expired_at is null"),
+        ),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    approval_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="RESTRICT"), nullable=False)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    """Appended to (newline-joined) across every inbound text message
+    belonging to this session - see `GateEvidenceSessionService.append_text`.
+    Passed straight through as `submit()`'s own `note` on close."""
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    """Bumped on every message belonging to the session (text or
+    attachment) - the silence-expiry sweep (KTD5) reads this, not
+    `opened_at`, so a session that is actively (if slowly) accumulating
+    evidence is never expired out from under the employee."""
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GateEvidenceSessionAttachment(Base):
+    """Plan: WhatsApp Gate Workflow (U8). One attachment buffered against an
+    open `GateEvidenceSession`, linking to a `FileObject` the caller (U10)
+    has already downloaded and stored - a real, typed FK, mirroring
+    `ProjectExternalApprovalEvidence`'s own non-polymorphic shape.
+
+    CASCADE on `session_id`, matching `ProjectExternalApprovalEvidence`'s
+    existing CASCADE-to-parent-submission convention: an attachment has no
+    meaning apart from its session. RESTRICT on `file_id`, same as every
+    other FileObject-linking table in this schema - the file's own bytes
+    must outlive an accidental session-row delete.
+    """
+
+    __tablename__ = "gate_evidence_session_attachments"
+    __table_args__ = (
+        Index("ix_v2_gate_evidence_session_attachments_session", "session_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.gate_evidence_sessions.id", ondelete="CASCADE"), nullable=False)
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

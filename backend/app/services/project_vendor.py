@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.outbox import OutboxService
 from app.vendor_models import ProjectVendor, V2Vendor
 
 
@@ -103,6 +104,21 @@ class ProjectVendorService:
 
         mapping = ProjectVendor(project_id=project.id, vendor_id=vendor.id, mapped_by=actor.id)
         self.db.add(mapping)
+        self.db.flush()
+
+        # U3 (WhatsApp gate workflow): emit in the same transaction as the
+        # mapping row itself, following U2's project.activated / assign_membership's
+        # project.member_added discipline - a later rollback in this same
+        # commit would take the event with it. Keyed on the mapping's own id
+        # since a project can be mapped to many vendors over time.
+        OutboxService(self.db).emit(
+            event_type="project.vendor_mapped",
+            aggregate_type="project",
+            aggregate_id=project.id,
+            payload={"project_id": str(project.id), "vendor_id": str(vendor.id)},
+            idempotency_key=f"project:{project.id}:project.vendor_mapped:{mapping.id}",
+        )
+
         self.db.commit()
         self.db.refresh(mapping)
         return mapping

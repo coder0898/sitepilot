@@ -53,11 +53,28 @@ validation), so it is prefixed with `+` before being handed to
 `InboundMessageService`, which matches by raw string equality against those
 stored values (see that module's docstring for why no further normalization
 is applied). A `changes[].value` with `statuses` instead of `messages` is a
-delivery/read receipt, not an inbound message - skipped, not an error. A
-non-`"text"` message type (image, location, etc.) is still passed through
-with an empty `message_text`, which `InboundMessageService` already rejects
-as "Unrecognized command" - not a crash. Meta may batch multiple entries/
-changes/messages in one delivery; every message found is processed.
+delivery/read receipt, not an inbound message - skipped, not an error. Meta
+may batch multiple entries/changes/messages in one delivery; every message
+found is processed.
+
+`"image"`/`"document"` message types (U9) have their `id`/`mime_type`
+(document-only: `filename`) metadata pulled out by `_extract_media_metadata`
+below - parsing only, never a `download_inbound_media` (`whatsapp_media.py`)
+call from this module; downloading is a separate, later-triggered concern
+(see that function's own docstring), decided by `InboundMessageService`
+(U10) once it knows there is an open evidence session to attach the result
+to AND the mime_type is one this feature accepts. `message_text` for these
+types is still `""`, same as any other non-`"text"` type - `InboundMessageService`
+treats that as "no text", not necessarily "Unrecognized command": an
+attachment with metadata still routes into an open session; a message with
+neither text nor media metadata (a location pin, a reaction, etc.) is what
+actually gets rejected as "Unrecognized command."
+
+The payload's top-level `errors[]` array (distinct from
+`entry[].changes[].value.messages[]`) carries Meta-side delivery failures
+(e.g. error 131052, "unable to download media sent by the user") - not a
+message, nothing to route to `InboundMessageService`; logged and skipped,
+matching this module's "never surfaced as 4xx/5xx" discipline.
 
 On success (200) each message's outcome is recorded internally on its own
 `inbound_messages` row (`processing_status`); it is never surfaced back to
@@ -72,6 +89,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
@@ -80,7 +98,11 @@ from app.config import settings
 from app.database import get_db
 from app.services.inbound_message import InboundMessageService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v2/whatsapp", tags=["v2-whatsapp-webhook"])
+
+_MEDIA_MESSAGE_TYPES = ("image", "document")
 
 
 def _verify_signature(raw_body: bytes, signature_header: str | None) -> None:
@@ -120,6 +142,38 @@ def _extract_messages(payload: dict) -> list[dict]:
     return messages
 
 
+def _extract_errors(payload: dict) -> list[dict]:
+    """Pulls the payload's top-level `errors[]` array - Meta-side delivery
+    failures (e.g. error 131052) that are not an inbound message at all and
+    have nothing to route to `InboundMessageService`. Tolerates a missing/
+    malformed `errors` key the same way `_extract_messages` tolerates a
+    malformed envelope - "no errors found", never a 4xx."""
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        return []
+    return [error for error in errors if isinstance(error, dict)]
+
+
+def _extract_media_metadata(message: dict) -> dict | None:
+    """For an `"image"`/`"document"` inbound message, pulls `id`/
+    `mime_type` (and, document-only, `filename`) out of the type-specific
+    object - WITHOUT calling `download_inbound_media`
+    (`app.services.whatsapp_media`); parsing and downloading are separate
+    concerns; see that function's own docstring for why. Returns `None` for
+    any other message type, or a media message whose type-specific object
+    is missing/malformed."""
+    message_type = message.get("type")
+    if message_type not in _MEDIA_MESSAGE_TYPES:
+        return None
+    media_object = message.get(message_type)
+    if not isinstance(media_object, dict):
+        return None
+    metadata = {"id": media_object.get("id"), "mime_type": media_object.get("mime_type")}
+    if message_type == "document":
+        metadata["filename"] = media_object.get("filename")
+    return metadata
+
+
 @router.get("/inbound")
 async def verify_whatsapp_webhook(request: Request):
     params = request.query_params
@@ -153,6 +207,12 @@ async def receive_inbound_whatsapp_message(request: Request, db: Session = Depen
     if not isinstance(payload, dict):
         raise HTTPException(422, "Malformed JSON payload.")
 
+    for error in _extract_errors(payload):
+        # Meta-side delivery failure (e.g. 131052) - not a message, nothing
+        # to route to InboundMessageService. Logged and skipped, never
+        # surfaced as a 4xx/5xx.
+        logger.warning("WhatsApp webhook delivered a top-level error: %s", error)
+
     for message in _extract_messages(payload):
         provider_message_id = message.get("id")
         sender_phone = message.get("from")
@@ -163,8 +223,14 @@ async def receive_inbound_whatsapp_message(request: Request, db: Session = Depen
         if message.get("type") == "text":
             message_text = (message.get("text") or {}).get("body") or ""
 
+        # U10: image/document metadata extracted above is threaded straight
+        # into InboundMessageService.process() - it decides whether/how to
+        # act on it (an open evidence session's attachment, or ignored
+        # otherwise); this route only ever parses, never downloads.
+        _media_metadata = _extract_media_metadata(message)
+
         InboundMessageService(db).process(
-            str(provider_message_id), f"+{sender_phone}", str(message_text),
+            str(provider_message_id), f"+{sender_phone}", str(message_text), _media_metadata,
         )
 
     return {"status": "received"}

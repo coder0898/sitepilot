@@ -24,7 +24,7 @@ from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMember
 from app.services.message_dispatch import MessageDispatchService
 from app.services.message_templates import DEFAULT_TEMPLATE, TemplateSpec, render_components, resolve
 from app.template_models import V2Template, V2TemplateVersion
-from app.vendor_models import TaskVendorAssignment, V2Vendor, V2VendorContact
+from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2Vendor, V2VendorContact
 
 
 @compiles(JSONB, "sqlite")
@@ -79,6 +79,7 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             MessageDelivery.__table__,
             V2Vendor.__table__,
             V2VendorContact.__table__,
+            ProjectVendor.__table__,
             TaskVendorAssignment.__table__,
             TaskSupportAssignment.__table__,
         ):
@@ -506,6 +507,74 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         components = render_components(spec, {})
         self.assertEqual(components, [{"type": "body", "parameters": [{"type": "text", "text": ""}]}])
 
+    # ---- WhatsApp gate workflow plan (U14): new event-type registry entries
+
+    NEW_EVENT_TYPE_PAYLOADS = {
+        "project.activated": {"project_id": "p1", "project_name": "Futurex"},
+        "project.member_added": {"project_id": "p1", "employee_id": "e1", "project_role": "internal_employee"},
+        "project.vendor_mapped": {"project_id": "p1", "vendor_id": "v1"},
+        "project_external_approval.accepted": {
+            "approval_id": "a1", "project_id": "p1", "response": "accepted", "note": "ok",
+        },
+        "project_external_approval.declined": {
+            "approval_id": "a1", "project_id": "p1", "response": "declined", "note": "ok",
+        },
+        "user.created": {"user_id": "u1", "name": "Field Hand"},
+        "user.offboarded": {"user_id": "u1", "name": "Field Hand"},
+        "gate_confirmation.accepted": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.declined": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.status_recorded": {
+            "actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex", "health": "on_track",
+        },
+        "gate_confirmation.session_opened": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.session_closed": {"actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex"},
+        "gate_confirmation.decided": {
+            "actor_user_id": "u1", "gate_name": "NOC", "project_name": "Futurex", "decision": "approved",
+        },
+    }
+
+    def test_every_new_event_type_resolves_to_a_tbd_placeholder_template(self):
+        for event_type in self.NEW_EVENT_TYPE_PAYLOADS:
+            with self.subTest(event_type=event_type):
+                spec = resolve(event_type)
+                self.assertNotEqual(spec, DEFAULT_TEMPLATE)
+                self.assertTrue(
+                    spec.meta_template_name.startswith("TBD_"),
+                    f"{event_type} resolved to {spec.meta_template_name!r}, expected a TBD_ placeholder",
+                )
+
+    def test_every_new_event_type_renders_one_body_parameter_per_variable(self):
+        for event_type, payload in self.NEW_EVENT_TYPE_PAYLOADS.items():
+            with self.subTest(event_type=event_type):
+                spec = resolve(event_type)
+                components = render_components(spec, payload)
+                self.assertEqual(len(components[0]["parameters"]), len(spec.variable_order))
+
+    def test_widened_gate_assignment_spec_renders_five_body_parameters(self):
+        spec = resolve("project_external_approval.assigned")
+        payload = {
+            "approval_id": "a1", "assigned_to_user_id": "u1",
+            "gate_name": "Fire NOC", "project_name": "Futurex", "due_date": "2026-12-25",
+        }
+
+        components = render_components(spec, payload)
+
+        parameters = components[0]["parameters"]
+        self.assertEqual(len(parameters), 5)
+        rendered_text = [p["text"] for p in parameters]
+        self.assertIn("Fire NOC", rendered_text)
+        self.assertIn("Futurex", rendered_text)
+        self.assertIn("2026-12-25", rendered_text)
+
+    def test_widened_gate_reassignment_spec_also_renders_five_body_parameters(self):
+        spec = resolve("project_external_approval.reassigned")
+        payload = {
+            "approval_id": "a1", "assigned_to_user_id": "u2",
+            "gate_name": "Fire NOC", "project_name": "Futurex", "due_date": "No due date set",
+        }
+        components = render_components(spec, payload)
+        self.assertEqual(len(components[0]["parameters"]), 5)
+
     # ---- 8. Phase 1b: project_external_approval recipient resolution ------
 
     def test_project_external_approval_assigned_event_resolves_admin_and_assignee(self):
@@ -837,6 +906,231 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
                           {self.pm_employee_id, self.supervisor_employee_id})
         self.assertEqual([d for d in deliveries if d.recipient_vendor_contact_id is not None], [])
+
+
+    # ---- 10. U1: all-project-members + vendor recipient resolver ----------
+
+    def test_resolve_all_project_members_returns_every_role_not_just_pm_supervisor(self):
+        # Add a second Internal Employee alongside the seeded PM, Supervisor
+        # and first Internal Employee - `_resolve_all_project_members` must
+        # return all four, not just the two `_ACCOUNTABLE_ROLES`.
+        second_internal_id = uuid.uuid4()
+        with self.Session.begin() as session:
+            second_internal = User(
+                id=second_internal_id, name="Internal 2", email="internal2@example.com",
+                phone="9000000070", role=UserRole.internal_employee, active=True,
+            )
+            session.add(second_internal)
+            session.flush()
+            second_internal_profile = EmployeeProfile(
+                user_id=second_internal_id, employee_code="INT-002",
+                designation="Internal Employee 2", availability="available",
+            )
+            session.add(second_internal_profile)
+            session.flush()
+            second_internal_employee_id = second_internal_profile.id
+            session.add(V2ProjectMembership(
+                project_id=self.project_id, employee_id=second_internal_profile.id,
+                project_role="internal_employee", assigned_by=PM_ID, assignment_reason="seed",
+            ))
+
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_members(self.project_id)
+
+        employee_ids = {r.employee_id for r in recipients}
+        self.assertEqual(
+            employee_ids,
+            {
+                self.pm_employee_id, self.supervisor_employee_id,
+                self.internal_employee_employee_id, second_internal_employee_id,
+            },
+        )
+
+    def test_resolve_all_project_members_resolves_phoneless_member_not_silently_dropped(self):
+        self._set_phone(SUPERVISOR_ID, None)
+
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_members(self.project_id)
+
+        by_employee = {r.employee_id: r for r in recipients}
+        self.assertIn(self.supervisor_employee_id, by_employee)
+        self.assertEqual(by_employee[self.supervisor_employee_id].phone, "")
+
+    def test_resolve_all_project_vendors_skips_vendor_with_no_primary_contact(self):
+        with self.Session.begin() as session:
+            session.add(ProjectVendor(project_id=self.project_id, vendor_id=self.vendor_id, mapped_by=PM_ID))
+
+            vendor_no_contact = V2Vendor(
+                name="Plumbing Co", contact_person="Sam", phone="9000000080",
+                status="active", engagement_type="main",
+            )
+            session.add(vendor_no_contact)
+            session.flush()
+            session.add(ProjectVendor(project_id=self.project_id, vendor_id=vendor_no_contact.id, mapped_by=PM_ID))
+
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_vendors(self.project_id)
+
+        self.assertEqual(len(recipients), 1)
+        self.assertEqual(recipients[0].vendor_contact_id, self.vendor_contact_id)
+
+    def test_resolve_all_project_vendors_with_no_mapped_vendors_returns_empty_list(self):
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_all_project_vendors(self.project2_id)
+
+        self.assertEqual(recipients, [])
+
+    def test_project_activated_event_uses_all_members_branch_not_pm_supervisor(self):
+        # `project.activated` is in `_ALL_MEMBERS_PROJECT_EVENTS` - the
+        # `project` branch must call `_resolve_all_project_members` INSTEAD
+        # OF `_resolve_pm_supervisor_recipients`, not both, since the former
+        # already includes every PM/Supervisor the latter would find.
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project.activated", aggregate_type="project",
+                aggregate_id=self.project_id, payload={}, key="test:10-activated",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        employee_ids = [d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None]
+        # No duplicate delivery targets from both resolvers firing.
+        self.assertEqual(len(employee_ids), len(set(employee_ids)))
+        self.assertEqual(
+            set(employee_ids),
+            {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
+        )
+
+    # ---- 11. U13: `user`-aggregate recipient resolution (R13) --------------
+
+    def test_user_created_event_resolves_only_the_named_user_not_the_actor(self):
+        # ADMIN_ID stands in for "the actor who performed the invite" here -
+        # the resolver must never pick them up just because they also have
+        # an EmployeeProfile; the sole recipient is the user named in the
+        # payload's `user_id` (INTERNAL_EMPLOYEE_ID).
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="user.created", aggregate_type="user",
+                aggregate_id=INTERNAL_EMPLOYEE_ID,
+                payload={"user_id": str(INTERNAL_EMPLOYEE_ID), "name": "Internal"},
+                key="test:11a",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.internal_employee_employee_id)
+        self.assertIsNone(deliveries[0].recipient_vendor_contact_id)
+        self.assertNotEqual(deliveries[0].recipient_employee_id, self.admin_employee_id)
+        self.assertEqual(deliveries[0].status, "sent")
+
+    def test_user_offboarded_event_with_no_phone_on_file_resolves_to_failed_delivery(self):
+        # Same resolve-then-fail-visibly discipline as every other resolver
+        # in this module: a missing phone must still produce a queryable
+        # `failed`/`missing_phone` delivery row, not a silent skip.
+        self._set_phone(INTERNAL_EMPLOYEE_ID, None)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="user.offboarded", aggregate_type="user",
+                aggregate_id=INTERNAL_EMPLOYEE_ID,
+                payload={"user_id": str(INTERNAL_EMPLOYEE_ID), "name": "Internal"},
+                key="test:11b",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.internal_employee_employee_id)
+        self.assertEqual(deliveries[0].status, "failed")
+        self.assertEqual(deliveries[0].failure_code, "missing_phone")
+
+    def test_user_event_with_no_user_id_in_payload_resolves_to_no_recipients(self):
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_user_recipient(
+                OutboxEvent(
+                    event_type="user.created", aggregate_type="user",
+                    aggregate_id=INTERNAL_EMPLOYEE_ID, payload={}, idempotency_key="test:11c",
+                )
+            )
+        self.assertEqual(recipients, [])
+
+    # ---- 12. U15: `gate_command_confirmation`-aggregate recipient resolution --
+
+    def test_gate_command_confirmation_event_resolves_only_the_named_actor_not_admin(self):
+        # ADMIN_ID stands in for "Admin, who U5's project_external_approval.*
+        # events resolve as a fixed cc" here - this resolver must never pick
+        # Admin up just because they exist; the sole recipient is the actor
+        # named in the payload's `actor_user_id` (SUPERVISOR_ID, the sender
+        # of the WhatsApp gate command being confirmed).
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="gate_confirmation.accepted", aggregate_type="gate_command_confirmation",
+                aggregate_id=uuid.uuid4(),
+                payload={
+                    "actor_user_id": str(SUPERVISOR_ID), "gate_name": "Fire NOC", "project_name": "Test Project",
+                },
+                key="test:12a",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.supervisor_employee_id)
+        self.assertIsNone(deliveries[0].recipient_vendor_contact_id)
+        self.assertNotEqual(deliveries[0].recipient_employee_id, self.admin_employee_id)
+        self.assertEqual(deliveries[0].status, "sent")
+
+    def test_gate_command_confirmation_event_with_no_phone_on_file_resolves_to_failed_delivery(self):
+        # Same resolve-then-fail-visibly discipline as every other resolver
+        # in this module: a missing phone must still produce a queryable
+        # `failed`/`missing_phone` delivery row, not a silent skip.
+        self._set_phone(SUPERVISOR_ID, None)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="gate_confirmation.session_opened", aggregate_type="gate_command_confirmation",
+                aggregate_id=uuid.uuid4(),
+                payload={"actor_user_id": str(SUPERVISOR_ID), "gate_name": "Fire NOC", "project_name": "Test Project"},
+                key="test:12b",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        deliveries = self._deliveries_for(event_id)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0].recipient_employee_id, self.supervisor_employee_id)
+        self.assertEqual(deliveries[0].status, "failed")
+        self.assertEqual(deliveries[0].failure_code, "missing_phone")
+
+    def test_gate_command_confirmation_event_with_no_actor_user_id_resolves_to_no_recipients(self):
+        with self.Session() as session:
+            recipients = MessageDispatchService(session)._resolve_command_actor_recipient(
+                OutboxEvent(
+                    event_type="gate_confirmation.decided", aggregate_type="gate_command_confirmation",
+                    aggregate_id=uuid.uuid4(), payload={}, idempotency_key="test:12c",
+                )
+            )
+        self.assertEqual(recipients, [])
 
 
 if __name__ == "__main__":

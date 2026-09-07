@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth import current_user
 from app.database import get_db
+from app.execution_models import OutboxEvent
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectExternalGateTask, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
 from app.routes.project_vendors_v2 import router as project_vendors_router
@@ -72,6 +73,7 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
             V2CapabilityCategory.__table__,
             V2VendorCapability.__table__,
             ProjectVendor.__table__,
+            OutboxEvent.__table__,
             V2TemplateExternalGate.__table__,
             V2TemplateExternalGateTask.__table__,
             V2TemplateTaskDependency.__table__,
@@ -316,6 +318,41 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), [])
+
+    # ---- U3 (WhatsApp gate workflow): project.vendor_mapped emission -----
+
+    def test_mapping_a_vendor_emits_project_vendor_mapped_event(self):
+        project = self.create_draft()
+        self.act_as_pm()
+
+        response = self.map_vendor(project["id"], self.main_vendor_id)
+        self.assertEqual(response.status_code, 200, response.text)
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.vendor_mapped")
+            ).all()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].aggregate_type, "project")
+            self.assertEqual(str(events[0].aggregate_id), project["id"])
+            self.assertEqual(events[0].payload["project_id"], project["id"])
+            self.assertEqual(events[0].payload["vendor_id"], str(self.main_vendor_id))
+            # A distinct event type from the person-joins case (KTD19) - no
+            # employee_id/project_role key ever appears in this payload.
+            self.assertNotIn("employee_id", events[0].payload)
+
+    def test_mapping_an_inactive_vendor_emits_no_event(self):
+        project = self.create_draft()
+        self.act_as_pm()
+
+        response = self.map_vendor(project["id"], self.inactive_vendor_id)
+
+        self.assertEqual(response.status_code, 422, response.text)
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.vendor_mapped")
+            ).all()
+            self.assertEqual(events, [])
 
 
 if __name__ == "__main__":
