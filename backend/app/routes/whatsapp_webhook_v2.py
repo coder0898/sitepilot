@@ -97,8 +97,16 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.services.inbound_message import InboundMessageService
+from app.services.whatsapp_provider import send_diagnostic_text_reply
 
 logger = logging.getLogger(__name__)
+
+# TEMPORARY, diagnostic-only (see send_diagnostic_text_reply's own
+# docstring): fixed text sent back for every inbound "text" message, to
+# prove the receive -> reply loop end-to-end per management's request,
+# before any real workflow reply is built. Delete alongside that function
+# and this constant once the test is done.
+_DIAGNOSTIC_AUTO_REPLY_TEXT = "Hi, your message has been received by SiteOps."
 
 router = APIRouter(prefix="/api/v2/whatsapp", tags=["v2-whatsapp-webhook"])
 
@@ -232,5 +240,22 @@ async def receive_inbound_whatsapp_message(request: Request, db: Session = Depen
         InboundMessageService(db).process(
             str(provider_message_id), f"+{sender_phone}", str(message_text), _media_metadata,
         )
+
+        # TEMPORARY diagnostic reply (see _DIAGNOSTIC_AUTO_REPLY_TEXT above) -
+        # fires for every inbound text message regardless of whether
+        # InboundMessageService matched/processed it, so a plain "Hi" from an
+        # unregistered personal number still proves the loop. Never raises:
+        # a failed send (e.g. the #200 permission error) is logged, not
+        # surfaced as a 4xx, matching this route's existing failure-handling
+        # discipline for provider-side outcomes.
+        if message.get("type") == "text":
+            result = send_diagnostic_text_reply(f"+{sender_phone}", _DIAGNOSTIC_AUTO_REPLY_TEXT)
+            if result.ok:
+                logger.info("Diagnostic auto-reply sent to +%s (provider_message_id=%s)", sender_phone, result.provider_message_id)
+            else:
+                logger.warning(
+                    "Diagnostic auto-reply FAILED to +%s: %s - %s",
+                    sender_phone, result.failure_code, result.failure_reason,
+                )
 
     return {"status": "received"}
