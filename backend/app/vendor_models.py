@@ -97,6 +97,7 @@ class V2VendorContact(Base):
     __tablename__ = "vendor_contacts"
     __table_args__ = (
         Index("ix_v2_vendor_contacts_vendor", "vendor_id"),
+        CheckConstraint("active_channel in ('whatsapp', 'telegram')", name="ck_v2_vendor_contacts_active_channel"),
         {"schema": V2_SCHEMA},
     )
 
@@ -108,6 +109,15 @@ class V2VendorContact(Base):
     designation: Mapped[str | None] = mapped_column(Text)
     phone: Mapped[str] = mapped_column(Text, nullable=False)
     whatsapp: Mapped[str | None] = mapped_column(Text)
+    # U4 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    # set once this contact opens the bot's Start link with a valid
+    # connect-token (U13). Nullable and unused by any code path until then.
+    telegram_chat_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    # U5 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md,
+    # KTD1): which channel this contact is actually reachable on right now.
+    # Defaults to 'whatsapp' for every existing and new row so behavior is
+    # unchanged until an Admin/Super-Admin explicitly toggles someone (U15).
+    active_channel: Mapped[str] = mapped_column(Text, nullable=False, default="whatsapp")
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
