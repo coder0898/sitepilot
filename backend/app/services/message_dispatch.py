@@ -232,6 +232,17 @@ class MessageDispatchService:
     def __init__(self, db: Session, adapter: WhatsAppProviderAdapter | None = None):
         self.db = db
         self.adapter = adapter or SandboxProviderAdapter()
+        # U9 (KTD4): channel -> adapter mapping, replacing `self.adapter` as
+        # dispatch's actual send target - `_dispatch_to_recipient` looks up
+        # the adapter here by the recipient's resolved channel instead of
+        # always using `self.adapter` directly. Built here, not as a new
+        # `__init__` parameter, so `outbox_scheduler.run_dispatch_pass`'s
+        # call site (`MessageDispatchService(db, adapter=_build_adapter())`)
+        # does not need to change - `_build_adapter()` still decides which
+        # real-vs-sandbox WhatsApp adapter to use, unchanged, and simply
+        # becomes the `'whatsapp'` slot of this mapping. `self.adapter` is
+        # kept as the fallback for an unrecognized channel value.
+        self._adapters: dict[str, WhatsAppProviderAdapter] = {"whatsapp": self.adapter}
 
     # ---- recipient resolution -------------------------------------------
 
@@ -634,6 +645,13 @@ class MessageDispatchService:
         # Refresh the denormalized snapshot on every attempt (including a
         # retry) so it reflects the number this specific attempt targeted.
         delivery.recipient_phone = recipient.phone
+        # U9: the channel this attempt actually targets, read fresh from the
+        # recipient's identity row (U8) rather than trusting
+        # `recipient.channel`'s construction-time default - the same
+        # resolve-fresh-on-every-attempt discipline `recipient_phone` above
+        # already follows.
+        channel = self._resolve_recipient_channel(recipient)
+        delivery.channel = channel
         delivery.status = "sending"
         delivery.attempt_count += 1
 
@@ -644,7 +662,8 @@ class MessageDispatchService:
         components = render_components(spec, event.payload or {})
         send_payload = {**(event.payload or {}), "components": components, "language_code": spec.language}
 
-        result = self.adapter.send(recipient_phone=recipient.phone, template=template, payload=send_payload)
+        adapter = self._adapters.get(channel, self.adapter)
+        result = adapter.send(recipient_phone=recipient.phone, template=template, payload=send_payload)
         if result.ok:
             delivery.status = "sent"
             delivery.provider_message_id = result.provider_message_id
