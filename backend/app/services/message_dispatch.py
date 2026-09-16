@@ -585,6 +585,21 @@ class MessageDispatchService:
             )
         return self.db.scalar(stmt)
 
+    def _resolve_recipient_channel(self, recipient: Recipient) -> str:
+        """U8 (KTD5): read-only channel lookup - answers "what channel is
+        this recipient on right now" by reading the recipient's identity
+        row's `active_channel` column (`EmployeeProfile`/`V2VendorContact`,
+        U5). Always returns `'whatsapp'` today, since no one has been
+        toggled onto Telegram yet. NOT called from `_dispatch_to_recipient`
+        or `_build_adapter` - that wiring is U9."""
+        if recipient.employee_id is not None:
+            return self.db.scalar(
+                select(EmployeeProfile.active_channel).where(EmployeeProfile.id == recipient.employee_id)
+            ) or "whatsapp"
+        return self.db.scalar(
+            select(V2VendorContact.active_channel).where(V2VendorContact.id == recipient.vendor_contact_id)
+        ) or "whatsapp"
+
     def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
         template = spec.meta_template_name
         delivery = self._existing_delivery(event.id, recipient, template)
