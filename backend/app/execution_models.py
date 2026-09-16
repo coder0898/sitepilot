@@ -982,6 +982,12 @@ class MessageDelivery(Base):
     recipient_vendor_contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_contacts.id", ondelete="RESTRICT"))
     recipient_phone: Mapped[str] = mapped_column(Text, nullable=False)
     template: Mapped[str] = mapped_column(Text, nullable=False)
+    # U6 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    # which channel this delivery actually went out on. Additive, defaults
+    # to 'whatsapp' for every existing and new row - nothing writes anything
+    # else here yet; `MessageDispatchService._dispatch_to_recipient` keeps
+    # writing exactly as it does today until U9.
+    channel: Mapped[str] = mapped_column(Text, nullable=False, default="whatsapp")
     provider: Mapped[str] = mapped_column(Text, nullable=False, default="sandbox")
     provider_message_id: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
