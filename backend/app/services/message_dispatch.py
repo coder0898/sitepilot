@@ -191,11 +191,16 @@ class ProviderSendResult:
 class Recipient:
     """One resolved notification target. Exactly one of `employee_id` /
     `vendor_contact_id` is set, mirroring `MessageDelivery`'s own
-    real-FK-pair recipient columns."""
+    real-FK-pair recipient columns.
+
+    `channel` (U5, KTD5) defaults to `'whatsapp'` so no existing
+    construction site needs to change yet - it is populated from the
+    recipient's `active_channel` column starting in U8/U9, not here."""
 
     employee_id: uuid.UUID | None
     vendor_contact_id: uuid.UUID | None
     phone: str
+    channel: str = "whatsapp"
 
 
 class WhatsAppProviderAdapter(Protocol):
