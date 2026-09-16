@@ -46,10 +46,30 @@ class ChannelLookupTests(unittest.TestCase):
         with self.session.begin():
             self.session.add(User(id=EMPLOYEE_ID, name="Field Employee", email="field@example.com", role=UserRole.supervisor, active=True))
             self.session.flush()
-            self.session.add(EmployeeProfile(user_id=EMPLOYEE_ID, employee_code="EMP-001", designation="Supervisor", availability="available"))
+            profile = EmployeeProfile(user_id=EMPLOYEE_ID, employee_code="EMP-001", designation="Supervisor", availability="available")
+            self.session.add(profile)
+            self.session.flush()
+            profile_id = profile.id
 
-        recipient = Recipient(employee_id=EMPLOYEE_ID, vendor_contact_id=None, phone="+911234567890")
+        # `Recipient.employee_id` holds `EmployeeProfile.id`, not `User.id` -
+        # same convention every real resolver in message_dispatch.py uses.
+        recipient = Recipient(employee_id=profile_id, vendor_contact_id=None, phone="+911234567890")
         self.assertEqual(self.service._resolve_recipient_channel(recipient), "whatsapp")
+
+    def test_employee_recipient_with_telegram_active_channel_resolves_to_telegram(self):
+        with self.session.begin():
+            self.session.add(User(id=EMPLOYEE_ID, name="Field Employee", email="field@example.com", role=UserRole.supervisor, active=True))
+            self.session.flush()
+            profile = EmployeeProfile(
+                user_id=EMPLOYEE_ID, employee_code="EMP-002", designation="Supervisor",
+                availability="available", active_channel="telegram",
+            )
+            self.session.add(profile)
+            self.session.flush()
+            profile_id = profile.id
+
+        recipient = Recipient(employee_id=profile_id, vendor_contact_id=None, phone="")
+        self.assertEqual(self.service._resolve_recipient_channel(recipient), "telegram")
 
     def test_vendor_contact_recipient_resolves_to_whatsapp(self):
         with self.session.begin():

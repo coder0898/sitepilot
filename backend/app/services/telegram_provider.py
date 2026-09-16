@@ -41,6 +41,26 @@ class TelegramProviderAdapter:
         self.access_token = access_token or settings.telegram_access_token
         self.timeout = timeout
 
+    def send(self, recipient_phone: str, template: str, payload: dict) -> ProviderSendResult:
+        """U10 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+        satisfies the same `WhatsAppProviderAdapter.send(...)` shape
+        `MessageDispatchService`'s channel-to-adapter mapping (U9) calls
+        uniformly for every channel, so this adapter can sit in that
+        mapping alongside the WhatsApp adapter.
+
+        `recipient_phone` here is actually the recipient's Telegram chat
+        id - dispatch resolves the right identifier per channel (U10) and
+        passes it through this same parameter name, which is the adapter
+        Protocol's name, not a claim about what value it carries.
+
+        `payload` is plain text dispatch has already resolved (KTD8: no
+        Meta-template rendering for Telegram) under the `"text"` key, not
+        a Meta-style components array. `template` is accepted for Protocol
+        conformance but unused - Telegram has no named-template registry
+        to look it up in.
+        """
+        return self.send_text(recipient_phone, payload.get("text", ""))
+
     def send_text(self, chat_id: str, text: str) -> ProviderSendResult:
         """Sends a plain-text message. No inline keyboard."""
         return self._send(chat_id, text, reply_markup=None)

@@ -58,7 +58,13 @@ class PerRecipientAdapterSelectionTests(unittest.TestCase):
         with self.session.begin():
             self.session.add(User(id=EMPLOYEE_ID, name="Field Employee", email="field@example.com", role=UserRole.supervisor, active=True, phone=EMPLOYEE_PHONE))
             self.session.flush()
-            self.session.add(EmployeeProfile(user_id=EMPLOYEE_ID, employee_code="EMP-001", designation="Supervisor", availability="available"))
+            profile = EmployeeProfile(user_id=EMPLOYEE_ID, employee_code="EMP-001", designation="Supervisor", availability="available")
+            self.session.add(profile)
+            self.session.flush()
+            # `Recipient.employee_id` holds `EmployeeProfile.id`, not
+            # `User.id` - same convention every real resolver in
+            # message_dispatch.py uses.
+            self.profile_id = profile.id
             self.event = OutboxEvent(
                 event_type="project.activated", aggregate_type="project", aggregate_id=uuid.uuid4(),
                 payload={}, idempotency_key=str(uuid.uuid4()), status="pending",
@@ -75,7 +81,7 @@ class PerRecipientAdapterSelectionTests(unittest.TestCase):
 
     def test_whatsapp_recipient_dispatches_through_the_same_adapter_as_before(self):
         service = MessageDispatchService(self.session)
-        recipient = Recipient(employee_id=EMPLOYEE_ID, vendor_contact_id=None, phone=EMPLOYEE_PHONE)
+        recipient = Recipient(employee_id=self.profile_id, vendor_contact_id=None, phone=EMPLOYEE_PHONE)
 
         service._dispatch_to_recipient(self.event, recipient, DEFAULT_TEMPLATE)
 
@@ -85,7 +91,7 @@ class PerRecipientAdapterSelectionTests(unittest.TestCase):
 
     def test_message_delivery_channel_is_recorded_as_whatsapp(self):
         service = MessageDispatchService(self.session)
-        recipient = Recipient(employee_id=EMPLOYEE_ID, vendor_contact_id=None, phone=EMPLOYEE_PHONE)
+        recipient = Recipient(employee_id=self.profile_id, vendor_contact_id=None, phone=EMPLOYEE_PHONE)
 
         service._dispatch_to_recipient(self.event, recipient, DEFAULT_TEMPLATE)
 

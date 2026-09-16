@@ -203,6 +203,15 @@ class Recipient:
     channel: str = "whatsapp"
 
 
+def _render_telegram_text(template: str, payload: dict) -> str:
+    """U10/KTD8: a functional placeholder for Telegram message text -
+    plain key/value lines, not final copy. Real Telegram message wording
+    is deliberately deferred, the same way WhatsApp's own `TBD_` template
+    placeholders defer real template copy until content is approved."""
+    lines = [f"{key}: {value}" for key, value in payload.items()]
+    return "\n".join(lines) if lines else template
+
+
 class WhatsAppProviderAdapter(Protocol):
     """Provider-agnostic send interface. A real adapter (Meta/WABA, etc.)
     implements this same shape; `MessageDispatchService` never depends on
@@ -242,7 +251,22 @@ class MessageDispatchService:
         # real-vs-sandbox WhatsApp adapter to use, unchanged, and simply
         # becomes the `'whatsapp'` slot of this mapping. `self.adapter` is
         # kept as the fallback for an unrecognized channel value.
-        self._adapters: dict[str, WhatsAppProviderAdapter] = {"whatsapp": self.adapter}
+        # U10: registers the Telegram adapter as a real option in this
+        # mapping, keyed 'telegram'. Instantiated unconditionally (like
+        # `SandboxProviderAdapter()` above) - `TelegramProviderAdapter`
+        # itself fails fast at `.send()` time (`failure_code='not_configured'`)
+        # when no token is set, not at construction time, so this is safe
+        # even with no Telegram credentials configured.
+        #
+        # Imported here, not at module level: `telegram_provider.py`
+        # imports `ProviderSendResult` from this module, so a top-level
+        # import here would be circular.
+        from app.services.telegram_provider import TelegramProviderAdapter
+
+        self._adapters: dict[str, WhatsAppProviderAdapter] = {
+            "whatsapp": self.adapter,
+            "telegram": TelegramProviderAdapter(),
+        }
 
     # ---- recipient resolution -------------------------------------------
 
@@ -611,6 +635,18 @@ class MessageDispatchService:
             select(V2VendorContact.active_channel).where(V2VendorContact.id == recipient.vendor_contact_id)
         ) or "whatsapp"
 
+    def _resolve_telegram_chat_id(self, recipient: Recipient) -> str:
+        """U10: the identifier a Telegram send actually targets - the
+        recipient's `telegram_chat_id` (U4), not `recipient.phone`. Mirrors
+        `_resolve_recipient_channel`'s employee/vendor-contact branching."""
+        if recipient.employee_id is not None:
+            return self.db.scalar(
+                select(EmployeeProfile.telegram_chat_id).where(EmployeeProfile.id == recipient.employee_id)
+            ) or ""
+        return self.db.scalar(
+            select(V2VendorContact.telegram_chat_id).where(V2VendorContact.id == recipient.vendor_contact_id)
+        ) or ""
+
     def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
         template = spec.meta_template_name
         delivery = self._existing_delivery(event.id, recipient, template)
@@ -655,15 +691,28 @@ class MessageDispatchService:
         delivery.status = "sending"
         delivery.attempt_count += 1
 
-        # Merge `components` into a copy of the event payload rather than
-        # mutating `event.payload` itself - the outbox row's payload is the
-        # durable record of what happened; `components` is dispatch-time
-        # rendering derived from it, not part of that record.
-        components = render_components(spec, event.payload or {})
-        send_payload = {**(event.payload or {}), "components": components, "language_code": spec.language}
+        if channel == "telegram":
+            # U10/KTD8: Telegram has no Meta-template registry, so it never
+            # gets the WhatsApp-shaped `components` payload below - this
+            # renders a plain-text body directly from the event's own
+            # data instead. The exact wording is a functional placeholder,
+            # not final copy - deciding real Telegram message text is
+            # follow-up work, same as WhatsApp's own TBD_ template-name
+            # placeholders were for Meta template approval.
+            send_target = self._resolve_telegram_chat_id(recipient)
+            send_payload = {"text": _render_telegram_text(template, event.payload or {})}
+        else:
+            # Merge `components` into a copy of the event payload rather
+            # than mutating `event.payload` itself - the outbox row's
+            # payload is the durable record of what happened; `components`
+            # is dispatch-time rendering derived from it, not part of that
+            # record.
+            components = render_components(spec, event.payload or {})
+            send_payload = {**(event.payload or {}), "components": components, "language_code": spec.language}
+            send_target = recipient.phone
 
         adapter = self._adapters.get(channel, self.adapter)
-        result = adapter.send(recipient_phone=recipient.phone, template=template, payload=send_payload)
+        result = adapter.send(recipient_phone=send_target, template=template, payload=send_payload)
         if result.ok:
             delivery.status = "sent"
             delivery.provider_message_id = result.provider_message_id
