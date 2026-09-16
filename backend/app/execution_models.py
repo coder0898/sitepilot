@@ -1075,6 +1075,43 @@ class TelegramInboundUpdate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class TelegramConnectToken(Base):
+    """U3 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    a one-time token issued to a specific employee or vendor contact, so
+    they can link a Telegram chat to their existing identity by opening the
+    bot's `/start <token>` link (U13). Purely schema at this point - no
+    token-generation or token-consumption logic yet.
+
+    `token` must be generated as a cryptographically random, sufficiently
+    long value (e.g. Python's `secrets.token_urlsafe(32)`) by whichever
+    later unit issues one - this is a security requirement on the data
+    this table holds, not something the schema itself can enforce.
+
+    Exclusive-recipient-pair `CheckConstraint` mirrors `MessageDelivery`'s
+    own convention (`recipient_employee_id`/`recipient_vendor_contact_id`)
+    rather than a polymorphic entity_type/entity_id pair.
+    """
+
+    __tablename__ = "telegram_connect_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "(employee_id is not null and vendor_contact_id is null) or "
+            "(employee_id is null and vendor_contact_id is not null)",
+            name="ck_v2_telegram_connect_tokens_recipient_exclusive",
+        ),
+        UniqueConstraint("token", name="uq_v2_telegram_connect_tokens_token"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="CASCADE"))
+    vendor_contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_contacts.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class GateEvidenceSession(Base):
     """Plan: WhatsApp Gate Workflow (U8, KTD4-KTD9).
 
