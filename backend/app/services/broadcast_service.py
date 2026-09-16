@@ -41,7 +41,7 @@ ALL_GROUPS = INTERNAL_GROUPS + ("vendor", "vendor_contact")
 
 def _internal_recipients(db: Session, project_id: uuid.UUID, project_role: str) -> list[dict]:
     rows = db.execute(
-        select(User)
+        select(User, EmployeeProfile.active_channel, EmployeeProfile.telegram_chat_id)
         .join(EmployeeProfile, EmployeeProfile.user_id == User.id)
         .join(V2ProjectMembership, V2ProjectMembership.employee_id == EmployeeProfile.id)
         .where(
@@ -50,13 +50,21 @@ def _internal_recipients(db: Session, project_id: uuid.UUID, project_role: str) 
             V2ProjectMembership.ends_at.is_(None),
         )
         .distinct()
-    ).scalars().all()
+    ).all()
     role_label = GROUP_ROLE_LABEL[project_role]
     results = []
-    for user in rows:
-        # Internal users always have a portal account (email is required at
-        # signup) - "no contact" only ever applies to vendors below.
-        channels = ["in_app", "email"] + (["whatsapp"] if user.phone else [])
+    for user, active_channel, telegram_chat_id in rows:
+        # U11 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md,
+        # step 1): resolve the actual contactable channel from
+        # `EmployeeProfile.active_channel` instead of inferring it purely
+        # from phone presence. Internal users always have a portal account
+        # (email is required at signup) - "no contact" only ever applies to
+        # vendors below.
+        if active_channel == "telegram" and telegram_chat_id:
+            messaging_channel = ["telegram"]
+        else:
+            messaging_channel = ["whatsapp"] if user.phone else []
+        channels = ["in_app", "email"] + messaging_channel
         results.append({
             "key": f"{project_role}:{user.id}", "recipient_type": project_role,
             "user_id": user.id, "vendor_id": None, "vendor_contact_id": None,
@@ -73,8 +81,26 @@ def _vendor_recipients(db: Session, project_id: uuid.UUID) -> list[dict]:
     vendors = db.scalars(select(V2Vendor).where(V2Vendor.id.in_(vendor_ids)).order_by(V2Vendor.name)).all()
     results = []
     for vendor in vendors:
-        phone = vendor.whatsapp or vendor.phone
-        channels = (["whatsapp"] if phone else []) + (["email"] if vendor.email else [])
+        # U11 (step 2): `active_channel` lives on `V2VendorContact`, not
+        # `V2Vendor` - resolve it from the vendor's primary contact instead
+        # of the vendor's own phone/whatsapp fields. Looked up per-vendor
+        # (not via a join) so a vendor with zero or more than one contact
+        # flagged `is_primary` falls back to the vendor's own fields below,
+        # matching today's behavior, rather than a join silently picking
+        # one row or multiplying results.
+        primary_contacts = db.scalars(
+            select(V2VendorContact).where(V2VendorContact.vendor_id == vendor.id, V2VendorContact.is_primary.is_(True))
+        ).all()
+        primary_contact = primary_contacts[0] if len(primary_contacts) == 1 else None
+        if primary_contact is not None:
+            phone = primary_contact.whatsapp or primary_contact.phone
+            if primary_contact.active_channel == "telegram" and primary_contact.telegram_chat_id:
+                channels = ["telegram"] + (["email"] if vendor.email else [])
+            else:
+                channels = (["whatsapp"] if phone else []) + (["email"] if vendor.email else [])
+        else:
+            phone = vendor.whatsapp or vendor.phone
+            channels = (["whatsapp"] if phone else []) + (["email"] if vendor.email else [])
         results.append({
             "key": f"vendor:{vendor.id}", "recipient_type": "vendor",
             "user_id": None, "vendor_id": vendor.id, "vendor_contact_id": None,
@@ -99,7 +125,11 @@ def _vendor_contact_recipients(db: Session, project_id: uuid.UUID) -> list[dict]
     for contact, vendor in rows:
         # V2VendorContact carries no email column - only phone/whatsapp.
         phone = contact.whatsapp or contact.phone
-        channels = ["whatsapp"] if phone else []
+        # U11 (step 3): same active_channel resolution as steps 1-2.
+        if contact.active_channel == "telegram" and contact.telegram_chat_id:
+            channels = ["telegram"]
+        else:
+            channels = ["whatsapp"] if phone else []
         results.append({
             "key": f"vendor_contact:{contact.id}", "recipient_type": "vendor_contact",
             "user_id": None, "vendor_id": vendor.id, "vendor_contact_id": contact.id,
