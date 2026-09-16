@@ -503,7 +503,7 @@ class TaskProgressUpdate(Base):
     __tablename__ = "task_progress_updates"
     __table_args__ = (
         CheckConstraint("update_type in ('note', 'evidence')", name="ck_v2_task_progress_updates_update_type"),
-        CheckConstraint("source in ('portal', 'whatsapp', 'system')", name="ck_v2_task_progress_updates_source"),
+        CheckConstraint("source in ('portal', 'whatsapp', 'telegram', 'system')", name="ck_v2_task_progress_updates_source"),
         Index("ix_v2_task_progress_updates_task", "task_id"),
         Index("ix_v2_task_progress_updates_project", "project_id"),
         {"schema": V2_SCHEMA},

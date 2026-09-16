@@ -231,7 +231,7 @@ class VendorAcknowledgement(Base):
             name="ck_v2_vendor_acknowledgements_response",
         ),
         CheckConstraint(
-            "channel in ('portal', 'whatsapp', 'system')", name="ck_v2_vendor_acknowledgements_channel",
+            "channel in ('portal', 'whatsapp', 'telegram', 'system')", name="ck_v2_vendor_acknowledgements_channel",
         ),
         Index("ix_v2_vendor_acknowledgements_assignment", "task_vendor_assignment_id"),
         {"schema": V2_SCHEMA},
