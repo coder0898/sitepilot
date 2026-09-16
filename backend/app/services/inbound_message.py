@@ -222,6 +222,16 @@ EmployeeIdentity = tuple[User, EmployeeProfile]
 class InboundMessageService:
     def __init__(self, db: Session):
         self.db = db
+        # U14 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md,
+        # KTD7): `TelegramInboundService` below subclasses this service to
+        # reuse its actual command grammar and business-service calls
+        # (`_handle_employee`, `_handle_vendor_contact`, every
+        # `_handle_gate_*` method) instead of duplicating them. These two
+        # attributes are the only channel-specific values inside that
+        # shared logic; the subclass overrides them, everything else is
+        # identical for both channels.
+        self._inbound_channel = "whatsapp"
+        self._inbound_channel_label = "WhatsApp"
 
     # ---- entry point ----------------------------------------------------
 
@@ -347,7 +357,8 @@ class InboundMessageService:
                 # would make - transition() owns all role/dependency/state
                 # checks itself; nothing here duplicates that logic.
                 TaskLifecycleService(self.db).transition(
-                    task.project_id, task.id, target_status, actor=user, reason="Reported via WhatsApp.",
+                    task.project_id, task.id, target_status, actor=user,
+                    reason=f"Reported via {self._inbound_channel_label}.",
                 )
             except HTTPException as exc:
                 return self._save(
@@ -843,7 +854,7 @@ class InboundMessageService:
             # is the correct `actor` here.
             VendorAcknowledgementService(self.db).record_acknowledgement(
                 assignment.project_id, assignment.task_id, assignment.id,
-                response=_RESPONSE_BY_COMMAND[keyword], actor=pm_actor, channel="whatsapp", note=note,
+                response=_RESPONSE_BY_COMMAND[keyword], actor=pm_actor, channel=self._inbound_channel, note=note,
             )
         except HTTPException as exc:
             return self._save(

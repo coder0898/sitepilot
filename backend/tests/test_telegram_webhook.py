@@ -20,8 +20,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.database import get_db
-from app.execution_models import TelegramConnectToken, TelegramInboundUpdate
+from app.execution_models import InboundMessage, TelegramConnectToken, TelegramInboundUpdate
+from app.models import EmployeeProfile, User
 from app.routes.telegram_webhook import router as telegram_webhook_router
+from app.vendor_models import V2VendorContact
 
 
 @compiles(JSONB, "sqlite")
@@ -50,6 +52,16 @@ class TelegramWebhookApiTests(unittest.TestCase):
         # file's example text happens to be one) - create it here too, even
         # though this file's scenarios don't otherwise exercise U13.
         TelegramConnectToken.__table__.create(self.engine)
+        # U14 wired command-parity dispatch into this route for any other
+        # non-empty text - it reads/writes the shared inbound_messages
+        # table (unmatched-identity outcome, since no identity is seeded
+        # here) and queries User/EmployeeProfile/V2VendorContact for
+        # identity matching, even though this file's scenarios don't
+        # exercise U14 either.
+        InboundMessage.__table__.create(self.engine)
+        User.__table__.create(self.engine)
+        EmployeeProfile.__table__.create(self.engine)
+        V2VendorContact.__table__.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
