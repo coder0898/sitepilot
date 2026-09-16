@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.database import get_db
-from app.execution_models import TelegramInboundUpdate
+from app.execution_models import TelegramConnectToken, TelegramInboundUpdate
 from app.routes.telegram_webhook import router as telegram_webhook_router
 
 
@@ -45,6 +45,11 @@ class TelegramWebhookApiTests(unittest.TestCase):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
 
         TelegramInboundUpdate.__table__.create(self.engine)
+        # U13 wired /start handling into this route, which reads the
+        # connect-token table when a message starts with "/start" (this
+        # file's example text happens to be one) - create it here too, even
+        # though this file's scenarios don't otherwise exercise U13.
+        TelegramConnectToken.__table__.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 

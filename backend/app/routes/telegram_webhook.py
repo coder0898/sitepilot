@@ -12,13 +12,15 @@ timing-attack surface on the secret value itself. If the header is missing,
 this returns 401 IMMEDIATELY - before the JSON body is parsed, before any
 database query, before any `telegram_inbound_updates` row is written.
 
-This unit only verifies and stores the raw update - no identity matching,
-no command dispatch, no reply. That logic is U13 (connect flow) and U14
-(command parity). Telegram's own `update_id` is stored alongside the raw
-update so those later units can detect and reject a duplicate delivery
-(Telegram's Bot API redelivers on a slow/failed response, the same
+This unit verifies and stores the raw update, then (U13) recognizes a
+`/start <token>` message and hands it to `TelegramConnectService` - full
+command parity (U14) is a separate module, `telegram_inbound.py`, wired
+in after this. Telegram's own `update_id` is stored alongside the raw
+update, and a duplicate delivery short-circuits BEFORE any `/start`
+processing runs (the `IntegrityError` branch below returns early) -
+Telegram's Bot API redelivers on a slow/failed response, the same
 at-least-once behavior WhatsApp's `InboundMessage.provider_message_id`
-uniqueness already guards against).
+uniqueness already guards against.
 
 Expected JSON payload shape - Telegram's real Bot API update
 (https://core.telegram.org/bots/api#update), the two shapes this unit
@@ -46,6 +48,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.execution_models import TelegramInboundUpdate
+from app.services.telegram_connect import TelegramConnectService
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +112,16 @@ async def receive_inbound_telegram_update(request: Request, db: Session = Depend
         db.commit()
     except IntegrityError:
         # Duplicate update_id - Telegram redelivered the same update. No-op,
-        # not an error (see module docstring).
+        # not an error (see module docstring). Returning here, before any
+        # /start processing below, is what U13's duplicate-delivery
+        # protection actually is - a retried update never reaches
+        # TelegramConnectService a second time.
         db.rollback()
+        return {"status": "received"}
+
+    # U13: connect-flow commands. Full command parity is a separate module
+    # (telegram_inbound.py, U14), wired in once identities can be connected.
+    if message_text and message_text.startswith("/start"):
+        TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text)
 
     return {"status": "received"}
