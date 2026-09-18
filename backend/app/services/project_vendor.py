@@ -111,13 +111,21 @@ class ProjectVendorService:
         # project.member_added discipline - a later rollback in this same
         # commit would take the event with it. Keyed on the mapping's own id
         # since a project can be mapped to many vendors over time.
-        OutboxService(self.db).emit(
-            event_type="project.vendor_mapped",
-            aggregate_type="project",
-            aggregate_id=project.id,
-            payload={"project_id": str(project.id), "vendor_id": str(vendor.id)},
-            idempotency_key=f"project:{project.id}:project.vendor_mapped:{mapping.id}",
-        )
+        #
+        # Gated to Active projects only, same rule and same reason as
+        # `assign_membership`'s `project.member_added` guard: this event
+        # fans out to every current project member plus every mapped
+        # vendor (`_ALL_MEMBERS_PROJECT_EVENTS`), and a Draft project's
+        # vendor mapping is planning, not something the execution team
+        # should be notified about yet.
+        if project.status == "active":
+            OutboxService(self.db).emit(
+                event_type="project.vendor_mapped",
+                aggregate_type="project",
+                aggregate_id=project.id,
+                payload={"project_id": str(project.id), "vendor_id": str(vendor.id)},
+                idempotency_key=f"project:{project.id}:project.vendor_mapped:{mapping.id}",
+            )
 
         self.db.commit()
         self.db.refresh(mapping)

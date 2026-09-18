@@ -359,6 +359,7 @@ class InboundMessageService:
                 TaskLifecycleService(self.db).transition(
                     task.project_id, task.id, target_status, actor=user,
                     reason=f"Reported via {self._inbound_channel_label}.",
+                    source=self._inbound_channel,
                 )
             except HTTPException as exc:
                 return self._save(
@@ -617,7 +618,7 @@ class InboundMessageService:
             # make (U8/KTD17) - close_session owns the assignee-only
             # re-check (KTD7) and the empty-session guard (KTD9) itself;
             # nothing here duplicates either.
-            service.close_session(approval.project_id, session, actor=user)
+            service.close_session(approval.project_id, session, actor=user, source=self._inbound_channel)
         except HTTPException as exc:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
@@ -683,6 +684,7 @@ class InboundMessageService:
             # validation itself; nothing here duplicates or narrows either.
             ProjectGateDecisionService(self.db).decide(
                 approval.project_id, approval.id, decision=decision, actor=user, reason=reason,
+                source=self._inbound_channel,
             )
         except HTTPException as exc:
             return self._save(

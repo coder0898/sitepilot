@@ -8,12 +8,23 @@ a person.
 Rate-limiting and duplicate-delivery protection reuse `TelegramInboundUpdate`
 (U2) - every inbound message is already stored there, so this counts
 recent `/start` attempts from that count rather than adding a new table.
+
+Local-testing follow-up (2026-09-18): `generate_code` below is the
+token-ISSUING half this module was missing entirely - `TelegramConnectToken`
+(U3) only ever had schema plus this file's *consuming* half (`handle_start`).
+Nothing generated a real token before this, so nobody could actually
+complete the connect flow through the product; a prior local test session
+worked around it with a one-off DB script. Exposed via
+`app/routes/telegram_connect_codes.py`.
 """
 
 from __future__ import annotations
 
+import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +32,11 @@ from app.execution_models import TelegramConnectToken, TelegramInboundUpdate
 from app.models import EmployeeProfile
 from app.services.telegram_provider import TelegramProviderAdapter
 from app.vendor_models import V2VendorContact
+
+# A connect code is single-use and short-lived on purpose - it only ever
+# needs to survive the gap between an Admin generating it and the person
+# opening Telegram and sending it, not a general-purpose credential.
+_CODE_TTL_MINUTES = 15
 
 # 5 attempts per 5 minutes: generous enough that a person mistyping a
 # token once or twice is never blocked, tight enough to bound how many
@@ -37,6 +53,54 @@ _SUCCESS_REPLY = "You're connected! You'll now receive messages here on Telegram
 class TelegramConnectService:
     def __init__(self, db: Session):
         self.db = db
+
+    def generate_code(
+        self,
+        *,
+        employee_id: uuid.UUID | None = None,
+        vendor_contact_id: uuid.UUID | None = None,
+    ) -> TelegramConnectToken:
+        """Issues a fresh one-time connect code for exactly one target -
+        the missing generation half of the `/start <token>` flow this
+        class only ever consumed (see module docstring).
+
+        Any previous unused (not necessarily expired) code for the SAME
+        target is invalidated first (`used_at` set, without ever setting
+        `telegram_chat_id` from it), so at most one code is ever live per
+        person - showing an Admin two "currently valid" codes for the same
+        person is confusing, and leaving the old one alive would let
+        either one work, silently doubling the guessable surface for no
+        reason.
+        """
+        if (employee_id is None) == (vendor_contact_id is None):
+            raise ValueError("Exactly one of employee_id or vendor_contact_id must be set.")
+
+        if employee_id is not None:
+            target_exists = self.db.get(EmployeeProfile, employee_id) is not None
+            match_filter = TelegramConnectToken.employee_id == employee_id
+        else:
+            target_exists = self.db.get(V2VendorContact, vendor_contact_id) is not None
+            match_filter = TelegramConnectToken.vendor_contact_id == vendor_contact_id
+        if not target_exists:
+            raise HTTPException(404, "Person not found.")
+
+        now = datetime.now(timezone.utc)
+        stale_tokens = self.db.scalars(
+            select(TelegramConnectToken).where(match_filter, TelegramConnectToken.used_at.is_(None))
+        ).all()
+        for stale in stale_tokens:
+            stale.used_at = now
+
+        token = TelegramConnectToken(
+            token=secrets.token_urlsafe(8),
+            employee_id=employee_id,
+            vendor_contact_id=vendor_contact_id,
+            expires_at=now + timedelta(minutes=_CODE_TTL_MINUTES),
+        )
+        self.db.add(token)
+        self.db.commit()
+        self.db.refresh(token)
+        return token
 
     def handle_start(self, *, chat_id: str, message_text: str) -> None:
         """Processes a `/start <token>` message. Never raises - every

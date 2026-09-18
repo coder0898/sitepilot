@@ -216,6 +216,15 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
             f"/api/v2/projects/{project_id}/vendors", json={"vendor_id": str(vendor_id)},
         )
 
+    def activate(self, project_id):
+        # This file's harness doesn't set up the full activation chain
+        # (baseline locking, task instantiation) - only project.status
+        # matters to the code path under test here (map_vendor's Active-
+        # only outbox guard), so flip it directly, same convention as
+        # test_project_manual_task_v2.py's setup.
+        with self.Session.begin() as session:
+            session.get(V2Project, uuid.UUID(project_id)).status = "active"
+
     # ---- happy path -----------------------------------------------------
 
     def test_pm_maps_active_vendor_to_project(self):
@@ -320,9 +329,30 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
         self.assertEqual(response.json(), [])
 
     # ---- U3 (WhatsApp gate workflow): project.vendor_mapped emission -----
+    #
+    # Local-testing follow-up (2026-09-18): a Draft project is planning/
+    # setup - mapping a vendor here must NOT notify the execution team (see
+    # `project_vendor.map_vendor`'s Active-only guard). This replaces a
+    # prior version of this test that asserted the OPPOSITE (an event on a
+    # Draft-phase mapping), which was itself proof of the bug being fixed,
+    # not a spec.
 
-    def test_mapping_a_vendor_emits_project_vendor_mapped_event(self):
+    def test_mapping_a_vendor_on_a_draft_project_emits_no_event(self):
         project = self.create_draft()
+        self.act_as_pm()
+
+        response = self.map_vendor(project["id"], self.main_vendor_id)
+        self.assertEqual(response.status_code, 200, response.text)
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.vendor_mapped")
+            ).all()
+            self.assertEqual(events, [])
+
+    def test_mapping_a_vendor_on_an_active_project_emits_project_vendor_mapped_event(self):
+        project = self.create_draft()
+        self.activate(project["id"])
         self.act_as_pm()
 
         response = self.map_vendor(project["id"], self.main_vendor_id)
