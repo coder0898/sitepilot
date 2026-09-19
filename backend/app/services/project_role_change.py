@@ -222,20 +222,28 @@ class ProjectRoleChangeService:
             None, self._role_change_json(change), change.id,
         )
         try:
-            OutboxService(self.db).emit(
-                event_type="project.role_change_requested",
-                aggregate_type="project",
-                aggregate_id=project.id,
-                payload={
-                    "project_id": str(project.id),
-                    "change_id": str(change.id),
-                    "role_type": role_type,
-                    "change_type": change_type,
-                    "replacement_employee_id": str(replacement_employee_id) if replacement_employee_id else None,
-                    "reason_code": clean_reason_code,
-                },
-                idempotency_key=f"project:{project.id}:project.role_change_requested:{change.id}",
-            )
+            # Gated to Active projects only, same rule as
+            # `project.member_added`/`project.vendor_mapped`
+            # (routes/projects_v2.py, project_vendor.py): `set_membership`
+            # lets this request flow run during Draft too (see its own
+            # comment on why), but a Draft project is still planning/setup
+            # - nobody should get an operational Telegram/WhatsApp ping
+            # about a role-change request until the project is live.
+            if project.status == "active":
+                OutboxService(self.db).emit(
+                    event_type="project.role_change_requested",
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    payload={
+                        "project_id": str(project.id),
+                        "change_id": str(change.id),
+                        "role_type": role_type,
+                        "change_type": change_type,
+                        "replacement_employee_id": str(replacement_employee_id) if replacement_employee_id else None,
+                        "reason_code": clean_reason_code,
+                    },
+                    idempotency_key=f"project:{project.id}:project.role_change_requested:{change.id}",
+                )
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -297,19 +305,21 @@ class ProjectRoleChangeService:
         )
 
         try:
-            OutboxService(self.db).emit(
-                event_type="project.role_change_approved",
-                aggregate_type="project",
-                aggregate_id=project.id,
-                payload={
-                    "project_id": str(project.id),
-                    "change_id": str(change.id),
-                    "role_type": change.role_type,
-                    "change_type": change.change_type,
-                    "membership_id": str(result_membership.id),
-                },
-                idempotency_key=f"project:{project.id}:project.role_change_approved:{change.id}",
-            )
+            # Same Draft-mode gate as the request emit above.
+            if project.status == "active":
+                OutboxService(self.db).emit(
+                    event_type="project.role_change_approved",
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    payload={
+                        "project_id": str(project.id),
+                        "change_id": str(change.id),
+                        "role_type": change.role_type,
+                        "change_type": change.change_type,
+                        "membership_id": str(result_membership.id),
+                    },
+                    idempotency_key=f"project:{project.id}:project.role_change_approved:{change.id}",
+                )
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -346,18 +356,20 @@ class ProjectRoleChangeService:
 
         self._add_audit(project, actor, "PROJECT_ROLE_CHANGE_REJECTED", clean_reason, before, self._role_change_json(change), change.id)
 
-        OutboxService(self.db).emit(
-            event_type="project.role_change_rejected",
-            aggregate_type="project",
-            aggregate_id=project.id,
-            payload={
-                "project_id": str(project.id),
-                "change_id": str(change.id),
-                "role_type": change.role_type,
-                "reason": clean_reason,
-            },
-            idempotency_key=f"project:{project.id}:project.role_change_rejected:{change.id}",
-        )
+        # Same Draft-mode gate as the request/approve emits above.
+        if project.status == "active":
+            OutboxService(self.db).emit(
+                event_type="project.role_change_rejected",
+                aggregate_type="project",
+                aggregate_id=project.id,
+                payload={
+                    "project_id": str(project.id),
+                    "change_id": str(change.id),
+                    "role_type": change.role_type,
+                    "reason": clean_reason,
+                },
+                idempotency_key=f"project:{project.id}:project.role_change_rejected:{change.id}",
+            )
 
         self.db.commit()
         self.db.refresh(change)

@@ -306,6 +306,49 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
             self.assertIn("PROJECT_ROLE_CHANGE_REQUESTED", audit_actions)
             self.assertIn("PROJECT_ROLE_CHANGE_APPROVED", audit_actions)
 
+    def test_role_change_requested_on_a_draft_project_emits_no_event(self):
+        """Draft-mode messaging rule (same as project.member_added/
+        project.vendor_mapped): `set_membership` deliberately still routes
+        PM/Supervisor changes through this request/approve flow while the
+        project is Draft (see its own comment - several activation tests
+        rely on freely reassigning an accountable role pre-activation), but
+        nobody should get an operational notification about it before the
+        project goes live."""
+        project = self.create_draft()
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+
+        self.act_as_admin()
+        requested = self.request_role_change(project["id"], "project_manager", replacement_id)
+        self.assertEqual(requested.status_code, 200, requested.text)
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.role_change_requested")
+            ).all()
+            self.assertEqual(events, [])
+
+    def test_role_change_approved_on_an_active_project_emits_event(self):
+        project = self.create_draft()
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+
+        self.act_as_admin()
+        self.activate(project["id"])
+        requested = self.request_role_change(project["id"], "project_manager", replacement_id)
+        self.assertEqual(requested.status_code, 200, requested.text)
+
+        approved = self.approve_role_change(project["id"], requested.json()["id"])
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        with self.Session() as session:
+            requested_events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.role_change_requested")
+            ).all()
+            approved_events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.role_change_approved")
+            ).all()
+            self.assertEqual(len(requested_events), 1)
+            self.assertEqual(len(approved_events), 1)
+
     # ---- happy path: active PM requests Supervisor replacement --------------
 
     def test_active_pm_requests_supervisor_replacement_admin_approves(self):

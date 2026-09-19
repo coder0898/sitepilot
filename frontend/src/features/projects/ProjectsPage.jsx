@@ -126,6 +126,22 @@ export function ProjectsPage({ user, action }) {
     if (fallback) setRoute({ project: fallback.code, pane: route.pane || "overview" }, { replace: true });
   }, [loading, selected, filtered, projects]);
 
+  // `selected` is looked up against the full `projects` array, ignoring
+  // `filter` entirely - so it can point at a project the left pane (which
+  // DOES respect `filter`) no longer lists at all: switching the filter
+  // chip away from a project's current status, a lifecycle transition
+  // (activate/hold/complete/archive) moving it out of the filter you're
+  // still on, a manual refresh, or even a fresh page load landing on a
+  // route left over from before. Any of those needs the same recovery:
+  // clear the selection so the fallback effect above picks the next
+  // visible project (or the true empty state) instead of leaving a ghost
+  // detail pane for a project the list says doesn't exist.
+  useEffect(() => {
+    if (loading || !selected) return;
+    if (filtered.some(item => item.id === selected.id)) return;
+    setRoute({ project: "", pane: "" }, { replace: true });
+  }, [loading, selected, filtered]);
+
   const attentionByProject = useMemo(() => {
     if (!attention) return {};
     return attention.reduce((totals, item) => ({ ...totals, [item.project_id]: (totals[item.project_id] || 0) + 1 }), {});
