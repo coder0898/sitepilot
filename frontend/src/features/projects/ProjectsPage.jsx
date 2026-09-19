@@ -120,11 +120,19 @@ export function ProjectsPage({ user, action }) {
 
   // Open straight into a project rather than a dead "nothing selected"
   // pane. Replace, not push, so Back does not walk through auto-selections.
+  // Must stick to `filtered[0]` only - reaching into the full `projects`
+  // array for "any non-archived project" when the current filter is empty
+  // used to fight the reconciliation effect below: that effect clears a
+  // selection that falls outside the filter, this one immediately put it
+  // right back (since it was the only non-archived project around), and
+  // the two looped forever - the exact "buffering never settles" bug on
+  // any empty tab (Active/On hold/Completed) while a Draft project
+  // existed. An empty filter now genuinely shows the empty state.
   useEffect(() => {
     if (loading || selected) return;
-    const fallback = filtered[0] || projects.find(item => item.status !== "archived");
+    const fallback = filtered[0];
     if (fallback) setRoute({ project: fallback.code, pane: route.pane || "overview" }, { replace: true });
-  }, [loading, selected, filtered, projects]);
+  }, [loading, selected, filtered]);
 
   // `selected` is looked up against the full `projects` array, ignoring
   // `filter` entirely - so it can point at a project the left pane (which
