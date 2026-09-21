@@ -16,6 +16,16 @@ Nothing generated a real token before this, so nobody could actually
 complete the connect flow through the product; a prior local test session
 worked around it with a one-off DB script. Exposed via
 `app/routes/telegram_connect_codes.py`.
+
+Local-testing follow-up (2026-09-21): `unlink_employee` frees an employee's
+`telegram_chat_id` so a different employee can connect the same physical
+Telegram account - `telegram_chat_id` is unique at the DB level, so two
+employees can never hold the same chat id at once, and local testing has
+only one real Telegram account to test with. Admin-only, mirrors
+`ChannelToggleService`'s audit pattern (`app.services.channel_toggle`).
+Deliberately narrow: it only clears `telegram_chat_id` on `EmployeeProfile`
+- it never touches `active_channel`, role, membership, or any other
+employee data, and never offboards/deletes anyone.
 """
 
 from __future__ import annotations
@@ -29,7 +39,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.execution_models import TelegramConnectToken, TelegramInboundUpdate
-from app.models import EmployeeProfile
+from app.models import EmployeeProfile, User
+from app.project_models import V2AuditEvent
 from app.services.telegram_provider import TelegramProviderAdapter
 from app.vendor_models import V2VendorContact
 
@@ -101,6 +112,33 @@ class TelegramConnectService:
         self.db.commit()
         self.db.refresh(token)
         return token
+
+    def unlink_employee(self, *, employee_id: uuid.UUID, actor: User) -> EmployeeProfile:
+        """Clears `telegram_chat_id` on one employee, freeing that chat id
+        for a different employee to connect (unique constraint). Idempotent:
+        unlinking an already-unconnected employee is a no-op success with
+        no audit row, same convention `ChannelToggleService._toggle_one`
+        uses for a no-op switch."""
+        profile = self.db.get(EmployeeProfile, employee_id)
+        if profile is None:
+            raise HTTPException(404, "Employee not found.")
+
+        if not profile.telegram_chat_id:
+            return profile
+
+        profile.telegram_chat_id = None
+        self.db.add(V2AuditEvent(
+            actor_user_id=actor.id,
+            action="telegram_unlinked",
+            entity_type="employee",
+            entity_id=profile.id,
+            before_json={"telegram_connected": True},
+            after_json={"telegram_connected": False},
+            reason=f"Telegram unlinked by {actor.name}.",
+        ))
+        self.db.commit()
+        self.db.refresh(profile)
+        return profile
 
     def handle_start(self, *, chat_id: str, message_text: str) -> None:
         """Processes a `/start <token>` message. Never raises - every

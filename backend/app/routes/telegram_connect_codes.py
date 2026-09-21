@@ -48,3 +48,21 @@ def generate_connect_code(
         "expires_at": token.expires_at.isoformat(),
         "start_command": f"/start {token.token}",
     }
+
+
+class UnlinkIn(BaseModel):
+    employee_id: uuid.UUID
+
+
+@router.post("/unlink")
+def unlink_telegram(
+    payload: UnlinkIn,
+    actor: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Frees this employee's `telegram_chat_id` so a different employee can
+    connect the same Telegram account. Never touches `active_channel`,
+    role, membership, or any other field - see `TelegramConnectService.
+    unlink_employee`'s docstring."""
+    profile = TelegramConnectService(db).unlink_employee(employee_id=payload.employee_id, actor=actor)
+    return {"employee_id": str(profile.id), "telegram_connected": bool(profile.telegram_chat_id)}

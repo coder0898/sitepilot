@@ -5,4 +5,8 @@ export const telegramConnectApi = {
     method: "POST",
     body: JSON.stringify({ employee_id: employeeId }),
   }),
+  unlink: (employeeId) => api("/api/v2/telegram/unlink", {
+    method: "POST",
+    body: JSON.stringify({ employee_id: employeeId }),
+  }),
 };

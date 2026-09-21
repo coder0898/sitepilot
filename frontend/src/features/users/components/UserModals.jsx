@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertTriangle, ArrowLeftRight, Check, Clock3, KeyRound, MessageCircle, RotateCcw, Save, ShieldCheck, Trash2, UserPlus, UserX } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeftRight, Check, Clock3, KeyRound, MessageCircle, RotateCcw, Save, ShieldCheck, Trash2, Unlink, UserPlus, UserX } from "lucide-react";
 import { channelToggleApi } from "../../../api/channelToggleApi";
 import { telegramConnectApi } from "../../../api/telegramConnectApi";
 import { usersApi } from "../../../api/usersApi";
@@ -32,6 +32,8 @@ function ChannelPanel({ profile, phone }) {
   const [codeBusy, setCodeBusy] = useState(false);
   const [codeError, setCodeError] = useState("");
   const [connectCode, setConnectCode] = useState(null);
+  const [unlinkBusy, setUnlinkBusy] = useState(false);
+  const [unlinkError, setUnlinkError] = useState("");
 
   if (!profile?.id) return null;
 
@@ -55,6 +57,23 @@ function ChannelPanel({ profile, phone }) {
       setError(err.message || "Could not switch channel.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function unlinkTelegram() {
+    // eslint-disable-next-line no-alert -- deliberately simple: this is an
+    // Admin-only, low-frequency identity action, not worth a full modal.
+    if (!window.confirm(`Unlink Telegram from this person? They'll need a new connect code to reconnect, and this frees their chat for someone else to use.`)) return;
+    setUnlinkBusy(true);
+    setUnlinkError("");
+    try {
+      await telegramConnectApi.unlink(profile.id);
+      setConnected(false);
+      setConnectCode(null);
+    } catch (err) {
+      setUnlinkError(err.message || "Could not unlink Telegram.");
+    } finally {
+      setUnlinkBusy(false);
     }
   }
 
@@ -84,9 +103,15 @@ function ChannelPanel({ profile, phone }) {
         </div>
         {!canSwitchToOther && <p className="mt-2 text-xs font-semibold text-amber-700">They must connect Telegram (below) before they can be switched over.</p>}
         {error && <p className="mt-2 text-xs font-semibold text-rose-600">{error}</p>}
-        <Button type="button" variant="secondary" className="mt-3" loading={busy} disabled={!canSwitchToOther} onClick={() => switchTo(other)}>
-          <ArrowLeftRight size={16}/>Switch to {otherLabel}
-        </Button>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button type="button" variant="secondary" loading={busy} disabled={!canSwitchToOther} onClick={() => switchTo(other)}>
+            <ArrowLeftRight size={16}/>Switch to {otherLabel}
+          </Button>
+          {connected && <Button type="button" variant="ghost" loading={unlinkBusy} onClick={unlinkTelegram}>
+            <Unlink size={16}/>Unlink Telegram
+          </Button>}
+        </div>
+        {unlinkError && <p className="mt-2 text-xs font-semibold text-rose-600">{unlinkError}</p>}
 
         {!connected && <div className="mt-4 rounded-2xl border border-dashed border-blue-200 bg-blue-50/60 p-3">
           <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[.14em] text-blue-700"><KeyRound size={14}/>Connect Telegram</p>
