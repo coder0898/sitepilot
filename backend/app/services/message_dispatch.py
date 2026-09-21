@@ -108,6 +108,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services.message_templates import TemplateSpec, render_components, resolve
+from app.services.telegram_render import render_telegram_message
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
 
 # The only two `V2ProjectMembership.project_role` values this service ever
@@ -201,15 +202,6 @@ class Recipient:
     vendor_contact_id: uuid.UUID | None
     phone: str
     channel: str = "whatsapp"
-
-
-def _render_telegram_text(template: str, payload: dict) -> str:
-    """U10/KTD8: a functional placeholder for Telegram message text -
-    plain key/value lines, not final copy. Real Telegram message wording
-    is deliberately deferred, the same way WhatsApp's own `TBD_` template
-    placeholders defer real template copy until content is approved."""
-    lines = [f"{key}: {value}" for key, value in payload.items()]
-    return "\n".join(lines) if lines else template
 
 
 class WhatsAppProviderAdapter(Protocol):
@@ -694,13 +686,13 @@ class MessageDispatchService:
         if channel == "telegram":
             # U10/KTD8: Telegram has no Meta-template registry, so it never
             # gets the WhatsApp-shaped `components` payload below - this
-            # renders a plain-text body directly from the event's own
-            # data instead. The exact wording is a functional placeholder,
-            # not final copy - deciding real Telegram message text is
-            # follow-up work, same as WhatsApp's own TBD_ template-name
-            # placeholders were for Meta template approval.
+            # renders human-readable plain text via `telegram_render.py`
+            # instead (event/data -> shared backend -> Telegram renderer ->
+            # message; no Telegram-specific business logic here).
             send_target = self._resolve_telegram_chat_id(recipient)
-            send_payload = {"text": _render_telegram_text(template, event.payload or {})}
+            send_payload = {
+                "text": render_telegram_message(self.db, event.event_type, event.payload or {}, recipient.employee_id),
+            }
         else:
             # Merge `components` into a copy of the event payload rather
             # than mutating `event.payload` itself - the outbox row's
