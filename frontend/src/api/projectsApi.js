@@ -52,6 +52,12 @@ export const projectsApi = {
   rejectRoleChange: (projectId, changeId, reason) => api(`/api/v2/projects/${projectId}/role-changes/${changeId}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
   reassignmentRequired: projectId => api(`/api/v2/projects/${projectId}/role-changes/reassignment-required`),
   setStatus: (projectId, status, reason) => api(`/api/v2/projects/${projectId}/status`, { method: "POST", body: JSON.stringify({ status, reason }) }),
+  // Draft -> active must go through the dedicated /activate route, not
+  // /status: only /activate emits the project.activated outbox event that
+  // drives the Telegram/WhatsApp notification (backend/app/routes/projects_v2.py).
+  // /status's own draft->active branch flips the same fields but was left
+  // deliberately unmodified when /activate was added, so it never notifies.
+  activate: (projectId, reason) => api(`/api/v2/projects/${projectId}/activate`, { method: "POST", body: JSON.stringify({ reason }) }),
   // Archived is terminal in setStatus; this is the only way back out of it.
   restore: (projectId, reason) => api(`/api/v2/projects/${projectId}/restore`, { method: "POST", body: JSON.stringify({ reason }) }),
   remove: (projectId, payload) => api(`/api/v2/projects/${projectId}`, { method: "DELETE", body: JSON.stringify(payload) }),
