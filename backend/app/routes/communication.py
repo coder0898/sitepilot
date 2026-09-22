@@ -34,6 +34,7 @@ from app.auth import current_user, require_roles
 from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
+from app.routes.project_vendors_v2 import _ensure_phase_categories
 from app.schemas.requests import ContractorProfileIn, ContractorRelationshipIn, VendorContactIn
 from app.vendor_models import (
     ProjectVendor,
@@ -118,6 +119,13 @@ def set_vendor_capabilities(db: Session, vendor_id: uuid.UUID, category_ids: lis
 
 @router.get("")
 def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    # Idempotently ensures the flat capability-category list exists before
+    # this route's own "Add main vendor" picker reads it - previously only
+    # /api/v2/vendors/capability-categories (the Execution page's vendor
+    # panel) triggered this seeding, so a fresh environment where nobody
+    # had visited that other screen yet showed "No matching categories"
+    # here despite published template phases existing to seed from.
+    _ensure_phase_categories(db)
     projects = visible_v2_projects(user, db)
     project_ids = {project.id for project in projects}
 
