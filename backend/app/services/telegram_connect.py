@@ -140,6 +140,30 @@ class TelegramConnectService:
         self.db.refresh(profile)
         return profile
 
+    def unlink_vendor_contact(self, *, vendor_contact_id: uuid.UUID, actor: User) -> V2VendorContact:
+        """Sibling of `unlink_employee`, same idempotent/audit shape, for a
+        `V2VendorContact` instead of an `EmployeeProfile`."""
+        contact = self.db.get(V2VendorContact, vendor_contact_id)
+        if contact is None:
+            raise HTTPException(404, "Vendor contact not found.")
+
+        if not contact.telegram_chat_id:
+            return contact
+
+        contact.telegram_chat_id = None
+        self.db.add(V2AuditEvent(
+            actor_user_id=actor.id,
+            action="telegram_unlinked",
+            entity_type="vendor_contact",
+            entity_id=contact.id,
+            before_json={"telegram_connected": True},
+            after_json={"telegram_connected": False},
+            reason=f"Telegram unlinked by {actor.name}.",
+        ))
+        self.db.commit()
+        self.db.refresh(contact)
+        return contact
+
     def handle_start(self, *, chat_id: str, message_text: str) -> None:
         """Processes a `/start <token>` message. Never raises - every
         outcome (rate-limited, invalid, success) replies to the chat and

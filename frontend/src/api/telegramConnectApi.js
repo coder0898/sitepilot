@@ -9,4 +9,12 @@ export const telegramConnectApi = {
     method: "POST",
     body: JSON.stringify({ employee_id: employeeId }),
   }),
+  generateVendorContactCode: (vendorContactId) => api("/api/v2/telegram/connect-code", {
+    method: "POST",
+    body: JSON.stringify({ vendor_contact_id: vendorContactId }),
+  }),
+  unlinkVendorContact: (vendorContactId) => api("/api/v2/telegram/unlink", {
+    method: "POST",
+    body: JSON.stringify({ vendor_contact_id: vendorContactId }),
+  }),
 };

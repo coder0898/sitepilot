@@ -17,6 +17,7 @@ from sqlalchemy.pool import StaticPool
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent
 from app.services.telegram_connect import TelegramConnectService
+from app.vendor_models import V2Vendor, V2VendorContact
 
 ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 EMPLOYEE_A_USER_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
@@ -113,6 +114,98 @@ class TelegramUnlinkTests(unittest.TestCase):
         self.db.commit()
 
         refreshed_b = self.db.get(EmployeeProfile, self.employee_b.id)
+        self.assertEqual(refreshed_b.telegram_chat_id, "555")
+
+
+class VendorContactTelegramUnlinkTests(unittest.TestCase):
+    """Sibling of TelegramUnlinkTests, mirroring it exactly for
+    `unlink_vendor_contact` - same idempotent/audit behaviour, for a
+    `V2VendorContact` instead of an `EmployeeProfile`."""
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        )
+
+        @event.listens_for(self.engine, "connect")
+        def attach_schema(dbapi_connection, _connection_record):
+            dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
+
+        for table in (User.__table__, V2AuditEvent.__table__, V2Vendor.__table__, V2VendorContact.__table__):
+            table.create(self.engine)
+
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        self.db = self.Session()
+
+        with self.db.begin():
+            self.admin = User(id=ADMIN_ID, name="Niddhi Admin", email="admin@example.com", role=UserRole.admin, active=True)
+            self.db.add(self.admin)
+            self.db.flush()
+
+            vendor = V2Vendor(
+                id=uuid.uuid4(), name="Acme Electricals", contact_person="Ravi", phone="9000000001",
+                status="active", engagement_type="main",
+            )
+            self.db.add(vendor)
+            self.db.flush()
+
+            self.contact_a = V2VendorContact(
+                vendor_id=vendor.id, name="Contact A", phone="9000000002",
+                telegram_chat_id="555", active_channel="telegram",
+            )
+            self.contact_b = V2VendorContact(vendor_id=vendor.id, name="Contact B", phone="9000000003")
+            self.db.add_all([self.contact_a, self.contact_b])
+
+        self.service = TelegramConnectService(self.db)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_unlinking_a_connected_contact_clears_chat_id(self):
+        result = self.service.unlink_vendor_contact(vendor_contact_id=self.contact_a.id, actor=self.admin)
+
+        self.assertIsNone(result.telegram_chat_id)
+        refreshed = self.db.get(V2VendorContact, self.contact_a.id)
+        self.assertIsNone(refreshed.telegram_chat_id)
+
+    def test_unlink_never_touches_active_channel_or_other_fields(self):
+        self.service.unlink_vendor_contact(vendor_contact_id=self.contact_a.id, actor=self.admin)
+
+        refreshed = self.db.get(V2VendorContact, self.contact_a.id)
+        self.assertEqual(refreshed.active_channel, "telegram")
+        self.assertEqual(refreshed.name, "Contact A")
+        self.assertEqual(refreshed.phone, "9000000002")
+
+    def test_unlinking_writes_one_audit_row(self):
+        self.service.unlink_vendor_contact(vendor_contact_id=self.contact_a.id, actor=self.admin)
+
+        rows = self.db.scalars(select(V2AuditEvent).where(V2AuditEvent.action == "telegram_unlinked")).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].entity_type, "vendor_contact")
+        self.assertEqual(rows[0].entity_id, self.contact_a.id)
+        self.assertEqual(rows[0].actor_user_id, ADMIN_ID)
+
+    def test_unlinking_an_already_unconnected_contact_is_a_silent_no_op(self):
+        result = self.service.unlink_vendor_contact(vendor_contact_id=self.contact_b.id, actor=self.admin)
+
+        self.assertIsNone(result.telegram_chat_id)
+        rows = self.db.scalars(select(V2AuditEvent).where(V2AuditEvent.action == "telegram_unlinked")).all()
+        self.assertEqual(rows, [])
+
+    def test_unknown_vendor_contact_raises_404(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            self.service.unlink_vendor_contact(vendor_contact_id=uuid.uuid4(), actor=self.admin)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_freed_chat_id_can_be_reused_by_a_different_contact(self):
+        self.service.unlink_vendor_contact(vendor_contact_id=self.contact_a.id, actor=self.admin)
+
+        self.contact_b.telegram_chat_id = "555"
+        self.db.commit()
+
+        refreshed_b = self.db.get(V2VendorContact, self.contact_b.id)
         self.assertEqual(refreshed_b.telegram_chat_id, "555")
 
 

@@ -51,7 +51,14 @@ def generate_connect_code(
 
 
 class UnlinkIn(BaseModel):
-    employee_id: uuid.UUID
+    employee_id: uuid.UUID | None = None
+    vendor_contact_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_id(self):
+        if (self.employee_id is None) == (self.vendor_contact_id is None):
+            raise ValueError("Exactly one of employee_id or vendor_contact_id must be set.")
+        return self
 
 
 @router.post("/unlink")
@@ -60,9 +67,14 @@ def unlink_telegram(
     actor: User = Depends(require_roles(*ADMIN_ROLES)),
     db: Session = Depends(get_db),
 ):
-    """Frees this employee's `telegram_chat_id` so a different employee can
-    connect the same Telegram account. Never touches `active_channel`,
-    role, membership, or any other field - see `TelegramConnectService.
-    unlink_employee`'s docstring."""
-    profile = TelegramConnectService(db).unlink_employee(employee_id=payload.employee_id, actor=actor)
-    return {"employee_id": str(profile.id), "telegram_connected": bool(profile.telegram_chat_id)}
+    """Frees this person's/contact's `telegram_chat_id` so a different
+    identity can connect the same Telegram account. Never touches
+    `active_channel`, role, membership, or any other field - see
+    `TelegramConnectService.unlink_employee`/`unlink_vendor_contact`'s
+    docstrings."""
+    service = TelegramConnectService(db)
+    if payload.employee_id is not None:
+        profile = service.unlink_employee(employee_id=payload.employee_id, actor=actor)
+        return {"employee_id": str(profile.id), "telegram_connected": bool(profile.telegram_chat_id)}
+    contact = service.unlink_vendor_contact(vendor_contact_id=payload.vendor_contact_id, actor=actor)
+    return {"vendor_contact_id": str(contact.id), "telegram_connected": bool(contact.telegram_chat_id)}
