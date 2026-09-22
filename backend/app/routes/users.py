@@ -151,6 +151,14 @@ def invite_user(payload: UserInviteIn, actor: User = Depends(require_roles(UserR
             employee_code=employee_code.upper(),
             designation=designation,
             department=(payload.department or "").strip() or None,
+            # New users default to Telegram, per the current messaging
+            # rollout - WhatsApp production is still blocked externally,
+            # and Telegram needs no business verification. This only sets
+            # the PREFERRED channel; it does nothing until the person
+            # actually connects via the Telegram connect-code flow, so
+            # they show "Messaging Not Ready" (see serializers.py) until
+            # then rather than being silently undeliverable.
+            active_channel="telegram",
         ))
         add_event(db, user, actor, "ACCOUNT_INVITED", "Pre-registered for Google sign-in; awaiting first login.", to_role=payload.role)
         OutboxService(db).emit(

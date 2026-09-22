@@ -303,7 +303,8 @@ export function CommunicationHubPage({ user, action }) {
       mapToProjects={projectIds => mapToProjects(selectedVendor, projectIds)} categories={hub.categories}
       canManage={canManage} onClose={() => setSelected(null)}
       remove={() => deleteCompany(selectedVendor)} edit={() => setForm("edit")} deactivate={() => deactivateVendor(selectedVendor)}
-      addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected}/>}
+      addContact={() => setForm("contact")} addSubcontractor={() => setForm("sub")} selectVendor={setSelected}
+      onContactChanged={load}/>}
 
     {form === "main" && <CompanyModal title="Add main vendor" categories={hub.categories} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "main")}/>}
     {form === "sub" && selectedVendor?.engagement_type === "main" && <CompanyModal title="Add sub-vendor" categories={hub.categories} fixedMainContractor={selectedVendor} onClose={() => setForm(null)} onSubmit={event => createCompany(event, "sub")}/>}

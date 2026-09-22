@@ -306,6 +306,49 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
             self.assertIn("PROJECT_ROLE_CHANGE_REQUESTED", audit_actions)
             self.assertIn("PROJECT_ROLE_CHANGE_APPROVED", audit_actions)
 
+    def test_role_change_requested_on_a_draft_project_emits_no_event(self):
+        """Draft-mode messaging rule (same as project.member_added/
+        project.vendor_mapped): `set_membership` deliberately still routes
+        PM/Supervisor changes through this request/approve flow while the
+        project is Draft (see its own comment - several activation tests
+        rely on freely reassigning an accountable role pre-activation), but
+        nobody should get an operational notification about it before the
+        project goes live."""
+        project = self.create_draft()
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+
+        self.act_as_admin()
+        requested = self.request_role_change(project["id"], "project_manager", replacement_id)
+        self.assertEqual(requested.status_code, 200, requested.text)
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.role_change_requested")
+            ).all()
+            self.assertEqual(events, [])
+
+    def test_role_change_approved_on_an_active_project_emits_event(self):
+        project = self.create_draft()
+        replacement_id = self.employee_id_for(REPLACEMENT_PM_ID)
+
+        self.act_as_admin()
+        self.activate(project["id"])
+        requested = self.request_role_change(project["id"], "project_manager", replacement_id)
+        self.assertEqual(requested.status_code, 200, requested.text)
+
+        approved = self.approve_role_change(project["id"], requested.json()["id"])
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        with self.Session() as session:
+            requested_events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.role_change_requested")
+            ).all()
+            approved_events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.role_change_approved")
+            ).all()
+            self.assertEqual(len(requested_events), 1)
+            self.assertEqual(len(approved_events), 1)
+
     # ---- happy path: active PM requests Supervisor replacement --------------
 
     def test_active_pm_requests_supervisor_replacement_admin_approves(self):
@@ -626,28 +669,53 @@ class ProjectRoleChangeApprovalApiTests(unittest.TestCase):
         # No exception raised - success is the assertion.
 
     # ---- U3 (WhatsApp gate workflow): project.member_added emission -------
+    #
+    # Local-testing follow-up (2026-09-18): a Draft project is planning/
+    # setup - assigning a member here must NOT notify the execution team
+    # (see `projects_v2.assign_membership`'s Active-only guard). This
+    # replaces a prior version of this test that asserted the OPPOSITE
+    # (an event on a Draft-phase assignment), which was itself proof of the
+    # bug being fixed, not a spec.
 
-    def test_assigning_a_member_emits_project_member_added_event(self):
-        internal_employee_id = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
-        project = self.create_draft()
+    def _add_internal_employee(self, project_id, user_id, employee_code):
         with self.Session.begin() as session:
             session.add(User(
-                id=internal_employee_id, name="Field Hand", email="field-hand@example.com",
+                id=user_id, name="Field Hand", email=f"{employee_code.lower()}@example.com",
                 role=UserRole.internal_employee, active=True,
             ))
             session.flush()
             session.add(EmployeeProfile(
-                user_id=internal_employee_id, employee_code="IE-001", designation="Internal Employee",
+                user_id=user_id, employee_code=employee_code, designation="Internal Employee",
                 availability="available",
             ))
-        employee_id = self.employee_id_for(internal_employee_id)
-
-        self.act_as_admin()
+        employee_id = self.employee_id_for(user_id)
         response = self.client.post(
-            f"/api/v2/projects/{project['id']}/memberships",
+            f"/api/v2/projects/{project_id}/memberships",
             json={"employee_id": str(employee_id), "project_role": "internal_employee", "reason": "Adding field support."},
         )
         self.assertEqual(response.status_code, 200, response.text)
+        return employee_id
+
+    def test_assigning_a_member_on_a_draft_project_emits_no_event(self):
+        internal_employee_id = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
+        project = self.create_draft()
+        self.act_as_admin()
+
+        self._add_internal_employee(project["id"], internal_employee_id, "IE-001")
+
+        with self.Session() as session:
+            events = session.scalars(
+                select(OutboxEvent).where(OutboxEvent.event_type == "project.member_added")
+            ).all()
+            self.assertEqual(events, [])
+
+    def test_assigning_a_member_on_an_active_project_emits_project_member_added_event(self):
+        internal_employee_id = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee6")
+        project = self.create_draft()
+        self.act_as_admin()
+        self.activate(project["id"])
+
+        employee_id = self._add_internal_employee(project["id"], internal_employee_id, "IE-002")
 
         with self.Session() as session:
             events = session.scalars(

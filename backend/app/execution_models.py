@@ -14,7 +14,7 @@ artifact. Never conflate the two - see the plan's Key Technical Decisions.
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -503,7 +503,7 @@ class TaskProgressUpdate(Base):
     __tablename__ = "task_progress_updates"
     __table_args__ = (
         CheckConstraint("update_type in ('note', 'evidence')", name="ck_v2_task_progress_updates_update_type"),
-        CheckConstraint("source in ('portal', 'whatsapp', 'system')", name="ck_v2_task_progress_updates_source"),
+        CheckConstraint("source in ('portal', 'whatsapp', 'telegram', 'system')", name="ck_v2_task_progress_updates_source"),
         Index("ix_v2_task_progress_updates_task", "task_id"),
         Index("ix_v2_task_progress_updates_project", "project_id"),
         {"schema": V2_SCHEMA},
@@ -982,6 +982,12 @@ class MessageDelivery(Base):
     recipient_vendor_contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_contacts.id", ondelete="RESTRICT"))
     recipient_phone: Mapped[str] = mapped_column(Text, nullable=False)
     template: Mapped[str] = mapped_column(Text, nullable=False)
+    # U6 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    # which channel this delivery actually went out on. Additive, defaults
+    # to 'whatsapp' for every existing and new row - nothing writes anything
+    # else here yet; `MessageDispatchService._dispatch_to_recipient` keeps
+    # writing exactly as it does today until U9.
+    channel: Mapped[str] = mapped_column(Text, nullable=False, default="whatsapp")
     provider: Mapped[str] = mapped_column(Text, nullable=False, default="sandbox")
     provider_message_id: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
@@ -1038,6 +1044,77 @@ class InboundMessage(Base):
     matched_identity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     processing_status: Mapped[str] = mapped_column(Text, nullable=False, default="unmatched")
     rejection_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TelegramInboundUpdate(Base):
+    """U2 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    raw Telegram Bot API update storage, before any identity matching or
+    command dispatch (U13/U14).
+
+    Only a secret-token-verified webhook delivery ever reaches the point of
+    writing a row here - see `backend/app/routes/telegram_webhook.py`'s
+    verification gate, mirroring `InboundMessage`'s "only a verified
+    delivery is ever stored" discipline for WhatsApp.
+
+    `update_id` is Telegram's own per-update identifier. Telegram's Bot API
+    redelivers on a slow or failed response - the same at-least-once
+    behavior `InboundMessage.provider_message_id`'s uniqueness guards
+    against for WhatsApp - so its uniqueness here lets U13/U14 detect and
+    reject a duplicate delivery before executing any state-changing action
+    (connect-token consumption, a gate command, etc.).
+    """
+
+    __tablename__ = "telegram_inbound_updates"
+    __table_args__ = (
+        UniqueConstraint("update_id", name="uq_v2_telegram_inbound_updates_update_id"),
+        Index("ix_v2_telegram_inbound_updates_chat_id", "chat_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_text: Mapped[str | None] = mapped_column(Text)
+    callback_data: Mapped[str | None] = mapped_column(Text)
+    raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TelegramConnectToken(Base):
+    """U3 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    a one-time token issued to a specific employee or vendor contact, so
+    they can link a Telegram chat to their existing identity by opening the
+    bot's `/start <token>` link (U13). Purely schema at this point - no
+    token-generation or token-consumption logic yet.
+
+    `token` must be generated as a cryptographically random, sufficiently
+    long value (e.g. Python's `secrets.token_urlsafe(32)`) by whichever
+    later unit issues one - this is a security requirement on the data
+    this table holds, not something the schema itself can enforce.
+
+    Exclusive-recipient-pair `CheckConstraint` mirrors `MessageDelivery`'s
+    own convention (`recipient_employee_id`/`recipient_vendor_contact_id`)
+    rather than a polymorphic entity_type/entity_id pair.
+    """
+
+    __tablename__ = "telegram_connect_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "(employee_id is not null and vendor_contact_id is null) or "
+            "(employee_id is null and vendor_contact_id is not null)",
+            name="ck_v2_telegram_connect_tokens_recipient_exclusive",
+        ),
+        UniqueConstraint("token", name="uq_v2_telegram_connect_tokens_token"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="CASCADE"))
+    vendor_contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.vendor_contacts.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

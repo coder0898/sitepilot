@@ -222,6 +222,16 @@ EmployeeIdentity = tuple[User, EmployeeProfile]
 class InboundMessageService:
     def __init__(self, db: Session):
         self.db = db
+        # U14 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md,
+        # KTD7): `TelegramInboundService` below subclasses this service to
+        # reuse its actual command grammar and business-service calls
+        # (`_handle_employee`, `_handle_vendor_contact`, every
+        # `_handle_gate_*` method) instead of duplicating them. These two
+        # attributes are the only channel-specific values inside that
+        # shared logic; the subclass overrides them, everything else is
+        # identical for both channels.
+        self._inbound_channel = "whatsapp"
+        self._inbound_channel_label = "WhatsApp"
 
     # ---- entry point ----------------------------------------------------
 
@@ -347,7 +357,9 @@ class InboundMessageService:
                 # would make - transition() owns all role/dependency/state
                 # checks itself; nothing here duplicates that logic.
                 TaskLifecycleService(self.db).transition(
-                    task.project_id, task.id, target_status, actor=user, reason="Reported via WhatsApp.",
+                    task.project_id, task.id, target_status, actor=user,
+                    reason=f"Reported via {self._inbound_channel_label}.",
+                    source=self._inbound_channel,
                 )
             except HTTPException as exc:
                 return self._save(
@@ -606,7 +618,7 @@ class InboundMessageService:
             # make (U8/KTD17) - close_session owns the assignee-only
             # re-check (KTD7) and the empty-session guard (KTD9) itself;
             # nothing here duplicates either.
-            service.close_session(approval.project_id, session, actor=user)
+            service.close_session(approval.project_id, session, actor=user, source=self._inbound_channel)
         except HTTPException as exc:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
@@ -672,6 +684,7 @@ class InboundMessageService:
             # validation itself; nothing here duplicates or narrows either.
             ProjectGateDecisionService(self.db).decide(
                 approval.project_id, approval.id, decision=decision, actor=user, reason=reason,
+                source=self._inbound_channel,
             )
         except HTTPException as exc:
             return self._save(
@@ -843,7 +856,7 @@ class InboundMessageService:
             # is the correct `actor` here.
             VendorAcknowledgementService(self.db).record_acknowledgement(
                 assignment.project_id, assignment.task_id, assignment.id,
-                response=_RESPONSE_BY_COMMAND[keyword], actor=pm_actor, channel="whatsapp", note=note,
+                response=_RESPONSE_BY_COMMAND[keyword], actor=pm_actor, channel=self._inbound_channel, note=note,
             )
         except HTTPException as exc:
             return self._save(
@@ -858,7 +871,9 @@ class InboundMessageService:
 
     def _resolve_assignment_by_ref(self, ref: str) -> TaskVendorAssignment | None:
         ref_lower = ref.lower()
-        candidates = self.db.scalars(select(TaskVendorAssignment)).all()
+        candidates = self.db.scalars(
+            select(TaskVendorAssignment).where(TaskVendorAssignment.ends_at.is_(None))
+        ).all()
         matched = [
             assignment for assignment in candidates
             if str(assignment.id).replace("-", "").lower()[:8] == ref_lower

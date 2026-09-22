@@ -108,6 +108,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services.message_templates import TemplateSpec, render_components, resolve
+from app.services.telegram_render import render_telegram_message
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
 
 # The only two `V2ProjectMembership.project_role` values this service ever
@@ -191,11 +192,16 @@ class ProviderSendResult:
 class Recipient:
     """One resolved notification target. Exactly one of `employee_id` /
     `vendor_contact_id` is set, mirroring `MessageDelivery`'s own
-    real-FK-pair recipient columns."""
+    real-FK-pair recipient columns.
+
+    `channel` (U5, KTD5) defaults to `'whatsapp'` so no existing
+    construction site needs to change yet - it is populated from the
+    recipient's `active_channel` column starting in U8/U9, not here."""
 
     employee_id: uuid.UUID | None
     vendor_contact_id: uuid.UUID | None
     phone: str
+    channel: str = "whatsapp"
 
 
 class WhatsAppProviderAdapter(Protocol):
@@ -227,6 +233,32 @@ class MessageDispatchService:
     def __init__(self, db: Session, adapter: WhatsAppProviderAdapter | None = None):
         self.db = db
         self.adapter = adapter or SandboxProviderAdapter()
+        # U9 (KTD4): channel -> adapter mapping, replacing `self.adapter` as
+        # dispatch's actual send target - `_dispatch_to_recipient` looks up
+        # the adapter here by the recipient's resolved channel instead of
+        # always using `self.adapter` directly. Built here, not as a new
+        # `__init__` parameter, so `outbox_scheduler.run_dispatch_pass`'s
+        # call site (`MessageDispatchService(db, adapter=_build_adapter())`)
+        # does not need to change - `_build_adapter()` still decides which
+        # real-vs-sandbox WhatsApp adapter to use, unchanged, and simply
+        # becomes the `'whatsapp'` slot of this mapping. `self.adapter` is
+        # kept as the fallback for an unrecognized channel value.
+        # U10: registers the Telegram adapter as a real option in this
+        # mapping, keyed 'telegram'. Instantiated unconditionally (like
+        # `SandboxProviderAdapter()` above) - `TelegramProviderAdapter`
+        # itself fails fast at `.send()` time (`failure_code='not_configured'`)
+        # when no token is set, not at construction time, so this is safe
+        # even with no Telegram credentials configured.
+        #
+        # Imported here, not at module level: `telegram_provider.py`
+        # imports `ProviderSendResult` from this module, so a top-level
+        # import here would be circular.
+        from app.services.telegram_provider import TelegramProviderAdapter
+
+        self._adapters: dict[str, WhatsAppProviderAdapter] = {
+            "whatsapp": self.adapter,
+            "telegram": TelegramProviderAdapter(),
+        }
 
     # ---- recipient resolution -------------------------------------------
 
@@ -287,7 +319,9 @@ class MessageDispatchService:
         documents (a genuinely unresolvable recipient, no row to construct).
         A project with no mapped vendors returns `[]`, not an error."""
         vendor_ids = self.db.scalars(
-            select(ProjectVendor.vendor_id).where(ProjectVendor.project_id == project_id)
+            select(ProjectVendor.vendor_id).where(
+                ProjectVendor.project_id == project_id, ProjectVendor.ends_at.is_(None),
+            )
         ).all()
         recipients: list[Recipient] = []
         for vendor_id in vendor_ids:
@@ -317,12 +351,18 @@ class MessageDispatchService:
         return Recipient(employee_id=None, vendor_contact_id=contact.id, phone=phone)
 
     def _resolve_vendor_recipient(self, event: OutboxEvent) -> Recipient | None:
-        """Only called for `event_type == 'task.vendor_assigned'`. Reads
-        `vendor_id` directly off the payload (the shape
-        `TaskVendorAssignmentService.assign_vendor` actually writes -
-        `{"task_id", "project_id", "assignment_id", "vendor_id"}`), with a
+        """Called for `task.vendor_assigned`/`task.vendor_unassigned` and
+        `project.vendor_removed`. Reads `vendor_id` directly off the payload
+        (the shape `TaskVendorAssignmentService`/`ProjectVendorService`
+        actually write - always includes a `vendor_id` key), with a
         fallback re-derivation via `assignment_id` for robustness against a
-        future payload shape change."""
+        future payload shape change.
+
+        Deliberately does NOT go through `_resolve_all_project_vendors` (or
+        any other "currently active" vendor query): by the time a removal/
+        unassignment event dispatches, the departing vendor's mapping or
+        assignment row already has `ends_at` set, so an "active vendors"
+        query would exclude the very person this event needs to reach."""
         payload = event.payload or {}
         vendor_id_raw = payload.get("vendor_id")
         if not vendor_id_raw:
@@ -362,6 +402,7 @@ class MessageDispatchService:
             .where(
                 TaskVendorAssignment.task_id == task.id,
                 TaskVendorAssignment.status != "declined",
+                TaskVendorAssignment.ends_at.is_(None),
             )
             .order_by(TaskVendorAssignment.created_at.desc())
             .limit(1)
@@ -498,7 +539,7 @@ class MessageDispatchService:
             if task is None:
                 return []
             recipients.extend(self._resolve_pm_supervisor_recipients(task.project_id))
-            if event.event_type == "task.vendor_assigned":
+            if event.event_type in ("task.vendor_assigned", "task.vendor_unassigned"):
                 vendor_recipient = self._resolve_vendor_recipient(event)
                 if vendor_recipient is not None:
                     recipients.append(vendor_recipient)
@@ -522,7 +563,17 @@ class MessageDispatchService:
                 if vendor_task_recipient is not None:
                     recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
-            if event.event_type in _ALL_MEMBERS_PROJECT_EVENTS:
+            if event.event_type == "project.vendor_removed":
+                # Deliberately NOT the default PM/Supervisor-only branch
+                # below: this event's only intended recipient is the vendor
+                # being removed (product decision - no team-wide notice for
+                # a vendor removal). Resolved straight from the payload, not
+                # `_resolve_all_project_vendors`, since that query excludes
+                # this vendor the moment its mapping's `ends_at` is set.
+                vendor_recipient = self._resolve_vendor_recipient(event)
+                if vendor_recipient is not None:
+                    recipients.append(vendor_recipient)
+            elif event.event_type in _ALL_MEMBERS_PROJECT_EVENTS:
                 # Branch, not addition: `_resolve_all_project_members`'s
                 # result already includes every PM/Supervisor
                 # `_resolve_pm_supervisor_recipients` would have found, so
@@ -580,6 +631,33 @@ class MessageDispatchService:
             )
         return self.db.scalar(stmt)
 
+    def _resolve_recipient_channel(self, recipient: Recipient) -> str:
+        """U8 (KTD5): read-only channel lookup - answers "what channel is
+        this recipient on right now" by reading the recipient's identity
+        row's `active_channel` column (`EmployeeProfile`/`V2VendorContact`,
+        U5). Always returns `'whatsapp'` today, since no one has been
+        toggled onto Telegram yet. NOT called from `_dispatch_to_recipient`
+        or `_build_adapter` - that wiring is U9."""
+        if recipient.employee_id is not None:
+            return self.db.scalar(
+                select(EmployeeProfile.active_channel).where(EmployeeProfile.id == recipient.employee_id)
+            ) or "whatsapp"
+        return self.db.scalar(
+            select(V2VendorContact.active_channel).where(V2VendorContact.id == recipient.vendor_contact_id)
+        ) or "whatsapp"
+
+    def _resolve_telegram_chat_id(self, recipient: Recipient) -> str:
+        """U10: the identifier a Telegram send actually targets - the
+        recipient's `telegram_chat_id` (U4), not `recipient.phone`. Mirrors
+        `_resolve_recipient_channel`'s employee/vendor-contact branching."""
+        if recipient.employee_id is not None:
+            return self.db.scalar(
+                select(EmployeeProfile.telegram_chat_id).where(EmployeeProfile.id == recipient.employee_id)
+            ) or ""
+        return self.db.scalar(
+            select(V2VendorContact.telegram_chat_id).where(V2VendorContact.id == recipient.vendor_contact_id)
+        ) or ""
+
     def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
         template = spec.meta_template_name
         delivery = self._existing_delivery(event.id, recipient, template)
@@ -614,17 +692,38 @@ class MessageDispatchService:
         # Refresh the denormalized snapshot on every attempt (including a
         # retry) so it reflects the number this specific attempt targeted.
         delivery.recipient_phone = recipient.phone
+        # U9: the channel this attempt actually targets, read fresh from the
+        # recipient's identity row (U8) rather than trusting
+        # `recipient.channel`'s construction-time default - the same
+        # resolve-fresh-on-every-attempt discipline `recipient_phone` above
+        # already follows.
+        channel = self._resolve_recipient_channel(recipient)
+        delivery.channel = channel
         delivery.status = "sending"
         delivery.attempt_count += 1
 
-        # Merge `components` into a copy of the event payload rather than
-        # mutating `event.payload` itself - the outbox row's payload is the
-        # durable record of what happened; `components` is dispatch-time
-        # rendering derived from it, not part of that record.
-        components = render_components(spec, event.payload or {})
-        send_payload = {**(event.payload or {}), "components": components, "language_code": spec.language}
+        if channel == "telegram":
+            # U10/KTD8: Telegram has no Meta-template registry, so it never
+            # gets the WhatsApp-shaped `components` payload below - this
+            # renders human-readable plain text via `telegram_render.py`
+            # instead (event/data -> shared backend -> Telegram renderer ->
+            # message; no Telegram-specific business logic here).
+            send_target = self._resolve_telegram_chat_id(recipient)
+            send_payload = {
+                "text": render_telegram_message(self.db, event.event_type, event.payload or {}, recipient.employee_id),
+            }
+        else:
+            # Merge `components` into a copy of the event payload rather
+            # than mutating `event.payload` itself - the outbox row's
+            # payload is the durable record of what happened; `components`
+            # is dispatch-time rendering derived from it, not part of that
+            # record.
+            components = render_components(spec, event.payload or {})
+            send_payload = {**(event.payload or {}), "components": components, "language_code": spec.language}
+            send_target = recipient.phone
 
-        result = self.adapter.send(recipient_phone=recipient.phone, template=template, payload=send_payload)
+        adapter = self._adapters.get(channel, self.adapter)
+        result = adapter.send(recipient_phone=send_target, template=template, payload=send_payload)
         if result.ok:
             delivery.status = "sent"
             delivery.provider_message_id = result.provider_message_id

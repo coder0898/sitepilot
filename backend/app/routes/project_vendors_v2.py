@@ -15,7 +15,7 @@ was removed - Phase 2 scope, not this release.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,9 +29,11 @@ from app.schemas.vendor_assignment import (
     ProjectVendorMapIn,
     ProjectVendorMappingOut,
     ProjectVendorOut,
+    ProjectVendorRemoveIn,
     TaskVendorAssignmentDetailOut,
     TaskVendorAssignmentIn,
     TaskVendorAssignmentOut,
+    TaskVendorUnassignIn,
     V2VendorOut,
     VendorAcknowledgementIn,
     VendorAcknowledgementOut,
@@ -207,20 +209,26 @@ def map_vendor(
 @router.get("/{project_id}/vendors", response_model=list[ProjectVendorMappingOut])
 def list_project_vendors(
     project_id: uuid.UUID,
+    include_ended: bool = Query(False),
     actor: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
     """Read surface for ProjectVendorPanel's "list current mappings" and
     TaskVendorDelegationForm's vendor picker, which must only offer
     vendors already mapped to this project (plan U2 frontend test
-    scenario)."""
+    scenario). Defaults to active mappings only - the vendor picker relies
+    on that. `include_ended=true` (ProjectVendorPanel's own display) also
+    returns removed mappings so history stays visible, distinguished by
+    `ends_at`."""
     project = get_project(db, project_id, actor)
-    rows = db.execute(
+    query = (
         select(ProjectVendor, V2Vendor)
         .join(V2Vendor, ProjectVendor.vendor_id == V2Vendor.id)
         .where(ProjectVendor.project_id == project.id)
-        .order_by(V2Vendor.name)
-    ).all()
+    )
+    if not include_ended:
+        query = query.where(ProjectVendor.ends_at.is_(None))
+    rows = db.execute(query.order_by(V2Vendor.name)).all()
     return [
         ProjectVendorMappingOut(
             id=mapping.id,
@@ -231,9 +239,21 @@ def list_project_vendors(
             parent_vendor_id=vendor.parent_vendor_id,
             mapped_by=mapping.mapped_by,
             created_at=mapping.created_at,
+            ends_at=mapping.ends_at,
         )
         for mapping, vendor in rows
     ]
+
+
+@router.post("/{project_id}/vendors/{vendor_id}/remove", response_model=ProjectVendorOut)
+def remove_project_vendor(
+    project_id: uuid.UUID,
+    vendor_id: uuid.UUID,
+    payload: ProjectVendorRemoveIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectVendorService(db).remove_vendor(project_id, vendor_id, actor, payload.reason)
 
 
 @router.post("/{project_id}/tasks/{task_id}/vendor-assignment", response_model=TaskVendorAssignmentOut)
@@ -281,6 +301,7 @@ def list_task_vendor_assignments(
             status=assignment.status,
             assigned_by=assignment.assigned_by,
             created_at=assignment.created_at,
+            ends_at=assignment.ends_at,
             acknowledgements=[
                 VendorAcknowledgementOut.model_validate(ack)
                 for ack in db.scalars(
@@ -292,6 +313,21 @@ def list_task_vendor_assignments(
         )
         for assignment, vendor in rows
     ]
+
+
+@router.post(
+    "/{project_id}/tasks/{task_id}/vendor-assignment/{assignment_id}/unassign",
+    response_model=TaskVendorAssignmentOut,
+)
+def unassign_task_vendor(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    payload: TaskVendorUnassignIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return TaskVendorAssignmentService(db).unassign_vendor(project_id, task_id, assignment_id, actor, payload.reason)
 
 
 @router.post(

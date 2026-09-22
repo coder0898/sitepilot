@@ -120,11 +120,35 @@ export function ProjectsPage({ user, action }) {
 
   // Open straight into a project rather than a dead "nothing selected"
   // pane. Replace, not push, so Back does not walk through auto-selections.
+  // Must stick to `filtered[0]` only - reaching into the full `projects`
+  // array for "any non-archived project" when the current filter is empty
+  // used to fight the reconciliation effect below: that effect clears a
+  // selection that falls outside the filter, this one immediately put it
+  // right back (since it was the only non-archived project around), and
+  // the two looped forever - the exact "buffering never settles" bug on
+  // any empty tab (Active/On hold/Completed) while a Draft project
+  // existed. An empty filter now genuinely shows the empty state.
   useEffect(() => {
     if (loading || selected) return;
-    const fallback = filtered[0] || projects.find(item => item.status !== "archived");
+    const fallback = filtered[0];
     if (fallback) setRoute({ project: fallback.code, pane: route.pane || "overview" }, { replace: true });
-  }, [loading, selected, filtered, projects]);
+  }, [loading, selected, filtered]);
+
+  // `selected` is looked up against the full `projects` array, ignoring
+  // `filter` entirely - so it can point at a project the left pane (which
+  // DOES respect `filter`) no longer lists at all: switching the filter
+  // chip away from a project's current status, a lifecycle transition
+  // (activate/hold/complete/archive) moving it out of the filter you're
+  // still on, a manual refresh, or even a fresh page load landing on a
+  // route left over from before. Any of those needs the same recovery:
+  // clear the selection so the fallback effect above picks the next
+  // visible project (or the true empty state) instead of leaving a ghost
+  // detail pane for a project the list says doesn't exist.
+  useEffect(() => {
+    if (loading || !selected) return;
+    if (filtered.some(item => item.id === selected.id)) return;
+    setRoute({ project: "", pane: "" }, { replace: true });
+  }, [loading, selected, filtered]);
 
   const attentionByProject = useMemo(() => {
     if (!attention) return {};

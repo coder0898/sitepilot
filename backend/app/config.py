@@ -35,6 +35,24 @@ class Settings(BaseSettings):
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_api_version: str = "v21.0"
+    # Telegram Bot API credential (see
+    # backend/app/services/telegram_provider.py). Sourced from
+    # environment/`.env` only, mirroring `whatsapp_access_token`'s pattern -
+    # never hardcoded. Empty by default: with no token configured,
+    # `TelegramProviderAdapter.send_text`/`send_with_buttons` fail fast
+    # with failure_code='not_configured' rather than attempting a doomed
+    # call.
+    telegram_access_token: str = ""
+    # Telegram webhook verification (see
+    # backend/app/routes/telegram_webhook.py). Telegram sends this value
+    # verbatim in the `X-Telegram-Bot-Api-Secret-Token` header on every
+    # webhook delivery once set via the Bot API's `setWebhook` call's
+    # `secret_token` parameter - unlike WhatsApp's HMAC-signed payloads,
+    # Telegram's secret is compared directly (still with a constant-time
+    # comparison to avoid a timing-attack surface). Empty by default: with
+    # no configured secret, no request can ever match, so the route safely
+    # rejects every inbound request until an operator configures this.
+    telegram_webhook_secret: str = ""
     # U3 (R18): the outbox dispatcher. `OutboxService.emit` has been writing
     # pending events since Phase 2 and nothing has ever drained them, so
     # every notification the system decided to send is still sitting in the

@@ -187,7 +187,7 @@ class GateEvidenceSessionService:
     # ---- close ----------------------------------------------------------------
 
     def close_session(
-        self, project_id: uuid.UUID, session: GateEvidenceSession, actor: User,
+        self, project_id: uuid.UUID, session: GateEvidenceSession, actor: User, source: str = "portal",
     ) -> ProjectExternalApprovalSubmission:
         approval = self._get_approval(project_id, session.approval_id)
         # KTD7: this is where a reassigned-away employee's GATECLOSE fails -
@@ -216,6 +216,7 @@ class GateEvidenceSessionService:
             actor,
             note=session.note,
             existing_file_ids=attachment_file_ids,
+            source=source,
         )
 
         session.closed_at = datetime.now(timezone.utc)

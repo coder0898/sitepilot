@@ -4,7 +4,7 @@ import { projectsApi } from "../../api/projectsApi";
 import { ProjectLifecyclePane } from "./components/ProjectLifecyclePane";
 
 vi.mock("../../api/projectsApi", () => ({
-  projectsApi: { setStatus: vi.fn(), restore: vi.fn(), remove: vi.fn() },
+  projectsApi: { setStatus: vi.fn(), activate: vi.fn(), restore: vi.fn(), remove: vi.fn() },
 }));
 
 function project(overrides = {}) {
@@ -74,5 +74,34 @@ describe("Archived project lifecycle", () => {
     renderPane({ role: "admin", id: "u-admin" }, { status: "active" });
     expect(screen.getByLabelText("Move project to")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /restore project/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("Draft-to-active activation", () => {
+  // Regression: the Activate button used to call setStatus, which flips the
+  // project to active but never emits the project.activated outbox event -
+  // no Telegram/WhatsApp notification ever went out. Only /activate does.
+  it("calls the dedicated activate endpoint, not setStatus", async () => {
+    projectsApi.activate.mockResolvedValue({ id: "p1", status: "active" });
+    renderPane({ role: "admin", id: "u-admin" }, { status: "draft" });
+
+    expect(screen.getByLabelText("Move project to")).toHaveValue("active");
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Kickoff approved." } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
+
+    await waitFor(() => expect(projectsApi.activate).toHaveBeenCalledWith("p1", "Kickoff approved."));
+    expect(projectsApi.setStatus).not.toHaveBeenCalled();
+  });
+
+  it("still uses setStatus for a non-activation transition", async () => {
+    projectsApi.setStatus.mockResolvedValue({ id: "p1", status: "on_hold" });
+    renderPane({ role: "admin", id: "u-admin" }, { status: "active" });
+
+    fireEvent.change(screen.getByLabelText("Move project to"), { target: { value: "on_hold" } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Client paused work." } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
+
+    await waitFor(() => expect(projectsApi.setStatus).toHaveBeenCalledWith("p1", "on_hold", "Client paused work."));
+    expect(projectsApi.activate).not.toHaveBeenCalled();
   });
 });

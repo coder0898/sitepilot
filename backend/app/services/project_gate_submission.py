@@ -115,6 +115,7 @@ class ProjectGateSubmissionService:
         note: str | None,
         files: list[tuple[bytes, str | None, str | None]] = (),
         existing_file_ids: list[uuid.UUID] = (),
+        source: str = "portal",
     ) -> ProjectExternalApprovalSubmission:
         """`files` is a list of (bytes, filename, content_type) tuples -
         the router reads uploads before calling in, same shape
@@ -214,7 +215,7 @@ class ProjectGateSubmissionService:
             entity_type="project_external_approval",
             entity_id=approval.id,
             project_id=project.id,
-            source="portal",
+            source=source,
             before_json={"status": previous_status},
             after_json={"status": "submitted", "submission_id": str(submission.id)},
             reason=clean_note or "External approval evidence submitted.",

@@ -53,7 +53,15 @@ export function ProjectLifecyclePane({ project, user, onChanged, onDeleted }) {
     setBusy(true);
     setError("");
     try {
-      await projectsApi.setStatus(project.id, target, reason);
+      // Draft -> active is the one transition with its own dedicated,
+      // notification-emitting endpoint (see projectsApi.activate's comment).
+      // Every other transition keeps going through the generic /status route,
+      // unchanged.
+      if (target === "active" && project.status === "draft") {
+        await projectsApi.activate(project.id, reason);
+      } else {
+        await projectsApi.setStatus(project.id, target, reason);
+      }
       setReason("");
       await onChanged();
     } catch (caught) {

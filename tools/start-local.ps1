@@ -137,6 +137,8 @@ $existing = Read-ExistingEnv
 $bootstrapEmail = First-Value $existing @("BOOTSTRAP_SUPER_ADMIN_EMAIL")
 $bootstrapPassword = First-Value $existing @("BOOTSTRAP_SUPER_ADMIN_PASSWORD")
 $migrationPassword = First-Value $existing @("MIGRATION_TEMP_PASSWORD")
+$telegramAccessToken = First-Value $existing @("TELEGRAM_ACCESS_TOKEN")
+$telegramWebhookSecret = First-Value $existing @("TELEGRAM_WEBHOOK_SECRET")
 
 if (-not $bootstrapEmail) { $bootstrapEmail = "superadmin@siteops.local" }
 if (-not $bootstrapPassword) { $bootstrapPassword = "LocalSiteOps!2026" }
@@ -155,7 +157,10 @@ $envLines = @(
     "BOOTSTRAP_SUPER_ADMIN_PASSWORD=$bootstrapPassword",
     "MIGRATION_TEMP_PASSWORD=$migrationPassword",
     "",
-    "VITE_API_BASE=http://localhost:8000"
+    "VITE_API_BASE=http://localhost:8000",
+    "",
+    "TELEGRAM_ACCESS_TOKEN=$telegramAccessToken",
+    "TELEGRAM_WEBHOOK_SECRET=$telegramWebhookSecret"
 )
 [System.IO.File]::WriteAllLines((Join-Path $repoRoot ".env"), $envLines, (New-Object System.Text.UTF8Encoding($false)))
 

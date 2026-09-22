@@ -307,13 +307,22 @@ def assign_membership(db: Session, project: V2Project, employee_id: uuid.UUID, p
     # membership's own id - unlike activation this can happen many times per
     # project, so the id (not just project/event type) is what makes repeat
     # calls distinct.
-    OutboxService(db).emit(
-        event_type="project.member_added",
-        aggregate_type="project",
-        aggregate_id=project.id,
-        payload={"project_id": str(project.id), "employee_id": str(employee_id), "project_role": project_role},
-        idempotency_key=f"project:{project.id}:project.member_added:{membership.id}",
-    )
+    #
+    # Gated to Active projects only: a Draft project is planning/setup, and
+    # `_ALL_MEMBERS_PROJECT_EVENTS` fans this out to the ENTIRE current team,
+    # not just the person just assigned - notifying an execution team about
+    # roster changes while the project hasn't started yet is exactly the
+    # Draft-phase operational noise the product rules forbid. Team setup
+    # before activation stays silent; `project.activated` (U2 above) is what
+    # tells everyone the project - and their assignment - is now live.
+    if project.status == "active":
+        OutboxService(db).emit(
+            event_type="project.member_added",
+            aggregate_type="project",
+            aggregate_id=project.id,
+            payload={"project_id": str(project.id), "employee_id": str(employee_id), "project_role": project_role},
+            idempotency_key=f"project:{project.id}:project.member_added:{membership.id}",
+        )
     return membership
 
 

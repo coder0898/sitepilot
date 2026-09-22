@@ -121,7 +121,9 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
     projects = visible_v2_projects(user, db)
     project_ids = {project.id for project in projects}
 
-    links_query = select(ProjectVendor.id, ProjectVendor.project_id, ProjectVendor.vendor_id)
+    links_query = select(ProjectVendor.id, ProjectVendor.project_id, ProjectVendor.vendor_id).where(
+        ProjectVendor.ends_at.is_(None)
+    )
     if user.role in {UserRole.project_manager, UserRole.supervisor}:
         links_query = links_query.where(ProjectVendor.project_id.in_(project_ids)) if project_ids else links_query.where(False)
     project_links = db.execute(links_query).all()
@@ -163,7 +165,11 @@ def get_hub(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "email": v.email, "address": v.address, "gst_number": v.gst_number,
             "notes": v.notes, "created_at": v.created_at.isoformat(),
         } for v in vendors],
-        "contacts": [{"id": str(c.id), "vendor_id": str(c.vendor_id), "name": c.name, "designation": c.designation, "phone": c.phone, "whatsapp": c.whatsapp, "is_primary": c.is_primary} for c in contacts],
+        "contacts": [{
+            "id": str(c.id), "vendor_id": str(c.vendor_id), "name": c.name, "designation": c.designation,
+            "phone": c.phone, "whatsapp": c.whatsapp, "is_primary": c.is_primary,
+            "active_channel": c.active_channel, "telegram_connected": bool(c.telegram_chat_id),
+        } for c in contacts],
         # Sub-vendor parentage lives solely on `V2Vendor.parent_vendor_id`;
         # the legacy `contractor_relationships` mirror was never migrated
         # (see the V2 vendor migration header). Derived here so the existing

@@ -92,6 +92,9 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
     "task.vendor_assigned": TemplateSpec(
         "task_vendor_assigned", "en", ("task_id", "vendor_id"),
     ),
+    "task.vendor_unassigned": TemplateSpec(
+        "TBD_task_vendor_unassigned", "en", ("task_id", "vendor_id", "reason"),
+    ),
     "task.readiness_declared": TemplateSpec(
         # Non-doc event type (Phase 3 advisory overlay table, not a doc
         # workflow) - mapped to the nearest doc-aligned name, flagged for
@@ -229,6 +232,9 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
         # same type reused with different payload keys - the two shapes
         # never overlap (person vs. vendor), so each gets its own entry.
         "TBD_project_vendor_mapped", "en", ("project_id", "vendor_id"),
+    ),
+    "project.vendor_removed": TemplateSpec(
+        "TBD_project_vendor_removed", "en", ("project_id", "vendor_id", "reason"),
     ),
     "project_external_approval.accepted": TemplateSpec(
         # U5: the assignee's WhatsApp acknowledgement - distinct from the

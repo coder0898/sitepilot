@@ -191,7 +191,13 @@ class ProjectGateDecisionService:
         decision: str,
         actor: User,
         reason: str | None = None,
+        source: str = "portal",
     ) -> ExternalApprovalView:
+        """`source` is an audit-trail label only ('portal'/'whatsapp'/
+        'telegram') - `_require_approver` below still owns the actual
+        Admin/Super-Admin authorization check regardless of channel.
+        Defaults to 'portal' for the raw route; `InboundMessageService`'s
+        GATEDECIDE handler passes its own channel."""
         project = self._require_access(project_id, actor)
 
         if decision not in GATE_DECISIONS:
@@ -236,7 +242,7 @@ class ProjectGateDecisionService:
                 entity_type="project_external_approval",
                 entity_id=approval.id,
                 project_id=project.id,
-                source="portal",
+                source=source,
                 before_json={"status": previous_status},
                 after_json={"status": "approved", "decided_by": str(actor.id), "decided_at": decided_at.isoformat()},
                 reason=clean_reason or "External approval approved by Admin.",
@@ -260,7 +266,7 @@ class ProjectGateDecisionService:
                 entity_type="project_external_approval",
                 entity_id=approval.id,
                 project_id=project.id,
-                source="portal",
+                source=source,
                 before_json={"status": previous_status},
                 after_json={
                     "status": "rejected", "decided_by": str(actor.id),
@@ -286,7 +292,7 @@ class ProjectGateDecisionService:
                 entity_type="project_external_approval",
                 entity_id=approval.id,
                 project_id=project.id,
-                source="portal",
+                source=source,
                 before_json={"status": "rejected"},
                 after_json={"status": "assigned"},
                 reason="Returned to the assignee for resubmission after rejection.",

@@ -21,8 +21,19 @@ class ProjectVendorOut(BaseModel):
     vendor_id: uuid.UUID
     mapped_by: uuid.UUID
     created_at: datetime
+    ends_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectVendorRemoveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=4)
+
+
+class TaskVendorUnassignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=4)
 
 
 class V2VendorOut(BaseModel):
@@ -67,6 +78,7 @@ class ProjectVendorMappingOut(BaseModel):
     parent_vendor_id: uuid.UUID | None
     mapped_by: uuid.UUID
     created_at: datetime
+    ends_at: datetime | None = None
 
 
 class TaskVendorAssignmentIn(BaseModel):
@@ -82,6 +94,7 @@ class TaskVendorAssignmentOut(BaseModel):
     status: str
     assigned_by: uuid.UUID
     created_at: datetime
+    ends_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -95,7 +108,7 @@ class VendorAcknowledgementIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     response: Literal["accepted", "declined", "clarification_requested"]
-    channel: Literal["portal", "whatsapp", "system"] = "portal"
+    channel: Literal["portal", "whatsapp", "telegram", "system"] = "portal"
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -125,4 +138,5 @@ class TaskVendorAssignmentDetailOut(BaseModel):
     status: str
     assigned_by: uuid.UUID
     created_at: datetime
+    ends_at: datetime | None = None
     acknowledgements: list[VendorAcknowledgementOut] = Field(default_factory=list)

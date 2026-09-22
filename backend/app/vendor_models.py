@@ -97,6 +97,7 @@ class V2VendorContact(Base):
     __tablename__ = "vendor_contacts"
     __table_args__ = (
         Index("ix_v2_vendor_contacts_vendor", "vendor_id"),
+        CheckConstraint("active_channel in ('whatsapp', 'telegram')", name="ck_v2_vendor_contacts_active_channel"),
         {"schema": V2_SCHEMA},
     )
 
@@ -108,6 +109,15 @@ class V2VendorContact(Base):
     designation: Mapped[str | None] = mapped_column(Text)
     phone: Mapped[str] = mapped_column(Text, nullable=False)
     whatsapp: Mapped[str | None] = mapped_column(Text)
+    # U4 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md):
+    # set once this contact opens the bot's Start link with a valid
+    # connect-token (U13). Nullable and unused by any code path until then.
+    telegram_chat_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    # U5 (docs/plans/2026-09-16-001-feat-telegram-messaging-channel-plan.md,
+    # KTD1): which channel this contact is actually reachable on right now.
+    # Defaults to 'whatsapp' for every existing and new row so behavior is
+    # unchanged until an Admin/Super-Admin explicitly toggles someone (U15).
+    active_channel: Mapped[str] = mapped_column(Text, nullable=False, default="whatsapp")
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -122,15 +132,18 @@ class ProjectVendor(Base):
     candidacy and its parent's existing mapping), so it is enforced in the
     service layer rather than as a single-row CHECK constraint.
 
-    No `ended_at`/status column: this unit only adds mappings, it does not
-    build an unmapping flow, so a row's mere existence is what "actively
-    mapped" means for now (including for the sub-vendor parent check
-    above).
+    Soft removal (`ProjectVendorService.remove_vendor`): `ends_at` marks
+    when a mapping stopped being active. The row is never deleted, so
+    history (acknowledgements, evidence, audit trail) stays intact -
+    `ends_at is null` is what "actively mapped" means everywhere this is
+    read (including the sub-vendor parent check above). A vendor can be
+    re-mapped to the same project after removal - only one *active* mapping
+    per project/vendor is enforced (`uq_v2_project_vendors_active_project_vendor`),
+    not one ever.
     """
 
     __tablename__ = "project_vendors"
     __table_args__ = (
-        UniqueConstraint("project_id", "vendor_id", name="uq_v2_project_vendors_project_vendor"),
         Index("ix_v2_project_vendors_project", "project_id"),
         Index("ix_v2_project_vendors_vendor", "vendor_id"),
         {"schema": V2_SCHEMA},
@@ -145,6 +158,7 @@ class ProjectVendor(Base):
     )
     mapped_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskVendorAssignment(Base):
@@ -161,6 +175,13 @@ class TaskVendorAssignment(Base):
     `status` starts at `pending_ack` on every insert here; `acknowledged`
     and `declined` are reserved for a later unit's vendor-acknowledgement
     flow - this unit does not transition this column after creation.
+
+    Soft removal (`TaskVendorAssignmentService.unassign_vendor`): `ends_at`
+    marks when the delegation stopped being active, independent of
+    `status` - an assignment can be ended regardless of its acknowledgement
+    outcome. The row and every `VendorAcknowledgement` against it stay in
+    place; `ends_at is null` is what "currently delegated" means everywhere
+    this is read.
     """
 
     __tablename__ = "task_vendor_assignments"
@@ -192,6 +213,7 @@ class TaskVendorAssignment(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_ack")
     assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class VendorAcknowledgement(Base):
@@ -221,7 +243,7 @@ class VendorAcknowledgement(Base):
             name="ck_v2_vendor_acknowledgements_response",
         ),
         CheckConstraint(
-            "channel in ('portal', 'whatsapp', 'system')", name="ck_v2_vendor_acknowledgements_channel",
+            "channel in ('portal', 'whatsapp', 'telegram', 'system')", name="ck_v2_vendor_acknowledgements_channel",
         ),
         Index("ix_v2_vendor_acknowledgements_assignment", "task_vendor_assignment_id"),
         {"schema": V2_SCHEMA},

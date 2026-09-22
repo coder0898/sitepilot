@@ -19,10 +19,23 @@ def public_user(user: User, db: Session | None = None) -> dict:
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "employee_profile": {
+            "id": str(profile.id),
             "employee_code": profile.employee_code,
             "designation": profile.designation,
             "department": profile.department,
             "availability": profile.availability,
+            "active_channel": profile.active_channel,
+            "telegram_connected": bool(profile.telegram_chat_id),
+            # Messaging readiness is a fact about the CURRENT active_channel,
+            # not a blanket "has any channel" check - deliberately no
+            # auto-fallback to WhatsApp if Telegram is selected but
+            # unconnected (see channel_toggle.py's own precondition on the
+            # switch itself). A dispatch attempt against a not-ready person
+            # still resolves and fails visibly (missing_chat_id/missing_phone
+            # in message_dispatch.py) rather than silently rerouting.
+            "messaging_ready": (
+                bool(profile.telegram_chat_id) if profile.active_channel == "telegram" else bool(user.phone)
+            ),
         } if profile else None,
     }
 

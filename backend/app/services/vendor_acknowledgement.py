@@ -113,6 +113,8 @@ class VendorAcknowledgementService:
         self._require_pm(project, actor)
         assignment = self._get_assignment(project.id, task_id, assignment_id)
 
+        if assignment.ends_at is not None:
+            raise HTTPException(409, "This vendor assignment has been ended and can no longer be acknowledged.")
         if assignment.status in RESOLVED_ASSIGNMENT_STATUSES:
             raise HTTPException(409, "This vendor assignment has already been resolved.")
 

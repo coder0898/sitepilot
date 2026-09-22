@@ -371,13 +371,22 @@ class TaskLifecycleService:
         actor: User,
         reason: str | None = None,
         _via_decision_service: bool = False,
+        source: str = "portal",
     ) -> Task:
         """`_via_decision_service` is set only by TaskVerificationService/
         TaskApprovalService's own internal calls (never by the raw
         `POST /status` route) - it (a) unlocks the decision-only targets
         below and (b) skips the role re-check, since the calling service
         already validated the actor as the verifier/approver of record for
-        this exact decision."""
+        this exact decision.
+
+        `source` is purely an audit-trail label ('portal'/'whatsapp'/
+        'telegram'/'system') - it changes nothing about who is allowed to
+        transition what. Defaults to 'portal' for every existing call site
+        (the raw route, TaskVerificationService, TaskApprovalService); only
+        `InboundMessageService`'s STATUS-command handler passes its own
+        channel, so a Telegram/WhatsApp-originated status change is no
+        longer mis-recorded as if it happened in the Web App."""
         project = self._require_access(project_id, actor)
 
         task = self.db.scalar(
@@ -599,7 +608,7 @@ class TaskLifecycleService:
             entity_type="task",
             entity_id=task.id,
             project_id=project.id,
-            source="portal",
+            source=source,
             before_json={"lifecycle_status": before_status},
             after_json=after_json,
             reason=clean_reason,
