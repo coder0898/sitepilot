@@ -5,13 +5,14 @@ name/variable-order registry) by design (KTD8): Telegram has no
 Meta-style approved-template system, so this module owns its own
 plain-text rendering instead of reusing that registry's shape.
 
-Covers only the event types needed for the Phase 2 manual test plan
+Covers the event types needed for the Phase 2 manual test plan
 (docs/2026-09-19-001-telegram-phase1-status-phase2-test-plan.md):
 project.activated, project.member_added, task.readiness_check/
-task.start_check, task.status_changed, task.vendor_assigned, and the gate
-assignment/acknowledgement events. Every other event type keeps the
-previous raw key:value dump via `_fallback`, unchanged - this module does
-not attempt to cover every event type in the registry yet.
+task.start_check, task.status_changed, task.vendor_assigned, the gate
+assignment/acknowledgement events, plus vendor soft-removal
+(task.vendor_unassigned, project.vendor_removed). Every other event type
+keeps the previous raw key:value dump via `_fallback`, unchanged - this
+module does not attempt to cover every event type in the registry yet.
 
 Architecture rule this module exists to satisfy: business event/data ->
 shared backend -> Telegram renderer -> Telegram message. It only READS
@@ -172,6 +173,29 @@ def _render_task_vendor_assigned(db: Session, payload: dict, recipient_employee_
     return "\n".join(lines) + _footer(f"`ACCEPT {ref}` or `DECLINE {ref}`")
 
 
+def _render_task_vendor_unassigned(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
+    lines = [
+        "*Vendor Unassigned From Task*",
+        f"Project: {_project_name(db, payload.get('project_id'))}",
+        f"Task: {_task_label(db, payload.get('task_id'))}",
+        f"Vendor: {_vendor_name(db, payload.get('vendor_id'))}",
+    ]
+    if payload.get("reason"):
+        lines.append(f"Reason: {payload['reason']}")
+    return "\n".join(lines) + _footer(None)
+
+
+def _render_project_vendor_removed(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
+    lines = [
+        "*Removed From Project*",
+        f"Project: {_project_name(db, payload.get('project_id'))}",
+        f"Vendor: {_vendor_name(db, payload.get('vendor_id'))}",
+    ]
+    if payload.get("reason"):
+        lines.append(f"Reason: {payload['reason']}")
+    return "\n".join(lines) + _footer(None)
+
+
 def _render_gate_assigned(title: str) -> Callable[[Session, dict, uuid.UUID | None], str]:
     def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
         ref = _short_ref(payload.get("approval_id"))
@@ -207,6 +231,8 @@ _RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], str]] = {
     "task.start_check": _render_task_check("Task Start Check"),
     "task.status_changed": _render_task_status_changed,
     "task.vendor_assigned": _render_task_vendor_assigned,
+    "task.vendor_unassigned": _render_task_vendor_unassigned,
+    "project.vendor_removed": _render_project_vendor_removed,
     "project_external_approval.assigned": _render_gate_assigned("Gate Assignment"),
     "project_external_approval.reassigned": _render_gate_assigned("Gate Reassignment"),
     "project_external_approval.accepted": _render_gate_response("Gate Acknowledged"),

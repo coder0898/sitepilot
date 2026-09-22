@@ -132,15 +132,18 @@ class ProjectVendor(Base):
     candidacy and its parent's existing mapping), so it is enforced in the
     service layer rather than as a single-row CHECK constraint.
 
-    No `ended_at`/status column: this unit only adds mappings, it does not
-    build an unmapping flow, so a row's mere existence is what "actively
-    mapped" means for now (including for the sub-vendor parent check
-    above).
+    Soft removal (`ProjectVendorService.remove_vendor`): `ends_at` marks
+    when a mapping stopped being active. The row is never deleted, so
+    history (acknowledgements, evidence, audit trail) stays intact -
+    `ends_at is null` is what "actively mapped" means everywhere this is
+    read (including the sub-vendor parent check above). A vendor can be
+    re-mapped to the same project after removal - only one *active* mapping
+    per project/vendor is enforced (`uq_v2_project_vendors_active_project_vendor`),
+    not one ever.
     """
 
     __tablename__ = "project_vendors"
     __table_args__ = (
-        UniqueConstraint("project_id", "vendor_id", name="uq_v2_project_vendors_project_vendor"),
         Index("ix_v2_project_vendors_project", "project_id"),
         Index("ix_v2_project_vendors_vendor", "vendor_id"),
         {"schema": V2_SCHEMA},
@@ -155,6 +158,7 @@ class ProjectVendor(Base):
     )
     mapped_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskVendorAssignment(Base):
@@ -171,6 +175,13 @@ class TaskVendorAssignment(Base):
     `status` starts at `pending_ack` on every insert here; `acknowledged`
     and `declined` are reserved for a later unit's vendor-acknowledgement
     flow - this unit does not transition this column after creation.
+
+    Soft removal (`TaskVendorAssignmentService.unassign_vendor`): `ends_at`
+    marks when the delegation stopped being active, independent of
+    `status` - an assignment can be ended regardless of its acknowledgement
+    outcome. The row and every `VendorAcknowledgement` against it stay in
+    place; `ends_at is null` is what "currently delegated" means everywhere
+    this is read.
     """
 
     __tablename__ = "task_vendor_assignments"
@@ -202,6 +213,7 @@ class TaskVendorAssignment(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_ack")
     assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class VendorAcknowledgement(Base):

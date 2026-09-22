@@ -319,7 +319,9 @@ class MessageDispatchService:
         documents (a genuinely unresolvable recipient, no row to construct).
         A project with no mapped vendors returns `[]`, not an error."""
         vendor_ids = self.db.scalars(
-            select(ProjectVendor.vendor_id).where(ProjectVendor.project_id == project_id)
+            select(ProjectVendor.vendor_id).where(
+                ProjectVendor.project_id == project_id, ProjectVendor.ends_at.is_(None),
+            )
         ).all()
         recipients: list[Recipient] = []
         for vendor_id in vendor_ids:
@@ -349,12 +351,18 @@ class MessageDispatchService:
         return Recipient(employee_id=None, vendor_contact_id=contact.id, phone=phone)
 
     def _resolve_vendor_recipient(self, event: OutboxEvent) -> Recipient | None:
-        """Only called for `event_type == 'task.vendor_assigned'`. Reads
-        `vendor_id` directly off the payload (the shape
-        `TaskVendorAssignmentService.assign_vendor` actually writes -
-        `{"task_id", "project_id", "assignment_id", "vendor_id"}`), with a
+        """Called for `task.vendor_assigned`/`task.vendor_unassigned` and
+        `project.vendor_removed`. Reads `vendor_id` directly off the payload
+        (the shape `TaskVendorAssignmentService`/`ProjectVendorService`
+        actually write - always includes a `vendor_id` key), with a
         fallback re-derivation via `assignment_id` for robustness against a
-        future payload shape change."""
+        future payload shape change.
+
+        Deliberately does NOT go through `_resolve_all_project_vendors` (or
+        any other "currently active" vendor query): by the time a removal/
+        unassignment event dispatches, the departing vendor's mapping or
+        assignment row already has `ends_at` set, so an "active vendors"
+        query would exclude the very person this event needs to reach."""
         payload = event.payload or {}
         vendor_id_raw = payload.get("vendor_id")
         if not vendor_id_raw:
@@ -394,6 +402,7 @@ class MessageDispatchService:
             .where(
                 TaskVendorAssignment.task_id == task.id,
                 TaskVendorAssignment.status != "declined",
+                TaskVendorAssignment.ends_at.is_(None),
             )
             .order_by(TaskVendorAssignment.created_at.desc())
             .limit(1)
@@ -530,7 +539,7 @@ class MessageDispatchService:
             if task is None:
                 return []
             recipients.extend(self._resolve_pm_supervisor_recipients(task.project_id))
-            if event.event_type == "task.vendor_assigned":
+            if event.event_type in ("task.vendor_assigned", "task.vendor_unassigned"):
                 vendor_recipient = self._resolve_vendor_recipient(event)
                 if vendor_recipient is not None:
                     recipients.append(vendor_recipient)
@@ -554,7 +563,17 @@ class MessageDispatchService:
                 if vendor_task_recipient is not None:
                     recipients.append(vendor_task_recipient)
         elif event.aggregate_type == "project":
-            if event.event_type in _ALL_MEMBERS_PROJECT_EVENTS:
+            if event.event_type == "project.vendor_removed":
+                # Deliberately NOT the default PM/Supervisor-only branch
+                # below: this event's only intended recipient is the vendor
+                # being removed (product decision - no team-wide notice for
+                # a vendor removal). Resolved straight from the payload, not
+                # `_resolve_all_project_vendors`, since that query excludes
+                # this vendor the moment its mapping's `ends_at` is set.
+                vendor_recipient = self._resolve_vendor_recipient(event)
+                if vendor_recipient is not None:
+                    recipients.append(vendor_recipient)
+            elif event.event_type in _ALL_MEMBERS_PROJECT_EVENTS:
                 # Branch, not addition: `_resolve_all_project_members`'s
                 # result already includes every PM/Supervisor
                 # `_resolve_pm_supervisor_recipients` would have found, so

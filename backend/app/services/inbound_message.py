@@ -871,7 +871,9 @@ class InboundMessageService:
 
     def _resolve_assignment_by_ref(self, ref: str) -> TaskVendorAssignment | None:
         ref_lower = ref.lower()
-        candidates = self.db.scalars(select(TaskVendorAssignment)).all()
+        candidates = self.db.scalars(
+            select(TaskVendorAssignment).where(TaskVendorAssignment.ends_at.is_(None))
+        ).all()
         matched = [
             assignment for assignment in candidates
             if str(assignment.id).replace("-", "").lower()[:8] == ref_lower

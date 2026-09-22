@@ -18,6 +18,7 @@ passing test.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -25,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import Task
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2Project, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2CapabilityCategory, V2Vendor, V2VendorCapability
 
@@ -127,6 +128,7 @@ class TaskVendorAssignmentService:
             select(ProjectVendor.id).where(
                 ProjectVendor.project_id == project.id,
                 ProjectVendor.vendor_id == vendor.id,
+                ProjectVendor.ends_at.is_(None),
             )
         )
         if not mapped:
@@ -158,6 +160,67 @@ class TaskVendorAssignmentService:
             },
             idempotency_key=f"task:{task.id}:task.vendor_assigned:{assignment.id}",
         )
+
+        self.db.commit()
+        self.db.refresh(assignment)
+        return assignment
+
+    # ---- unassignment ---------------------------------------------------
+
+    def unassign_vendor(
+        self, project_id: uuid.UUID, task_id: uuid.UUID, assignment_id: uuid.UUID, actor: User, reason: str,
+    ) -> TaskVendorAssignment:
+        """Soft-ends one `TaskVendorAssignment` (`ends_at`), leaving the
+        vendor's project mapping and every acknowledgement against this
+        assignment untouched - pulling a vendor off one task never affects
+        their standing on the rest of the project (see `remove_vendor` in
+        `project_vendor.py` for the whole-project action)."""
+        project = self._require_access(project_id, actor)
+        self._require_pm(project, actor)
+        task = self._get_task(project.id, task_id)
+
+        assignment = self.db.scalar(
+            select(TaskVendorAssignment).where(
+                TaskVendorAssignment.id == assignment_id,
+                TaskVendorAssignment.task_id == task.id,
+                TaskVendorAssignment.project_id == project.id,
+            )
+        )
+        if not assignment or assignment.ends_at is not None:
+            raise HTTPException(404, "Active vendor assignment not found for this task.")
+
+        clean_reason = (reason or "").strip()
+        if not clean_reason:
+            raise HTTPException(422, "A reason is required to unassign a vendor from a task.")
+
+        now = datetime.now(timezone.utc)
+        assignment.ends_at = now
+
+        self.db.add(V2AuditEvent(
+            actor_user_id=actor.id,
+            action="VENDOR_TASK_UNASSIGNED",
+            entity_type="task_vendor_assignment",
+            entity_id=assignment.id,
+            project_id=project.id,
+            before_json={"vendor_id": str(assignment.vendor_id), "task_id": str(task.id), "ends_at": None},
+            after_json={"vendor_id": str(assignment.vendor_id), "task_id": str(task.id), "ends_at": now.isoformat()},
+            reason=clean_reason,
+        ))
+
+        if project.status == "active":
+            OutboxService(self.db).emit(
+                event_type="task.vendor_unassigned",
+                aggregate_type="task",
+                aggregate_id=task.id,
+                payload={
+                    "task_id": str(task.id),
+                    "project_id": str(project.id),
+                    "assignment_id": str(assignment.id),
+                    "vendor_id": str(assignment.vendor_id),
+                    "reason": clean_reason,
+                },
+                idempotency_key=f"task:{task.id}:task.vendor_unassigned:{assignment.id}",
+            )
 
         self.db.commit()
         self.db.refresh(assignment)

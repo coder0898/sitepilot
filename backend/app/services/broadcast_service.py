@@ -75,7 +75,11 @@ def _internal_recipients(db: Session, project_id: uuid.UUID, project_role: str) 
 
 
 def _vendor_recipients(db: Session, project_id: uuid.UUID) -> list[dict]:
-    vendor_ids = db.scalars(select(ProjectVendor.vendor_id).where(ProjectVendor.project_id == project_id)).all()
+    vendor_ids = db.scalars(
+        select(ProjectVendor.vendor_id).where(
+            ProjectVendor.project_id == project_id, ProjectVendor.ends_at.is_(None),
+        )
+    ).all()
     if not vendor_ids:
         return []
     vendors = db.scalars(select(V2Vendor).where(V2Vendor.id.in_(vendor_ids)).order_by(V2Vendor.name)).all()
@@ -112,7 +116,11 @@ def _vendor_recipients(db: Session, project_id: uuid.UUID) -> list[dict]:
 
 
 def _vendor_contact_recipients(db: Session, project_id: uuid.UUID) -> list[dict]:
-    vendor_ids = db.scalars(select(ProjectVendor.vendor_id).where(ProjectVendor.project_id == project_id)).all()
+    vendor_ids = db.scalars(
+        select(ProjectVendor.vendor_id).where(
+            ProjectVendor.project_id == project_id, ProjectVendor.ends_at.is_(None),
+        )
+    ).all()
     if not vendor_ids:
         return []
     rows = db.execute(
