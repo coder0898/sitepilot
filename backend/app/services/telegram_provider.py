@@ -17,10 +17,14 @@ Meta template components, is deferred to U9/U10/KTD8's open question
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.config import settings
 from app.services.message_dispatch import ProviderSendResult
+
+logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
@@ -59,6 +63,10 @@ class TelegramProviderAdapter:
         conformance but unused - Telegram has no named-template registry
         to look it up in.
         """
+        if payload.get("buttons"):
+            return self.send_with_buttons(
+                recipient_phone, payload.get("text", ""), payload["buttons"], parse_mode=payload.get("parse_mode"),
+            )
         return self.send_text(recipient_phone, payload.get("text", ""), parse_mode=payload.get("parse_mode"))
 
     def send_text(self, chat_id: str, text: str, parse_mode: str | None = None) -> ProviderSendResult:
@@ -66,16 +74,45 @@ class TelegramProviderAdapter:
         "HTML") is only sent when given, so plain-text callers are unchanged."""
         return self._send(chat_id, text, reply_markup=None, parse_mode=parse_mode)
 
-    def send_with_buttons(self, chat_id: str, text: str, buttons: list[list[dict]]) -> ProviderSendResult:
+    def send_with_buttons(
+        self, chat_id: str, text: str, buttons: list[list[dict]], parse_mode: str | None = None,
+    ) -> ProviderSendResult:
         """Sends a text message with an inline keyboard.
 
         `buttons` is a list of button rows, each row a list of
         `{"text": ..., "callback_data": ...}` dicts, matching Telegram's
-        own `inline_keyboard` shape directly - no translation layer, since
-        nothing in this codebase has an opinion on button shape yet.
+        own `inline_keyboard` shape directly - no translation layer.
         """
         reply_markup = {"inline_keyboard": buttons}
-        return self._send(chat_id, text, reply_markup=reply_markup)
+        return self._send(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+    def answer_callback_query(self, callback_query_id: str, text: str) -> bool:
+        """Stops the pressed button's loading spinner and shows `text` as a
+        short toast. Best-effort: a failure is logged, never raised."""
+        return self._call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text[:200]})
+
+    def remove_buttons(self, chat_id: str, message_id: int) -> bool:
+        """Removes the inline keyboard from an already-sent message, so a
+        completed action's buttons can't be pressed again. Best-effort."""
+        return self._call(
+            "editMessageReplyMarkup",
+            {"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}},
+        )
+
+    def _call(self, method: str, body: dict) -> bool:
+        if not self.access_token:
+            return False
+        url = f"{TELEGRAM_API_BASE}/bot{self.access_token}/{method}"
+        try:
+            response = httpx.post(url, json=body, timeout=self.timeout)
+            data = response.json() if response.content else {}
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Telegram %s failed: %s", method, exc)
+            return False
+        if response.status_code >= 400 or not data.get("ok", False):
+            logger.warning("Telegram %s failed: %s", method, data.get("description") or response.status_code)
+            return False
+        return True
 
     def _send(self, chat_id: str, text: str, *, reply_markup: dict | None, parse_mode: str | None = None) -> ProviderSendResult:
         if not chat_id:

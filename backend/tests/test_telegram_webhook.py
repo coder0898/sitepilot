@@ -9,6 +9,7 @@ same ATTACH-DATABASE-for-siteops_v2-schema pattern as
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -32,6 +33,17 @@ def compile_jsonb_sqlite(_type, _compiler, **_kw):
 
 
 WEBHOOK_SECRET = "test-telegram-webhook-secret"
+
+
+class _FakeResponse:
+    status_code = 200
+    content = b"x"
+
+    def __init__(self, body: dict):
+        self._body = body
+
+    def json(self):
+        return self._body
 
 
 class TelegramWebhookApiTests(unittest.TestCase):
@@ -78,9 +90,23 @@ class TelegramWebhookApiTests(unittest.TestCase):
         self.app.dependency_overrides[get_db] = override_db
         self.client = TestClient(self.app)
 
+        # Button presses reply over Telegram - never let a test reach the
+        # real Bot API (the container carries a real token), and never run a
+        # real dispatch pass against the app database.
+        self._http_patch = patch("app.services.telegram_provider.httpx.post")
+        self.mock_post = self._http_patch.start()
+        self.mock_post.return_value = _FakeResponse({"ok": True, "result": {"message_id": 1}})
+        self._dispatch_patch = patch("app.routes.telegram_webhook._dispatch_now")
+        self.mock_dispatch_now = self._dispatch_patch.start()
+
     def tearDown(self):
+        self._http_patch.stop()
+        self._dispatch_patch.stop()
         self.client.close()
         settings.telegram_webhook_secret = self._original_secret
+
+    def _telegram_calls(self, method: str) -> list[dict]:
+        return [c.kwargs["json"] for c in self.mock_post.call_args_list if c.args[0].endswith(f"/{method}")]
 
     def _rows(self) -> list[TelegramInboundUpdate]:
         with self.Session() as session:
@@ -118,6 +144,29 @@ class TelegramWebhookApiTests(unittest.TestCase):
         self.assertEqual(rows[0].chat_id, "555")
         self.assertEqual(rows[0].callback_data, "accept")
         self.assertIsNone(rows[0].message_text)
+        # Not a gate button: answered as stale, readable, nothing run.
+        replies = self._telegram_calls("sendMessage")
+        self.assertEqual(len(replies), 1)
+        self.assertIn("no longer available", replies[0]["text"])
+        self.mock_dispatch_now.assert_not_called()
+
+    def test_gate_button_from_unlinked_chat_gets_a_readable_reply(self):
+        response = self._post({
+            "update_id": 1010,
+            "callback_query": {
+                "id": "cbq-1",
+                "message": {"chat": {"id": 555}, "message_id": 42},
+                "data": f"g1:ac:{'a' * 32}",
+            },
+        })
+
+        self.assertEqual(response.status_code, 200)
+        answers = self._telegram_calls("answerCallbackQuery")
+        self.assertEqual(answers[0]["callback_query_id"], "cbq-1")
+        replies = self._telegram_calls("sendMessage")
+        self.assertIn("isn't linked to SiteOps", replies[0]["text"])
+        self.assertEqual(self._telegram_calls("editMessageReplyMarkup"), [])
+        self.mock_dispatch_now.assert_not_called()
 
     def test_missing_secret_token_header_is_rejected(self):
         response = self._post({"update_id": 1003, "message": {"chat": {"id": 555}, "text": "hi"}}, secret=None)

@@ -36,7 +36,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User
 from app.project_models import V2Project, V2ProjectExternalGate
 from app.services.project_gate_status_check import STATUS_CHECK_HEALTHS
-from app.services.telegram_message import TelegramAction, TelegramMessage
+from app.services.telegram_message import TelegramAction, TelegramMessage, gate_callback
 
 # Users are in India; IST has no DST, so a fixed offset is exact.
 _IST = timezone(timedelta(hours=5, minutes=30), "IST")
@@ -98,6 +98,7 @@ def _format_timestamp(value: datetime | None) -> str:
 @dataclass(frozen=True)
 class _Gate:
     approval: ProjectExternalApproval | None
+    approval_id: uuid.UUID | None
     gate_name: str
     project_name: str
     due: str
@@ -123,6 +124,7 @@ def _gate(db: Session, payload: dict) -> _Gate:
     ref = str(approval_id).replace("-", "")[:8] if approval_id else "?"
     return _Gate(
         approval=approval,
+        approval_id=approval_id,
         gate_name=gate_name or "Unknown approval",
         project_name=project_name or "Unknown project",
         due=_format_date(due_raw),
@@ -153,23 +155,33 @@ def _message(
     return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML", actions=actions)
 
 
-# ---- actions (each is the exact typed command that performs it) -------------
+# ---- actions ------------------------------------------------------------------
+# Each action is the exact typed command that performs it, plus the button
+# callback that runs that same command (telegram_callback.py). No approval id
+# (a malformed payload) means no button - the typed command still shows.
+
+
+def _cb(g: _Gate, code: str, arg: str | None = None) -> str | None:
+    return gate_callback(code, g.approval_id, arg) if g.approval_id else None
 
 
 def _health_values(exclude: tuple[str, ...] = ()) -> list[str]:
     return [h for h in _HEALTH_ORDER if h in STATUS_CHECK_HEALTHS and h not in exclude]
 
 
-def _health_actions(ref: str, exclude: tuple[str, ...] = ()) -> tuple[TelegramAction, ...]:
-    return tuple(TelegramAction(HEALTH_LABELS[h], f"GATESTATUS {ref} {h}") for h in _health_values(exclude))
+def _health_actions(g: _Gate, exclude: tuple[str, ...] = ()) -> tuple[TelegramAction, ...]:
+    return tuple(
+        TelegramAction(HEALTH_LABELS[h], f"GATESTATUS {g.ref} {h}", _cb(g, "hs", h))
+        for h in _health_values(exclude)
+    )
 
 
-def _submit_evidence(ref: str, label: str = "Submit Evidence") -> TelegramAction:
-    return TelegramAction(label, f"GATEOPEN {ref}")
+def _submit_evidence(g: _Gate, label: str = "Submit Evidence") -> TelegramAction:
+    return TelegramAction(label, f"GATEOPEN {g.ref}", _cb(g, "op"))
 
 
-def _progress_actions(ref: str, exclude: tuple[str, ...] = ()) -> tuple[tuple[TelegramAction, ...], ...]:
-    return (_health_actions(ref, exclude), (_submit_evidence(ref),))
+def _progress_actions(g: _Gate, exclude: tuple[str, ...] = ()) -> tuple[tuple[TelegramAction, ...], ...]:
+    return (_health_actions(g, exclude), (_submit_evidence(g),))
 
 
 # ---- templates ----------------------------------------------------------------
@@ -183,7 +195,10 @@ def _assigned_to_employee(g: _Gate) -> TelegramMessage:
             "You are responsible for coordinating this external approval.",
             "This may take time depending on the external authority.",
         ],
-        actions=((TelegramAction("Acknowledge", f"GATEACCEPT {g.ref}"), TelegramAction("Decline", f"GATEDECLINE {g.ref}")),),
+        actions=((
+            TelegramAction("Acknowledge", f"GATEACCEPT {g.ref}", _cb(g, "ac")),
+            TelegramAction("Decline", f"GATEDECLINE {g.ref}", _cb(g, "dc")),
+        ),),
     )
 
 
@@ -258,7 +273,7 @@ def _render_accepted(db: Session, payload: dict, recipient_employee_id: uuid.UUI
                 "Responsibility has been acknowledged.",
                 "Use the options below whenever you need to update progress or submit evidence.",
             ],
-            actions=_progress_actions(g.ref),
+            actions=_progress_actions(g),
         )
     return _message(
         "External Approval Acknowledged",
@@ -297,7 +312,7 @@ def _render_status_checked(db: Session, payload: dict, recipient_employee_id: uu
             "Status Updated",
             [("Approval", g.gate_name), ("Status", health_label), ("Note", note)],
             ["This is only a progress update.", "The approval has not been submitted for Admin decision."],
-            actions=_progress_actions(g.ref),
+            actions=_progress_actions(g),
         )
     return _message(
         "External Approval Status Update",
@@ -364,8 +379,10 @@ def _render_submitted(db: Session, payload: dict, recipient_employee_id: uuid.UU
         ],
         ["Review the evidence in the Web App (External Approvals) and decide."],
         actions=((
-            TelegramAction("Approve", f"GATEDECIDE {g.ref} APPROVE"),
-            TelegramAction("Reject", f"GATEDECIDE {g.ref} REJECT <reason>"),
+            TelegramAction("Approve", f"GATEDECIDE {g.ref} APPROVE", _cb(g, "ap")),
+            # Until the typed-reason prompt exists (gate plan chunk 3), this
+            # button only replies with the ready-to-send reject command.
+            TelegramAction("Reject", f"GATEDECIDE {g.ref} REJECT <reason>", _cb(g, "rj")),
         ),),
     )
 
@@ -387,7 +404,7 @@ def _render_decided(db: Session, payload: dict, recipient_employee_id: uuid.UUID
             "External Approval Rejected",
             [("Approval", g.gate_name), ("Project", g.project_name), ("Rejected by", decider), ("Reason", reason)],
             ["Please correct the issue and submit the updated evidence again."],
-            actions=((_submit_evidence(g.ref, "Submit Evidence Again"),), _health_actions(g.ref)),
+            actions=((_submit_evidence(g, "Submit Evidence Again"),), _health_actions(g)),
         )
     if approved:
         return _message(
@@ -413,7 +430,7 @@ def _render_due_reminder(db: Session, payload: dict, recipient_employee_id: uuid
             "Reminder - External Approval Due Tomorrow",
             [("Approval", g.gate_name), ("Project", g.project_name), ("Due", g.due)],
             ["Please update the status if anything has changed."],
-            actions=_progress_actions(g.ref),
+            actions=_progress_actions(g),
         )
     return _message(
         "External Approval Due Tomorrow",
@@ -431,7 +448,7 @@ def _render_overdue(title_employee: str, title_admin: str, admin_note: str):
                 title_employee,
                 [("Approval", g.gate_name), ("Project", g.project_name), ("Due", g.due)],
                 ["This approval has not yet been submitted.", "Please update the current position."],
-                actions=_progress_actions(g.ref, exclude=("on_track",)),
+                actions=_progress_actions(g, exclude=("on_track",)),
             )
         return _message(
             title_admin,
@@ -456,7 +473,9 @@ def _render_session_opened(db: Session, payload: dict, recipient_employee_id: uu
             "You can send more than one item.",
             "When finished, submit everything for review.",
         ],
-        actions=((TelegramAction("Submit for Review", "GATECLOSE"),),),
+        # GATECLOSE takes no reference - the sender's one open session names
+        # the gate - so this button carries none either.
+        actions=((TelegramAction("Submit for Review", "GATECLOSE", gate_callback("cl")),),),
     )
 
 

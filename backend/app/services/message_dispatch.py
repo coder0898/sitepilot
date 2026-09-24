@@ -788,7 +788,14 @@ class MessageDispatchService:
             # message; no Telegram-specific business logic here).
             send_target = self._resolve_telegram_chat_id(recipient)
             message = render_telegram(self.db, event.event_type, event.payload or {}, recipient.employee_id)
-            send_payload = {"text": message.text_with_typed_fallback(), "parse_mode": message.parse_mode}
+            # Actions with a callback become inline buttons (pressing one runs
+            # the same typed command - telegram_callback.py); any action
+            # without one stays listed as a typed command in the text.
+            send_payload = {
+                "text": message.text_for_buttons(),
+                "parse_mode": message.parse_mode,
+                "buttons": message.button_rows(),
+            }
         else:
             # Merge `components` into a copy of the event payload rather
             # than mutating `event.payload` itself - the outbox row's

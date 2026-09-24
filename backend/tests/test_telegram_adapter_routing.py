@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import settings
-from app.execution_models import MessageDelivery, OutboxEvent
+from app.execution_models import MessageDelivery, OutboxEvent, ProjectExternalApproval
 from app.models import EmployeeProfile, User, UserRole
 from app.services.message_dispatch import MessageDispatchService, Recipient
 from app.services.message_templates import DEFAULT_TEMPLATE
@@ -170,6 +170,33 @@ class TelegramAdapterRoutingTests(unittest.TestCase):
         self.assertEqual(delivery.status, "sent")
 
     @patch("app.services.telegram_provider.httpx.post")
+    def test_actionable_gate_message_is_sent_with_inline_buttons(self, mock_post):
+        mock_post.return_value = _FakeResponse(200, {"ok": True, "result": {"message_id": 9}})
+        ProjectExternalApproval.__table__.create(self.engine)  # the renderer looks the gate up
+        recipient = Recipient(employee_id=self.telegram_profile_id, vendor_contact_id=None, phone="", channel="telegram")
+        approval_id = uuid.uuid4()
+        gate_event = OutboxEvent(
+            event_type="project_external_approval.assigned", aggregate_type="project_external_approval",
+            aggregate_id=approval_id,
+            payload={"approval_id": str(approval_id), "gate_name": "Fire NOC", "project_name": "Test Project",
+                     "assigned_to_user_id": str(TELEGRAM_EMPLOYEE_ID)},
+            idempotency_key=str(uuid.uuid4()), status="pending",
+        )
+        self.session.add(gate_event)
+        self.session.flush()
+
+        self.service._dispatch_to_recipient(gate_event, recipient, DEFAULT_TEMPLATE)
+
+        sent_body = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent_body["parse_mode"], "HTML")
+        self.assertEqual(
+            sent_body["reply_markup"]["inline_keyboard"][0][0],
+            {"text": "Acknowledge", "callback_data": f"g1:ac:{approval_id.hex}"},
+        )
+        self.assertNotIn("Reply with", sent_body["text"])
+        self.assertNotIn("GATEACCEPT", sent_body["text"])
+
+    @patch("app.services.telegram_provider.httpx.post")
     def test_non_gate_telegram_message_is_sent_without_parse_mode(self, mock_post):
         mock_post.return_value = _FakeResponse(200, {"ok": True, "result": {"message_id": 8}})
         recipient = Recipient(employee_id=self.telegram_profile_id, vendor_contact_id=None, phone="", channel="telegram")
@@ -177,6 +204,7 @@ class TelegramAdapterRoutingTests(unittest.TestCase):
         self.service._dispatch_to_recipient(self.event, recipient, DEFAULT_TEMPLATE)
 
         self.assertNotIn("parse_mode", mock_post.call_args.kwargs["json"])
+        self.assertNotIn("reply_markup", mock_post.call_args.kwargs["json"])
 
     @patch("app.services.telegram_provider.httpx.post")
     def test_telegram_recipient_with_no_chat_id_fails_clearly(self, mock_post):

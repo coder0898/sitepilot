@@ -14,8 +14,9 @@ database query, before any `telegram_inbound_updates` row is written.
 
 This unit verifies and stores the raw update, then recognizes a
 `/start <token>` message and hands it to `TelegramConnectService` (U13),
-or any other non-empty text to `TelegramInboundService` (U14) for full
-command parity. Telegram's own `update_id` is stored alongside the raw
+any other non-empty text to `TelegramInboundService` (U14) for full
+command parity, or an inline-button press to `TelegramCallbackService`
+(which runs the same typed command the button stands for). Telegram's own `update_id` is stored alongside the raw
 update, and a duplicate delivery short-circuits BEFORE either handler
 runs (the `IntegrityError` branch below returns early) - Telegram's Bot
 API redelivers on a slow/failed response, the same at-least-once behavior
@@ -42,13 +43,15 @@ import hmac
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
 from app.execution_models import TelegramInboundUpdate
+from app.services.outbox_scheduler import run_dispatch_pass
+from app.services.telegram_callback import TelegramCallbackService
 from app.services.telegram_connect import TelegramConnectService
 from app.services.telegram_inbound import TelegramInboundService
 
@@ -67,7 +70,9 @@ def _verify_secret_token(header_value: str | None) -> None:
 
 
 @router.post("/inbound")
-async def receive_inbound_telegram_update(request: Request, db: Session = Depends(get_db)):
+async def receive_inbound_telegram_update(
+    request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db),
+):
     _verify_secret_token(request.headers.get("X-Telegram-Bot-Api-Secret-Token"))
 
     raw_body = await request.body()
@@ -86,6 +91,8 @@ async def receive_inbound_telegram_update(request: Request, db: Session = Depend
     chat_id: str | None = None
     message_text: str | None = None
     callback_data: str | None = None
+    callback_query_id: str | None = None
+    callback_message_id: int | None = None
 
     if isinstance(message, dict):
         chat = message.get("chat") or {}
@@ -96,6 +103,8 @@ async def receive_inbound_telegram_update(request: Request, db: Session = Depend
         chat = inner_message.get("chat") or {}
         chat_id = str(chat.get("id")) if chat.get("id") is not None else None
         callback_data = callback_query.get("data")
+        callback_query_id = callback_query.get("id")
+        callback_message_id = inner_message.get("message_id")
 
     if update_id is None or chat_id is None:
         # Malformed or unrecognized update shape - nothing to store, not an
@@ -129,5 +138,27 @@ async def receive_inbound_telegram_update(request: Request, db: Session = Depend
         # STATUS, all six GATE* commands) - reuses InboundMessageService's
         # shared dispatch, not a separate implementation per command.
         TelegramInboundService(db).process(int(update_id), chat_id, message_text)
+    elif callback_data is not None:
+        # Inline-button press: runs the same GATE* command a user could type.
+        acted = TelegramCallbackService(db).handle(
+            update_id=int(update_id), chat_id=chat_id, message_id=callback_message_id,
+            callback_query_id=callback_query_id, data=callback_data,
+        )
+        if acted:
+            # Deliver the action's follow-up message now rather than on the
+            # dispatcher's next interval, so the button feels immediate.
+            background_tasks.add_task(_dispatch_now)
 
     return {"status": "received"}
+
+
+def _dispatch_now() -> None:
+    """One extra outbox dispatch pass, the same pass the background
+    dispatcher runs on its interval (safe to overlap - dispatch tolerates
+    concurrent passes). A failure only delays delivery to the next pass."""
+    if not settings.outbox_dispatch_enabled:
+        return
+    try:
+        run_dispatch_pass()
+    except Exception:  # noqa: BLE001 - never surface a delivery hiccup to the webhook
+        logger.exception("Immediate dispatch pass after a Telegram button press failed.")

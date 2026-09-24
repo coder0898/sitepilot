@@ -296,6 +296,66 @@ class TelegramGateRenderTests(unittest.TestCase):
         self.assertIn("<b>Reply with:</b>", text)
         self.assertIn(f"<code>GATEACCEPT {self.ref}</code> - Acknowledge", text)
 
+    # ---- buttons (chunk 2) ----------------------------------------------------------
+
+    def test_employee_buttons_carry_the_gate_id_not_a_typed_ref(self):
+        message = self.render(
+            "project_external_approval.assigned",
+            self.payload(assigned_to_user_id=str(self.employee.id)), self.employee_profile,
+        )
+        rows = message.button_rows()
+        self.assertEqual(
+            rows,
+            [[
+                {"text": "Acknowledge", "callback_data": f"g1:ac:{self.approval.id.hex}"},
+                {"text": "Decline", "callback_data": f"g1:dc:{self.approval.id.hex}"},
+            ]],
+        )
+        self.assertNotIn("Reply with", message.text_for_buttons())  # every action is a button
+
+    def test_progress_buttons_are_health_row_then_evidence(self):
+        message = self.render("project_external_approval.accepted", self.payload(), self.employee_profile)
+        hex_id = self.approval.id.hex
+        self.assertEqual(
+            [[b["callback_data"] for b in row] for row in message.button_rows()],
+            [
+                [f"g1:hs:{hex_id}:on_track", f"g1:hs:{hex_id}:blocked", f"g1:hs:{hex_id}:need_help"],
+                [f"g1:op:{hex_id}"],
+            ],
+        )
+
+    def test_admin_review_has_approve_and_reject_buttons(self):
+        payload = self.payload(submission_id=str(self.submission.id), submitted_by=str(self.employee.id))
+        message = self.render("project_external_approval.submitted", payload, self.admin_profile)
+        self.assertEqual(
+            message.button_rows(),
+            [[
+                {"text": "Approve", "callback_data": f"g1:ap:{self.approval.id.hex}"},
+                {"text": "Reject", "callback_data": f"g1:rj:{self.approval.id.hex}"},
+            ]],
+        )
+        self.assertNotIn("Reply with", message.text_for_buttons())
+
+    def test_session_opened_submit_button_needs_no_gate_id(self):
+        message = self.render("gate_confirmation.session_opened", self.payload(), self.employee_profile)
+        self.assertEqual(message.button_rows(), [[{"text": "Submit for Review", "callback_data": "g1:cl"}]])
+
+    def test_fyi_copies_have_no_buttons(self):
+        for event_type in ("project_external_approval.assigned", "project_external_approval.decided"):
+            message = self.render(event_type, self.payload(assigned_to_user_id=str(self.employee.id)), self.admin_profile)
+            self.assertEqual(message.button_rows(), [])
+
+    def test_every_button_fits_telegrams_64_byte_limit(self):
+        payload = self.payload(
+            assigned_to_user_id=str(self.employee.id), submission_id=str(self.submission.id),
+            submitted_by=str(self.employee.id), decision="rejected", reason="x", decided_by=str(self.admin.id),
+        )
+        for event_type in GATE_RENDERERS:
+            for profile in (self.employee_profile, self.admin_profile):
+                for row in self.render(event_type, payload, profile).button_rows():
+                    for button in row:
+                        self.assertLessEqual(len(button["callback_data"].encode()), 64)
+
     def test_every_gate_event_renders_clean_for_every_recipient_and_empty_payload(self):
         full_payload = self.payload(
             assigned_to_user_id=str(self.employee.id), previous_assignee_id=str(self.new_employee.id),
