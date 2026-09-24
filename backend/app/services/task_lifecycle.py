@@ -66,6 +66,8 @@ _DECISION_SERVICE_ONLY_TARGETS = {"verified", "approval_pending", "rejected"}
 
 # Transitions a Supervisor (or PM, or Admin/Super Admin) may drive
 # unconditionally: scheduling (`ready`) and reopening after rejection.
+# `ready` is additionally open to the task's actively assigned Internal
+# Employee (see `_require_role_for_transition`).
 _SUPERVISOR_OR_PM_TARGETS = {"ready", "rejected", "verified", "approval_pending", "completed"}
 
 # `in_progress` ("start") and `submitted` ("submit completion") are driven
@@ -159,6 +161,12 @@ class TaskLifecycleService:
 
         if target_status in _SUPERVISOR_OR_PM_TARGETS:
             if "site_supervisor" in roles or "project_manager" in roles:
+                return
+            # The Internal Employee actively assigned to the task may also
+            # mark it `ready`, so a busy Supervisor/PM doesn't block its start.
+            # Every other target here (verify/approve/complete/reject) stays
+            # Supervisor/PM-only.
+            if target_status == "ready" and self._actor_employee_id(actor) in self._active_internal_employee_assignee_ids(task.id):
                 return
             raise HTTPException(403, "Only the project's Supervisor, PM, or an Admin can make this task transition.")
         raise HTTPException(403, "You do not have permission to make this task transition.")

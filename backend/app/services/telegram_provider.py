@@ -59,11 +59,12 @@ class TelegramProviderAdapter:
         conformance but unused - Telegram has no named-template registry
         to look it up in.
         """
-        return self.send_text(recipient_phone, payload.get("text", ""))
+        return self.send_text(recipient_phone, payload.get("text", ""), parse_mode=payload.get("parse_mode"))
 
-    def send_text(self, chat_id: str, text: str) -> ProviderSendResult:
-        """Sends a plain-text message. No inline keyboard."""
-        return self._send(chat_id, text, reply_markup=None)
+    def send_text(self, chat_id: str, text: str, parse_mode: str | None = None) -> ProviderSendResult:
+        """Sends a text message. No inline keyboard. `parse_mode` (e.g.
+        "HTML") is only sent when given, so plain-text callers are unchanged."""
+        return self._send(chat_id, text, reply_markup=None, parse_mode=parse_mode)
 
     def send_with_buttons(self, chat_id: str, text: str, buttons: list[list[dict]]) -> ProviderSendResult:
         """Sends a text message with an inline keyboard.
@@ -76,7 +77,7 @@ class TelegramProviderAdapter:
         reply_markup = {"inline_keyboard": buttons}
         return self._send(chat_id, text, reply_markup=reply_markup)
 
-    def _send(self, chat_id: str, text: str, *, reply_markup: dict | None) -> ProviderSendResult:
+    def _send(self, chat_id: str, text: str, *, reply_markup: dict | None, parse_mode: str | None = None) -> ProviderSendResult:
         if not chat_id:
             return ProviderSendResult(
                 ok=False,
@@ -94,6 +95,8 @@ class TelegramProviderAdapter:
         body: dict = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
+        if parse_mode:
+            body["parse_mode"] = parse_mode
 
         try:
             response = httpx.post(url, json=body, timeout=self.timeout)

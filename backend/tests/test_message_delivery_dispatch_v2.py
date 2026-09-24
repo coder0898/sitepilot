@@ -638,6 +638,71 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             {self.pm_employee_id, self.supervisor_employee_id, self.admin_employee_id},
         )
 
+    def test_gate_unassigned_reaches_previous_assignee_and_admin(self):
+        # By dispatch time the gate has no assignee any more; the employee who
+        # lost it is only known from the payload.
+        approval_id = self._make_gate_approval(assigned_to_user_id=None)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project_external_approval.unassigned", aggregate_type="project_external_approval",
+                aggregate_id=approval_id,
+                payload={"approval_id": str(approval_id), "previous_assignee_id": str(INTERNAL_EMPLOYEE_ID)},
+                key="test:gate-unassigned",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        recipient_employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id)]
+        self.assertCountEqual(recipient_employee_ids, [self.internal_employee_employee_id, self.admin_employee_id])
+
+    def test_gate_reassigned_reaches_new_and_previous_assignee_once_each(self):
+        approval_id = self._make_gate_approval(assigned_to_user_id=SUPERVISOR_ID)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project_external_approval.reassigned", aggregate_type="project_external_approval",
+                aggregate_id=approval_id,
+                payload={
+                    "approval_id": str(approval_id), "assigned_to_user_id": str(SUPERVISOR_ID),
+                    "previous_assignee_id": str(INTERNAL_EMPLOYEE_ID),
+                },
+                key="test:gate-reassigned",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        recipient_employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id)]
+        self.assertCountEqual(
+            recipient_employee_ids,
+            [self.supervisor_employee_id, self.internal_employee_employee_id, self.admin_employee_id],
+        )
+
+    def test_gate_assigned_does_not_add_a_previous_assignee(self):
+        approval_id = self._make_gate_approval(assigned_to_user_id=INTERNAL_EMPLOYEE_ID)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project_external_approval.assigned", aggregate_type="project_external_approval",
+                aggregate_id=approval_id,
+                payload={
+                    "approval_id": str(approval_id), "assigned_to_user_id": str(INTERNAL_EMPLOYEE_ID),
+                    "previous_assignee_id": None,
+                },
+                key="test:gate-assigned-no-previous",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        recipient_employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id)]
+        self.assertCountEqual(recipient_employee_ids, [self.internal_employee_employee_id, self.admin_employee_id])
+
     def test_task_status_changed_event_does_not_resolve_admin(self):
         # task.status_changed is NOT in _ADMIN_CC_TASK_EVENTS - only PM/
         # Supervisor are resolved, same as before Phase 1b.
@@ -856,6 +921,74 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         deliveries = self._deliveries_for(event_id)
         employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
         self.assertNotIn(self.internal_employee_employee_id, employee_ids)
+
+    def test_support_assigned_reaches_the_assigned_employee(self):
+        assignment_id = self._make_support_assignment(status="active")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.support_assigned", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "task_id": str(self.task_id), "project_id": str(self.project_id),
+                    "assignment_id": str(assignment_id),
+                    "employee_id": str(self.internal_employee_employee_id), "responsibility": "Assist supervisor",
+                },
+                key="test:support-assigned",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
+        self.assertIn(self.internal_employee_employee_id, employee_ids)
+        self.assertIn(self.pm_employee_id, employee_ids)
+        self.assertIn(self.supervisor_employee_id, employee_ids)
+
+    def test_support_ended_reaches_previous_employee_after_assignment_is_inactive(self):
+        assignment_id = self._make_support_assignment(status="ended")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.support_ended", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "task_id": str(self.task_id), "project_id": str(self.project_id),
+                    "assignment_id": str(assignment_id),
+                    "previous_employee_id": str(self.internal_employee_employee_id),
+                    "replacement_employee_id": None, "reason_code": "reassigned",
+                },
+                key="test:support-ended",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
+        self.assertIn(self.internal_employee_employee_id, employee_ids)
+
+    def test_support_assigned_to_supervisor_does_not_duplicate_their_delivery(self):
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.support_assigned", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "task_id": str(self.task_id), "project_id": str(self.project_id),
+                    "assignment_id": str(uuid.uuid4()),
+                    "employee_id": str(self.supervisor_employee_id), "responsibility": "Cover",
+                },
+                key="test:support-assigned-dup",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
+        self.assertEqual(employee_ids.count(self.supervisor_employee_id), 1)
 
     def test_delay_recorded_reaches_pm_supervisor_support_employee_and_vendor(self):
         # A delay must reach everyone actually concerned with the task, not

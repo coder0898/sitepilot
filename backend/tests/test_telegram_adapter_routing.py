@@ -123,6 +123,61 @@ class TelegramAdapterRoutingTests(unittest.TestCase):
         self.assertEqual(delivery.channel, "whatsapp")
         self.assertEqual(delivery.status, "sent")
 
+    def _gate_event(self, event_type: str, payload: dict | None = None) -> OutboxEvent:
+        gate_event = OutboxEvent(
+            event_type=event_type, aggregate_type="gate_command_confirmation", aggregate_id=uuid.uuid4(),
+            payload=payload or {"gate_name": "Fire NOC", "project_name": "Test Project"},
+            idempotency_key=str(uuid.uuid4()), status="pending",
+        )
+        self.session.add(gate_event)
+        self.session.flush()
+        return gate_event
+
+    @patch("app.services.telegram_provider.httpx.post")
+    def test_redundant_gate_confirmations_are_not_sent_on_telegram(self, mock_post):
+        recipient = Recipient(employee_id=self.telegram_profile_id, vendor_contact_id=None, phone="", channel="telegram")
+        for event_type in (
+            "gate_confirmation.accepted", "gate_confirmation.declined", "gate_confirmation.status_recorded",
+            "gate_confirmation.session_closed", "gate_confirmation.decided",
+        ):
+            with self.subTest(event_type=event_type):
+                self.service._dispatch_to_recipient(self._gate_event(event_type), recipient, DEFAULT_TEMPLATE)
+
+        mock_post.assert_not_called()
+        self.assertEqual(self.session.query(MessageDelivery).count(), 0)
+
+    @patch("app.services.telegram_provider.httpx.post")
+    def test_session_opened_confirmation_is_still_sent_on_telegram(self, mock_post):
+        mock_post.return_value = _FakeResponse(200, {"ok": True, "result": {"message_id": 7}})
+        recipient = Recipient(employee_id=self.telegram_profile_id, vendor_contact_id=None, phone="", channel="telegram")
+
+        self.service._dispatch_to_recipient(self._gate_event("gate_confirmation.session_opened"), recipient, DEFAULT_TEMPLATE)
+
+        mock_post.assert_called_once()
+        sent_body = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent_body["parse_mode"], "HTML")
+        self.assertIn("<b>Submit Evidence</b>", sent_body["text"])
+
+    @patch("app.services.telegram_provider.httpx.post")
+    def test_gate_confirmations_still_reach_whatsapp_recipients(self, mock_post):
+        recipient = Recipient(employee_id=self.whatsapp_profile_id, vendor_contact_id=None, phone="+911111111111")
+
+        self.service._dispatch_to_recipient(self._gate_event("gate_confirmation.status_recorded"), recipient, DEFAULT_TEMPLATE)
+
+        mock_post.assert_not_called()
+        delivery = self.session.query(MessageDelivery).one()
+        self.assertEqual(delivery.channel, "whatsapp")
+        self.assertEqual(delivery.status, "sent")
+
+    @patch("app.services.telegram_provider.httpx.post")
+    def test_non_gate_telegram_message_is_sent_without_parse_mode(self, mock_post):
+        mock_post.return_value = _FakeResponse(200, {"ok": True, "result": {"message_id": 8}})
+        recipient = Recipient(employee_id=self.telegram_profile_id, vendor_contact_id=None, phone="", channel="telegram")
+
+        self.service._dispatch_to_recipient(self.event, recipient, DEFAULT_TEMPLATE)
+
+        self.assertNotIn("parse_mode", mock_post.call_args.kwargs["json"])
+
     @patch("app.services.telegram_provider.httpx.post")
     def test_telegram_recipient_with_no_chat_id_fails_clearly(self, mock_post):
         recipient = Recipient(employee_id=self.no_chatid_profile_id, vendor_contact_id=None, phone="", channel="telegram")

@@ -552,6 +552,36 @@ class TaskSupportAssignmentApiTests(unittest.TestCase):
         blocked = self.transition(project["id"], t001.id, "in_progress")
         self.assertEqual(blocked.status_code, 403, blocked.text)
 
+    def test_assigned_internal_employee_can_mark_planned_task_ready(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        self.assign_support(project["id"], t001.id, self.employee_id_for(INTERNAL_ID))
+
+        # A busy Supervisor mustn't block the assigned employee from starting.
+        self.act_as_internal()
+        ready = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(ready.status_code, 200, ready.text)
+        started = self.transition(project["id"], t001.id, "in_progress")
+        self.assertEqual(started.status_code, 200, started.text)
+
+    def test_unassigned_internal_employee_cannot_mark_task_ready(self):
+        project = self.activate_project()
+        self.add_internal_member(project["id"], INTERNAL_ID)
+        self.add_internal_member(project["id"], SECOND_INTERNAL_ID)
+        t001 = self.task_by_code(project["id"], "T001")
+
+        self.act_as_supervisor()
+        self.assign_support(project["id"], t001.id, self.employee_id_for(INTERNAL_ID))
+
+        self.act_as_second_internal()
+        blocked = self.transition(project["id"], t001.id, "ready")
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, t001.id).lifecycle_status, "planned")
+
     # ---- Internal Employee visibility is scoped to their own assignments -
 
     def test_internal_employee_task_list_only_shows_actively_assigned_tasks(self):

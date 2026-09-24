@@ -255,6 +255,9 @@ class ProjectGateAssignmentService:
                 "project_name": project.name,
                 "due_date": due_date,
                 "assigned_to_user_id": str(assignee_user_id),
+                # Lets a reassign also notify the employee losing the gate
+                # (null on a first assign) - same key `unassign` emits.
+                "previous_assignee_id": str(previous_assignee) if previous_assignee else None,
                 "assigned_by": str(actor.id),
                 "assigned_at": assigned_at.isoformat(),
             },

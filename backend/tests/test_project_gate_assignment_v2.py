@@ -305,6 +305,26 @@ class ProjectGateAssignmentTests(unittest.TestCase):
             self.assertEqual(event.payload["project_name"], "Project 1")
             self.assertEqual(event.payload["due_date"], "2026-12-25")
 
+    def test_reassign_payload_names_the_previous_assignee(self):
+        approval = self.make_approval(status="assigned", assigned_to_user_id=INTERNAL_ID)
+        self.service.reassign(self.project_id, approval.id, OTHER_INTERNAL_ID, self.admin_user())
+        with self.Session() as session:
+            event = session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == approval.id,
+                    OutboxEvent.event_type == "project_external_approval.reassigned",
+                )
+            ).one()
+            self.assertEqual(event.payload["previous_assignee_id"], str(INTERNAL_ID))
+            self.assertEqual(event.payload["assigned_to_user_id"], str(OTHER_INTERNAL_ID))
+
+    def test_first_assign_payload_has_no_previous_assignee(self):
+        approval = self.make_approval()
+        self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user())
+        with self.Session() as session:
+            event = session.scalars(select(OutboxEvent).where(OutboxEvent.aggregate_id == approval.id)).one()
+            self.assertIsNone(event.payload["previous_assignee_id"])
+
     # ---- unassign -----------------------------------------------------------
 
     def test_admin_can_unassign_an_assigned_gate(self):

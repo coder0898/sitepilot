@@ -205,6 +205,9 @@ EMPLOYEE_COMMANDS = {
 # them here was a WhatsApp-path-only gap, not a deliberate narrower rule.
 _STATUS_DRIVING_ROLES = ("site_supervisor", "project_manager", "internal_employee")
 
+# Projects whose tasks a STATUS command can no longer target.
+_CLOSED_PROJECT_STATUSES = ("completed", "archived")
+
 _RESPONSE_BY_COMMAND = {
     "ACCEPT": "accepted",
     "DECLINE": "declined",
@@ -388,7 +391,15 @@ class InboundMessageService:
         )
 
     def _resolve_task_for_employee(self, task_code: str, employee: EmployeeProfile) -> Task | None:
-        candidates = self.db.scalars(select(Task).where(Task.original_code == task_code)).all()
+        # Task codes come from the template, so every project has its own
+        # T022 - a code is only unique among the sender's live projects.
+        # Completed/archived projects are excluded, otherwise lingering
+        # membership in an old project makes every code ambiguous.
+        candidates = self.db.scalars(
+            select(Task)
+            .join(V2Project, V2Project.id == Task.project_id)
+            .where(Task.original_code == task_code, V2Project.status.not_in(_CLOSED_PROJECT_STATUSES))
+        ).all()
         matched: list[Task] = []
         for task in candidates:
             has_driving_role = self.db.scalar(

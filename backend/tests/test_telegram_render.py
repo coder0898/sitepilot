@@ -158,6 +158,55 @@ class TelegramRenderTests(unittest.TestCase):
         self.assertIn("`STATUS T-014 in_progress`", text)
         self.assertIn("Reply:", text)
 
+    # ---- task.support_assigned / task.support_ended -------------------------
+
+    def _support_payload(self, employee_id):
+        return {
+            "task_id": str(self.task.id), "project_id": str(self.project.id),
+            "assignment_id": str(uuid.uuid4()), "employee_id": str(employee_id), "responsibility": "Site assist",
+        }
+
+    def test_support_assigned_to_recipient_shows_status_reply_for_ready_task(self):
+        self.task.lifecycle_status = "ready"
+        self.db.commit()
+        text = render_telegram_message(
+            self.db, "task.support_assigned", self._support_payload(self.supervisor_profile.id), self.supervisor_profile.id,
+        )
+        self.assertIn("Task Assigned to You", text)
+        self.assertIn("T-014 - Electrical Conduiting", text)
+        self.assertIn("Site assist", text)
+        self.assertIn("`STATUS T-014 in_progress`", text)
+
+    def test_support_assigned_planned_task_suggests_ready_first(self):
+        self.task.lifecycle_status = "planned"
+        self.db.commit()
+        text = render_telegram_message(
+            self.db, "task.support_assigned", self._support_payload(self.supervisor_profile.id), self.supervisor_profile.id,
+        )
+        self.assertIn("`STATUS T-014 ready`", text)
+        self.assertIn("`STATUS T-014 in_progress`", text)
+
+    def test_support_assigned_to_someone_else_names_them_with_no_action(self):
+        text = render_telegram_message(
+            self.db, "task.support_assigned", self._support_payload(self.supervisor_profile.id), uuid.uuid4(),
+        )
+        self.assertIn("Internal Employee Assigned to Task", text)
+        self.assertIn("Employee: Deepak Solanki", text)
+        self.assertIn("No action required.", text)
+
+    def test_support_ended_names_previous_employee(self):
+        text = render_telegram_message(
+            self.db, "task.support_ended",
+            {
+                "task_id": str(self.task.id), "project_id": str(self.project.id),
+                "previous_employee_id": str(self.supervisor_profile.id), "replacement_employee_id": None,
+            },
+            self.supervisor_profile.id,
+        )
+        self.assertIn("Task Support Assignment Ended", text)
+        self.assertIn("Deepak Solanki", text)
+        self.assertNotIn("Replaced by", text)
+
     # ---- task.vendor_assigned ----------------------------------------------
 
     def test_task_vendor_assigned_shows_accept_decline_ref(self):
@@ -186,9 +235,11 @@ class TelegramRenderTests(unittest.TestCase):
             },
             None,
         )
-        ref = str(self.approval.id).replace("-", "")[:8]
+        # Recipient None is never the assignee, so this is the Admin/FYI copy -
+        # full gate template coverage lives in test_telegram_gate_render.py.
         self.assertIn("Fire NOC", text)
-        self.assertIn(f"`GATEACCEPT {ref}` or `GATEDECLINE {ref}`", text)
+        self.assertIn("External Approval Assigned", text)
+        self.assertIn("No action required.", text)
 
     def test_gate_accepted_enriches_gate_name_from_db(self):
         text = render_telegram_message(

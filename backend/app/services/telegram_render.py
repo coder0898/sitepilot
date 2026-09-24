@@ -8,9 +8,10 @@ plain-text rendering instead of reusing that registry's shape.
 Covers the event types needed for the Phase 2 manual test plan
 (docs/2026-09-19-001-telegram-phase1-status-phase2-test-plan.md):
 project.activated, project.member_added, task.readiness_check/
-task.start_check, task.status_changed, task.vendor_assigned, the gate
-assignment/acknowledgement events, plus vendor soft-removal
-(task.vendor_unassigned, project.vendor_removed). Every other event type
+task.start_check, task.status_changed, task.vendor_assigned, plus vendor
+soft-removal (task.vendor_unassigned, project.vendor_removed). Every
+external-approval gate event is rendered by `telegram_gate_render.py`
+(HTML, recipient-specific). Every other event type
 keeps the previous raw key:value dump via `_fallback`, unchanged - this
 module does not attempt to cover every event type in the registry yet.
 
@@ -30,9 +31,11 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import ProjectExternalApproval, Task
+from app.execution_models import Task
 from app.models import EmployeeProfile, User
-from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMembership
+from app.project_models import V2Project, V2ProjectMembership
+from app.services.telegram_gate_render import GATE_RENDERERS
+from app.services.telegram_message import TelegramMessage
 from app.vendor_models import V2Vendor
 
 _ROLE_LABELS = {
@@ -80,15 +83,6 @@ def _vendor_name(db: Session, vendor_id: object) -> str:
     resolved = _uuid_or_none(vendor_id)
     vendor = db.get(V2Vendor, resolved) if resolved else None
     return vendor.name if vendor else "Unknown vendor"
-
-
-def _gate_name(db: Session, approval_id: object) -> str:
-    resolved = _uuid_or_none(approval_id)
-    approval = db.get(ProjectExternalApproval, resolved) if resolved else None
-    if not approval:
-        return "Unknown gate"
-    gate = db.get(V2ProjectExternalGate, approval.project_gate_id)
-    return gate.approval_name if gate else "Unknown gate"
 
 
 def _short_ref(value: object) -> str:
@@ -196,47 +190,69 @@ def _render_project_vendor_removed(db: Session, payload: dict, recipient_employe
     return "\n".join(lines) + _footer(None)
 
 
-def _render_gate_assigned(title: str) -> Callable[[Session, dict, uuid.UUID | None], str]:
-    def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-        ref = _short_ref(payload.get("approval_id"))
-        lines = [
-            f"*{title}*",
-            f"Project: {payload.get('project_name') or _project_name(db, payload.get('project_id'))}",
-            f"Gate: {payload.get('gate_name') or _gate_name(db, payload.get('approval_id'))}",
-            f"Due: {payload.get('due_date') or 'Not set'}",
-        ]
-        return "\n".join(lines) + _footer(f"`GATEACCEPT {ref}` or `GATEDECLINE {ref}`")
-
-    return _render
+def _employee_name(db: Session, employee_id: object) -> str:
+    resolved = _uuid_or_none(employee_id)
+    employee = db.get(EmployeeProfile, resolved) if resolved else None
+    user = db.get(User, employee.user_id) if employee else None
+    return user.name if user else "Unknown employee"
 
 
-def _render_gate_response(title: str) -> Callable[[Session, dict, uuid.UUID | None], str]:
-    def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-        lines = [
-            f"*{title}*",
-            f"Project: {_project_name(db, payload.get('project_id'))}",
-            f"Gate: {_gate_name(db, payload.get('approval_id'))}",
-        ]
-        if payload.get("note"):
-            lines.append(f"Note: {payload['note']}")
-        return "\n".join(lines) + _footer(None)
+def _executor_next_step(task: Task | None) -> str | None:
+    """The STATUS reply an assigned employee can send from the task's current
+    status - only transitions `task_lifecycle` lets the assigned Internal
+    Employee drive (`ready`, `in_progress`, `submitted`)."""
+    if not task:
+        return None
+    code = task.original_code
+    if task.lifecycle_status == "planned":
+        return f"`STATUS {code} ready` when the site is ready, then `STATUS {code} in_progress` when you start work"
+    if task.lifecycle_status in ("ready", "rejected"):
+        return f"`STATUS {code} in_progress` when you start work"
+    if task.lifecycle_status == "in_progress":
+        return f"`STATUS {code} submitted` when work is complete"
+    return None
 
-    return _render
+
+def _render_task_support_assigned(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
+    task_id = payload.get("task_id")
+    is_assignee = recipient_employee_id is not None and str(recipient_employee_id) == str(payload.get("employee_id"))
+    lines = [
+        "*Task Assigned to You*" if is_assignee else "*Internal Employee Assigned to Task*",
+        f"Project: {_project_name(db, payload.get('project_id'))}",
+        f"Task: {_task_label(db, task_id)}",
+    ]
+    if not is_assignee:
+        lines.append(f"Employee: {_employee_name(db, payload.get('employee_id'))}")
+    if payload.get("responsibility"):
+        lines.append(f"Responsibility: {payload['responsibility']}")
+    return "\n".join(lines) + _footer(_executor_next_step(_task(db, task_id)) if is_assignee else None)
 
 
-_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], str]] = {
+def _render_task_support_ended(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
+    lines = [
+        "*Task Support Assignment Ended*",
+        f"Project: {_project_name(db, payload.get('project_id'))}",
+        f"Task: {_task_label(db, payload.get('task_id'))}",
+        f"Employee: {_employee_name(db, payload.get('previous_employee_id'))}",
+    ]
+    if payload.get("replacement_employee_id"):
+        lines.append(f"Replaced by: {_employee_name(db, payload['replacement_employee_id'])}")
+    return "\n".join(lines) + _footer(None)
+
+
+_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], str | TelegramMessage]] = {
     "project.activated": _render_project_activated,
     "project.member_added": _render_project_member_added,
     "task.readiness_check": _render_task_check("Task Readiness Check"),
     "task.start_check": _render_task_check("Task Start Check"),
     "task.status_changed": _render_task_status_changed,
     "task.vendor_assigned": _render_task_vendor_assigned,
+    "task.support_assigned": _render_task_support_assigned,
+    "task.support_ended": _render_task_support_ended,
     "task.vendor_unassigned": _render_task_vendor_unassigned,
     "project.vendor_removed": _render_project_vendor_removed,
-    "project_external_approval.assigned": _render_gate_assigned("Gate Assignment"),
-    "project_external_approval.reassigned": _render_gate_assigned("Gate Reassignment"),
-    "project_external_approval.accepted": _render_gate_response("Gate Acknowledged"),
-    "project_external_approval.declined": _render_gate_response("Gate Declined"),
+    # Every external-approval gate event and gate command confirmation.
+    **GATE_RENDERERS,
 }
 
 
@@ -245,14 +261,27 @@ def _fallback(db: Session, payload: dict, recipient_employee_id: uuid.UUID | Non
     return "\n".join(lines) if lines else "(no content)"
 
 
+def render_telegram(
+    db: Session,
+    event_type: str,
+    payload: dict,
+    recipient_employee_id: uuid.UUID | None = None,
+) -> TelegramMessage:
+    """Renders one outbox event into a `TelegramMessage` for the event types
+    listed in `_RENDERERS`; every other event type keeps the previous raw
+    key:value fallback unchanged. Plain-text renderers are wrapped with no
+    parse mode, so their output is sent exactly as before."""
+    renderer = _RENDERERS.get(event_type, _fallback)
+    rendered = renderer(db, payload, recipient_employee_id)
+    return rendered if isinstance(rendered, TelegramMessage) else TelegramMessage(text=rendered)
+
+
 def render_telegram_message(
     db: Session,
     event_type: str,
     payload: dict,
     recipient_employee_id: uuid.UUID | None = None,
 ) -> str:
-    """Renders one outbox event into human-readable Telegram text for the
-    event types listed in `_RENDERERS`; every other event type keeps the
-    previous raw key:value fallback unchanged."""
-    renderer = _RENDERERS.get(event_type, _fallback)
-    return renderer(db, payload, recipient_employee_id)
+    """The final message text, including the typed-command fallback for any
+    actions the message offers."""
+    return render_telegram(db, event_type, payload, recipient_employee_id).text_with_typed_fallback()

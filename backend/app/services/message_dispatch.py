@@ -108,7 +108,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services.message_templates import TemplateSpec, render_components, resolve
-from app.services.telegram_render import render_telegram_message
+from app.services.telegram_render import render_telegram
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
 
 # The only two `V2ProjectMembership.project_role` values this service ever
@@ -149,6 +149,37 @@ _EMPLOYEE_ELIGIBLE_TASK_EVENTS: set[str] = {
     "task.start_check",
     "task.midday_check",
     "task.eod_check",
+}
+
+# Gate command confirmations whose sender is always also a recipient of the
+# paired main event (GATEACCEPT/GATEDECLINE -> `.accepted`/`.declined`,
+# GATESTATUS -> `.status_checked`, GATECLOSE -> `.submitted`: the assignee;
+# GATEDECIDE -> `.decided`: every Admin, including the sender). On Telegram
+# the main event's recipient-specific message already confirms the action, so
+# these would be a second message to the same person for the same action.
+# `gate_confirmation.session_opened` has no paired event and is still sent.
+# WhatsApp delivery of these confirmations is unchanged.
+_TELEGRAM_REDUNDANT_GATE_CONFIRMATIONS = frozenset({
+    "gate_confirmation.accepted",
+    "gate_confirmation.declined",
+    "gate_confirmation.status_recorded",
+    "gate_confirmation.session_closed",
+    "gate_confirmation.decided",
+})
+
+# Gate events whose payload names a previous assignee who must also be told
+# they are no longer responsible - by dispatch time the gate's current
+# assignee is already someone else (reassign) or nobody (unassign).
+_GATE_PREVIOUS_ASSIGNEE_EVENTS = frozenset({
+    "project_external_approval.reassigned",
+    "project_external_approval.unassigned",
+})
+
+# Support-assignment events and the payload keys naming the employee(s) they
+# directly affect - each is notified in addition to the PM/Supervisor.
+_SUPPORT_ASSIGNMENT_EMPLOYEE_KEYS: dict[str, tuple[str, ...]] = {
+    "task.support_assigned": ("employee_id",),
+    "task.support_ended": ("previous_employee_id", "replacement_employee_id"),
 }
 
 # Phase 7: three of the four daily-prompt event types - the doc's own tables
@@ -473,6 +504,35 @@ class MessageDispatchService:
             for employee_id, phone in rows
         ]
 
+    def _resolve_payload_employee_recipient(self, event: OutboxEvent, key: str) -> list[Recipient]:
+        """Resolves the `EmployeeProfile` id stored under `payload[key]` to a
+        `Recipient`. `[]` when the key is missing/null or the employee can't
+        be found - same skip-not-fail precedent as `_resolve_user_recipient`."""
+        employee_id_raw = (event.payload or {}).get(key)
+        if not employee_id_raw:
+            return []
+        employee = self.db.get(EmployeeProfile, uuid.UUID(str(employee_id_raw)))
+        if employee is None:
+            return []
+        user = self.db.get(User, employee.user_id)
+        if user is None:
+            return []
+        return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
+
+    def _resolve_user_id_recipient(self, user_id_raw: object) -> list[Recipient]:
+        """Resolves one `User.id` (as stored in an event payload) to that
+        user's employee `Recipient`. `[]` when the id is missing or has no
+        `EmployeeProfile`/`User` - same skip-not-fail precedent as
+        `_resolve_user_recipient`."""
+        if not user_id_raw:
+            return []
+        user_id = uuid.UUID(str(user_id_raw))
+        employee = self.db.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == user_id))
+        user = self.db.get(User, user_id)
+        if employee is None or user is None:
+            return []
+        return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
+
     def _resolve_user_recipient(self, event: OutboxEvent) -> list[Recipient]:
         """U13: resolves a `user`-aggregate event (`user.created`/
         `user.offboarded`) straight to the one `User` named by the payload's
@@ -547,6 +607,15 @@ class MessageDispatchService:
                 recipients.extend(self._resolve_admin_recipients())
             if event.event_type in _EMPLOYEE_ELIGIBLE_TASK_EVENTS:
                 recipients.extend(self._resolve_internal_employee_recipient(task))
+            if event.event_type in _SUPPORT_ASSIGNMENT_EMPLOYEE_KEYS:
+                # The employee being assigned/ended must hear about it
+                # themselves, not only their PM/Supervisor. Resolved from the
+                # payload (not active TaskSupportAssignment rows), since an
+                # ended assignment is already inactive by dispatch time.
+                for key in _SUPPORT_ASSIGNMENT_EMPLOYEE_KEYS[event.event_type]:
+                    for recipient in self._resolve_payload_employee_recipient(event, key):
+                        if all(r.employee_id != recipient.employee_id for r in recipients):
+                            recipients.append(recipient)
             if event.event_type in _VENDOR_ELIGIBLE_TASK_EVENTS:
                 vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
                 if vendor_task_recipient is not None:
@@ -592,6 +661,10 @@ class MessageDispatchService:
             if approval is None:
                 return []
             recipients.extend(self._resolve_gate_assignee_recipient(approval))
+            if event.event_type in _GATE_PREVIOUS_ASSIGNEE_EVENTS:
+                for recipient in self._resolve_user_id_recipient((event.payload or {}).get("previous_assignee_id")):
+                    if all(r.employee_id != recipient.employee_id for r in recipients):
+                        recipients.append(recipient)
             # Every project_external_approval.* event resolves Admin - this
             # is where doc #27's "Admin review-required push" falls out of,
             # `submitted` included (Phase 1b).
@@ -659,6 +732,11 @@ class MessageDispatchService:
         ) or ""
 
     def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
+        if (
+            event.event_type in _TELEGRAM_REDUNDANT_GATE_CONFIRMATIONS
+            and self._resolve_recipient_channel(recipient) == "telegram"
+        ):
+            return  # the sender already gets the paired main event's message
         template = spec.meta_template_name
         delivery = self._existing_delivery(event.id, recipient, template)
         if delivery is not None and delivery.status in _SUCCEEDED_STATUSES:
@@ -709,9 +787,8 @@ class MessageDispatchService:
             # instead (event/data -> shared backend -> Telegram renderer ->
             # message; no Telegram-specific business logic here).
             send_target = self._resolve_telegram_chat_id(recipient)
-            send_payload = {
-                "text": render_telegram_message(self.db, event.event_type, event.payload or {}, recipient.employee_id),
-            }
+            message = render_telegram(self.db, event.event_type, event.payload or {}, recipient.employee_id)
+            send_payload = {"text": message.text_with_typed_fallback(), "parse_mode": message.parse_mode}
         else:
             # Merge `components` into a copy of the event payload rather
             # than mutating `event.payload` itself - the outbox row's

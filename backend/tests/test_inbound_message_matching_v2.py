@@ -643,6 +643,29 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             refreshed = session.get(Task, task.id)
             self.assertEqual(refreshed.lifecycle_status, "in_progress")
 
+    def test_status_ignores_same_task_code_in_archived_project(self):
+        # Every project carries the template's codes, so lingering membership
+        # in an archived project must not make the live project's code ambiguous.
+        old_project = self.activate_project()
+        with self.Session.begin() as session:
+            session.get(V2Project, uuid.UUID(old_project["id"])).status = "archived"
+        live_project = self.activate_project()
+        live_task = self.task_by_code(live_project["id"], "T001")
+        old_task = self.task_by_code(old_project["id"], "T001")
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.status-archived-dup",
+            "sender_phone": SUPERVISOR_PHONE,
+            "message_text": "STATUS T001 ready",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        latest = self.inbound_rows()[-1]
+        self.assertEqual(latest.processing_status, "processed", latest.rejection_reason)
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, live_task.id).lifecycle_status, "ready")
+            self.assertEqual(session.get(Task, old_task.id).lifecycle_status, "planned")
+
     # ---- the signature gate -----------------------------------------------
 
     def test_missing_signature_rejected_before_any_db_write(self):
