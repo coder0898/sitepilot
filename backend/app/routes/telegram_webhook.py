@@ -15,8 +15,10 @@ database query, before any `telegram_inbound_updates` row is written.
 This unit verifies and stores the raw update, then recognizes a
 `/start <token>` message and hands it to `TelegramConnectService` (U13),
 any other non-empty text to `TelegramInboundService` (U14) for full
-command parity, or an inline-button press to `TelegramCallbackService`
-(which runs the same typed command the button stands for). Telegram's own `update_id` is stored alongside the raw
+command parity - unless the bot is waiting for a typed answer from that
+chat (a rejection reason or health note), which takes the text first - or
+an inline-button press to `TelegramCallbackService` (which runs the same
+typed command the button stands for). Telegram's own `update_id` is stored alongside the raw
 update, and a duplicate delivery short-circuits BEFORE either handler
 runs (the `IntegrityError` branch below returns early) - Telegram's Bot
 API redelivers on a slow/failed response, the same at-least-once behavior
@@ -134,10 +136,18 @@ async def receive_inbound_telegram_update(
         # U13: connect-flow.
         TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text)
     elif message_text:
-        # U14: full command parity (vendor ACCEPT/DECLINE/CLARIFY, employee
-        # STATUS, all six GATE* commands) - reuses InboundMessageService's
-        # shared dispatch, not a separate implementation per command.
-        TelegramInboundService(db).process(int(update_id), chat_id, message_text)
+        # A question the bot asked (rejection reason / health note) takes
+        # the next text message first; otherwise it is a normal message.
+        handled, acted = TelegramCallbackService(db).handle_text(
+            update_id=int(update_id), chat_id=chat_id, text=message_text,
+        )
+        if acted:
+            background_tasks.add_task(_dispatch_now)
+        if not handled:
+            # U14: full command parity (vendor ACCEPT/DECLINE/CLARIFY, employee
+            # STATUS, all six GATE* commands) - reuses InboundMessageService's
+            # shared dispatch, not a separate implementation per command.
+            TelegramInboundService(db).process(int(update_id), chat_id, message_text)
     elif callback_data is not None:
         # Inline-button press: runs the same GATE* command a user could type.
         acted = TelegramCallbackService(db).handle(

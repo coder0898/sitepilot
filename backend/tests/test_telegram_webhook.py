@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.database import get_db
-from app.execution_models import InboundMessage, TelegramConnectToken, TelegramInboundUpdate
+from app.execution_models import InboundMessage, TelegramConnectToken, TelegramInboundUpdate, TelegramPendingInput
 from app.models import EmployeeProfile, User
 from app.routes.telegram_webhook import router as telegram_webhook_router
 from app.vendor_models import V2VendorContact
@@ -71,6 +71,9 @@ class TelegramWebhookApiTests(unittest.TestCase):
         # identity matching, even though this file's scenarios don't
         # exercise U14 either.
         InboundMessage.__table__.create(self.engine)
+        # Every text message is first offered to a pending typed-answer
+        # question (gate plan chunk 3).
+        TelegramPendingInput.__table__.create(self.engine)
         User.__table__.create(self.engine)
         EmployeeProfile.__table__.create(self.engine)
         V2VendorContact.__table__.create(self.engine)

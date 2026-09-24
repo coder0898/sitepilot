@@ -5,15 +5,17 @@ and gate services - so these tests assert on the real records the services
 write (acknowledgement, status check, evidence session, decision) - and must
 always give readable feedback: a toast, buttons removed after success, and a
 readable message for wrong user, wrong state, duplicate press, unlinked chat
-or an unknown/stale button. Reject changes nothing until the reason prompt
-exists; it only replies with the ready-to-send command.
+or an unknown/stale button. Reject and the health buttons first ask a
+question (reason / optional note); the next text message answers it before
+it can be read as a command or evidence text, and expired, cancelled or
+already-answered questions are explained.
 """
 
 from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, event
@@ -37,6 +39,7 @@ from app.execution_models import (
     ProjectGateAcknowledgement,
     Task,
     TelegramInboundUpdate,
+    TelegramPendingInput,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
@@ -87,7 +90,7 @@ class TelegramCallbackTests(unittest.TestCase):
             ProjectGateAcknowledgement.__table__, GateEvidenceSession.__table__,
             GateEvidenceSessionAttachment.__table__, FileObject.__table__, Task.__table__,
             InboundMessage.__table__, TelegramInboundUpdate.__table__, OutboxEvent.__table__,
-            V2VendorContact.__table__,
+            V2VendorContact.__table__, TelegramPendingInput.__table__,
         ):
             table.create(self.engine)
 
@@ -170,6 +173,22 @@ class TelegramCallbackTests(unittest.TestCase):
         with self.session.begin():
             self.session.get(ProjectExternalApproval, self.approval.id).status = status
 
+    def send_text(self, chat_id: str, text: str) -> tuple[bool, bool]:
+        """Simulates the webhook's text path: pending question first,
+        otherwise a normal command."""
+        self.update_id += 1
+        handled, acted = TelegramCallbackService(self.session).handle_text(
+            update_id=self.update_id, chat_id=chat_id, text=text,
+        )
+        if not handled:
+            TelegramInboundService(self.session).process(self.update_id, chat_id, text)
+        return handled, acted
+
+    def expire_pending(self, minutes_ago: int) -> None:
+        with self.session.begin():
+            pending = self.session.query(TelegramPendingInput).one()
+            pending.expires_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+
     def last_inbound(self) -> InboundMessage:
         return self.session.query(InboundMessage).order_by(InboundMessage.created_at.desc()).first()
 
@@ -191,13 +210,77 @@ class TelegramCallbackTests(unittest.TestCase):
         self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("dc")))
         self.assertEqual(self.session.query(ProjectGateAcknowledgement).one().response, "declined")
 
-    def test_each_health_button_records_a_status_check_only(self):
-        for index, health in enumerate(("on_track", "blocked", "need_help")):
-            with self.subTest(health=health):
-                self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("hs", health), message_id=100 + index))
-        healths = [c.health for c in self.session.query(ProjectExternalApprovalStatusCheck).all()]
-        self.assertCountEqual(healths, ["on_track", "blocked", "need_help"])
+    def test_health_button_asks_for_a_note_before_recording(self):
+        self.assertFalse(self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked")))
+
+        self.assertEqual(self.session.query(ProjectExternalApprovalStatusCheck).count(), 0)  # not yet
+        pending = self.session.query(TelegramPendingInput).one()
+        self.assertEqual((pending.kind, pending.health), ("gate_health_note", "blocked"))
+        prompt = self.calls("sendMessage")[0]
+        self.assertIn("<b>Status: Blocked</b>", prompt["text"])
+        self.assertIn("Add a short note?", prompt["text"])
+        self.assertEqual(
+            prompt["reply_markup"]["inline_keyboard"],
+            [[{"text": "Skip note", "callback_data": f"g1:sk:{self.approval.id.hex}"}]],
+        )
+
+    def test_health_note_typed_answer_records_status_with_note(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"))
+        handled, acted = self.send_text(ASSIGNEE_CHAT, "Waiting for fire\ninspection date")
+
+        self.assertEqual((handled, acted), (True, True))
+        check = self.session.query(ProjectExternalApprovalStatusCheck).one()
+        self.assertEqual((check.health, check.note), ("blocked", "Waiting for fire inspection date"))
+        self.assertEqual(self.session.query(TelegramPendingInput).count(), 0)
+        self.assertEqual(self.calls("editMessageReplyMarkup")[-1]["message_id"], 1)  # Skip removed from prompt
         self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "assigned")
+
+    def test_skip_note_records_status_without_note(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "need_help"))
+        self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("sk"), message_id=1))
+        check = self.session.query(ProjectExternalApprovalStatusCheck).one()
+        self.assertEqual((check.health, check.note), ("need_help", None))
+
+    def test_skip_twice_says_already_answered(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "on_track"))
+        self.press(ASSIGNEE_CHAT, self.cb("sk"), message_id=1)
+        self.mock_post.reset_mock()
+        self.assertFalse(self.press(ASSIGNEE_CHAT, self.cb("sk"), message_id=1))
+        self.assertIn("expired or was already answered", self.calls("sendMessage")[0]["text"])
+        self.assertEqual(self.session.query(ProjectExternalApprovalStatusCheck).count(), 1)
+
+    def test_note_is_taken_before_evidence_session_text(self):
+        # With an evidence session open, a health note must still go to the
+        # question, not into the evidence.
+        self.press(ASSIGNEE_CHAT, self.cb("op"))
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"), message_id=60)
+        self.send_text(ASSIGNEE_CHAT, "Inspector on leave")
+        self.assertEqual(self.session.query(ProjectExternalApprovalStatusCheck).one().note, "Inspector on leave")
+        self.assertIsNone(self.session.query(GateEvidenceSession).one().note)
+
+    def test_text_with_no_question_is_processed_normally(self):
+        handled, _ = self.send_text(ASSIGNEE_CHAT, f"GATEACCEPT {self.approval.id.hex[:8]}")
+        self.assertFalse(handled)
+        self.assertEqual(self.session.query(ProjectGateAcknowledgement).one().response, "accepted")
+
+    def test_expired_question_does_not_use_the_answer(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"))
+        self.expire_pending(minutes_ago=5)
+        self.mock_post.reset_mock()
+
+        handled, acted = self.send_text(ASSIGNEE_CHAT, "late note")
+
+        self.assertEqual((handled, acted), (True, False))
+        self.assertEqual(self.session.query(ProjectExternalApprovalStatusCheck).count(), 0)
+        self.assertIn("This question has expired", self.calls("sendMessage")[0]["text"])
+        self.assertEqual(self.session.query(TelegramPendingInput).count(), 0)
+
+    def test_long_expired_question_is_dropped_and_message_processed_normally(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"))
+        self.expire_pending(minutes_ago=60 * 48)
+        handled, _ = self.send_text(ASSIGNEE_CHAT, f"GATEACCEPT {self.approval.id.hex[:8]}")
+        self.assertFalse(handled)
+        self.assertEqual(self.session.query(ProjectGateAcknowledgement).count(), 1)
 
     def test_submit_evidence_button_opens_the_existing_evidence_session(self):
         self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("op")))
@@ -217,20 +300,85 @@ class TelegramCallbackTests(unittest.TestCase):
         self.assertTrue(self.press(ADMIN_CHAT, self.cb("ap")))
         self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "approved")
 
-    # ---- reject (instructions only until the reason prompt exists) ---------------
+    # ---- reject: reason question ---------------------------------------------------
 
-    def test_reject_button_on_submitted_gate_gives_the_command_and_changes_nothing(self):
+    def test_reject_button_asks_for_a_reason_and_changes_nothing_yet(self):
         self.set_status("submitted")
 
         self.assertFalse(self.press(ADMIN_CHAT, self.cb("rj")))
 
         self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "submitted")
-        reply = self.calls("sendMessage")[0]["text"]
-        self.assertIn("<b>Reject Fire NOC</b>", reply)
-        self.assertIn(f"<code>GATEDECIDE {self.approval.id.hex[:8]} REJECT your reason</code>", reply)
+        prompt = self.calls("sendMessage")[0]
+        self.assertIn("<b>Reject Fire NOC</b>", prompt["text"])
+        self.assertIn("Please enter the rejection reason for Fire NOC.", prompt["text"])
+        self.assertEqual(
+            prompt["reply_markup"]["inline_keyboard"],
+            [[{"text": "Cancel", "callback_data": f"g1:cn:{self.approval.id.hex}"}]],
+        )
         self.assertEqual(self.calls("answerCallbackQuery")[0]["text"], "Reason needed")
-        self.assertEqual(self.calls("editMessageReplyMarkup"), [])  # Approve/Reject stay usable
+        self.assertEqual(self.session.query(TelegramPendingInput).one().kind, "gate_reject_reason")
         self.assertEqual(self.session.query(InboundMessage).count(), 0)  # no command ran
+
+    def test_reject_reason_answer_runs_the_existing_reject(self):
+        self.set_status("submitted")
+        self.press(ADMIN_CHAT, self.cb("rj"))
+
+        handled, acted = self.send_text(ADMIN_CHAT, "Updated NOC copy required.")
+
+        self.assertEqual((handled, acted), (True, True))
+        approval = self.session.get(ProjectExternalApproval, self.approval.id)
+        # decide()'s reject loops the gate back to the assignee with the reason kept.
+        self.assertEqual(approval.status, "assigned")
+        self.assertEqual(approval.rejection_reason, "Updated NOC copy required.")
+        self.assertEqual(self.last_inbound().raw_body, f"GATEDECIDE {self.approval.id.hex[:8]} REJECT Updated NOC copy required.")
+
+    def test_cancel_withdraws_the_reject_question(self):
+        self.set_status("submitted")
+        self.press(ADMIN_CHAT, self.cb("rj"))
+        self.mock_post.reset_mock()
+
+        self.assertFalse(self.press(ADMIN_CHAT, self.cb("cn"), message_id=1))
+
+        self.assertEqual(self.session.query(TelegramPendingInput).count(), 0)
+        self.assertIn("Rejection cancelled", self.calls("sendMessage")[0]["text"])
+        # The next text is an ordinary message again, not a reason.
+        handled, _ = self.send_text(ADMIN_CHAT, "some text")
+        self.assertFalse(handled)
+        self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "submitted")
+
+    def test_reject_reason_after_gate_already_decided_is_explained(self):
+        self.set_status("submitted")
+        self.press(ADMIN_CHAT, self.cb("rj"))
+        self.press(ADMIN_CHAT, self.cb("ap"), message_id=70)  # approved meanwhile
+        self.mock_post.reset_mock()
+
+        handled, acted = self.send_text(ADMIN_CHAT, "Too late reason")
+
+        self.assertEqual((handled, acted), (True, False))
+        self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "approved")
+        self.assertIn("Couldn't reject this approval", self.calls("sendMessage")[0]["text"])
+
+    def test_non_admin_reason_is_refused_readably(self):
+        self.set_status("submitted")
+        self.press(ASSIGNEE_CHAT, self.cb("rj"))
+        self.mock_post.reset_mock()
+        self.send_text(ASSIGNEE_CHAT, "not my call")
+        self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "submitted")
+        self.assertIn("not available for your role", self.calls("sendMessage")[0]["text"])
+
+    def test_asking_again_replaces_the_earlier_question(self):
+        self.set_status("submitted")
+        self.press(ADMIN_CHAT, self.cb("rj"))
+        self.press(ADMIN_CHAT, self.cb("rj"), message_id=43)
+        self.assertEqual(self.session.query(TelegramPendingInput).count(), 1)
+
+    def test_skip_on_an_old_prompt_leaves_the_current_question_alone(self):
+        self.set_status("submitted")
+        self.press(ADMIN_CHAT, self.cb("rj"))  # current question: reject reason
+        self.mock_post.reset_mock()
+        self.assertFalse(self.press(ADMIN_CHAT, self.cb("sk"), message_id=9))
+        self.assertIn("expired or was already answered", self.calls("sendMessage")[0]["text"])
+        self.assertEqual(self.session.query(TelegramPendingInput).one().kind, "gate_reject_reason")
 
     def test_reject_button_on_already_decided_gate_is_explained(self):
         with self.session.begin():
@@ -271,7 +419,16 @@ class TelegramCallbackTests(unittest.TestCase):
     def test_stale_button_after_reassignment_is_explained(self):
         with self.session.begin():
             self.session.get(ProjectExternalApproval, self.approval.id).assigned_to_user_id = OTHER_ID
-        self.assertFalse(self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked")))
+        self.assertFalse(self.press(ASSIGNEE_CHAT, self.cb("op")))
+        self.assertEqual(self.session.query(GateEvidenceSession).count(), 0)
+        self.assertIn("Couldn't start an evidence submission", self.calls("sendMessage")[0]["text"])
+
+    def test_health_note_after_reassignment_is_refused_readably(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"))
+        with self.session.begin():
+            self.session.get(ProjectExternalApproval, self.approval.id).assigned_to_user_id = OTHER_ID
+        self.mock_post.reset_mock()
+        self.send_text(ASSIGNEE_CHAT, "note")
         self.assertEqual(self.session.query(ProjectExternalApprovalStatusCheck).count(), 0)
         self.assertIn("Couldn't update the status", self.calls("sendMessage")[0]["text"])
 
@@ -292,11 +449,11 @@ class TelegramCallbackTests(unittest.TestCase):
         self.assertEqual(len(self.calls("editMessageReplyMarkup")), 1)
 
     def test_same_button_on_a_different_message_still_runs(self):
-        # e.g. Blocked pressed on the reminder after pressing it on an older
-        # status message - a legitimate new status check, not a duplicate.
-        self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"), message_id=42))
-        self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("hs", "blocked"), message_id=50))
-        self.assertEqual(self.session.query(ProjectExternalApprovalStatusCheck).count(), 2)
+        # e.g. Acknowledge on a reassignment message after acknowledging an
+        # older one - a legitimate new action, not a duplicate press.
+        self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("ac"), message_id=42))
+        self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("ac"), message_id=50))
+        self.assertEqual(self.session.query(ProjectGateAcknowledgement).count(), 2)
 
     def test_unlinked_chat_is_told_to_reconnect(self):
         self.assertFalse(self.press(UNLINKED_CHAT, self.cb("ac")))

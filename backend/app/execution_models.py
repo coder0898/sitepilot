@@ -1118,6 +1118,39 @@ class TelegramConnectToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class TelegramPendingInput(Base):
+    """Gate plan chunk 3: a question the bot is waiting for a typed answer
+    to - the Admin's rejection reason, or an optional note after a gate
+    health button. At most one per chat (asking again replaces it); the next
+    text message from that chat answers it before being treated as a
+    command or evidence text. Deleted once answered, skipped or cancelled;
+    `expires_at` bounds how long it can capture the next message. See
+    `app.services.telegram_pending_input`."""
+
+    __tablename__ = "telegram_pending_inputs"
+    __table_args__ = (
+        UniqueConstraint("chat_id", name="uq_v2_telegram_pending_inputs_chat"),
+        CheckConstraint("kind in ('gate_reject_reason', 'gate_health_note')", name="ck_v2_telegram_pending_inputs_kind"),
+        CheckConstraint(
+            "(kind = 'gate_health_note' and health is not null) or "
+            "(kind = 'gate_reject_reason' and health is null)",
+            name="ck_v2_telegram_pending_inputs_health",
+        ),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="CASCADE"), nullable=False,
+    )
+    health: Mapped[str | None] = mapped_column(Text)
+    prompt_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class GateEvidenceSession(Base):
     """Plan: WhatsApp Gate Workflow (U8, KTD4-KTD9).
 
