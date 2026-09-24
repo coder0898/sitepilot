@@ -94,7 +94,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -822,22 +822,36 @@ class MessageDispatchService:
     # ---- entry point ------------------------------------------------
 
     def _select_events(self, limit: int) -> list[OutboxEvent]:
+        """New (`pending`) events first, oldest first; any remaining batch
+        capacity goes to retries (`dispatched` events that still have a
+        failed delivery), oldest first. Selecting both in one created_at
+        order let retries that can never succeed (e.g. a recipient with no
+        Telegram chat id) fill the whole batch once there were `limit` of
+        them, so new events were never reached."""
+        pending = list(
+            self.db.scalars(
+                select(OutboxEvent)
+                .where(OutboxEvent.status == "pending")
+                .order_by(OutboxEvent.created_at)
+                .limit(limit)
+            ).all()
+        )
+        remaining = limit - len(pending)
+        if remaining <= 0:
+            return pending
         has_failed_delivery = exists().where(
             MessageDelivery.outbox_event_id == OutboxEvent.id,
             MessageDelivery.status == "failed",
         )
-        stmt = (
-            select(OutboxEvent)
-            .where(
-                or_(
-                    OutboxEvent.status == "pending",
-                    and_(OutboxEvent.status == "dispatched", has_failed_delivery),
-                )
-            )
-            .order_by(OutboxEvent.created_at)
-            .limit(limit)
+        retries = list(
+            self.db.scalars(
+                select(OutboxEvent)
+                .where(OutboxEvent.status == "dispatched", has_failed_delivery)
+                .order_by(OutboxEvent.created_at)
+                .limit(remaining)
+            ).all()
         )
-        return list(self.db.scalars(stmt).all())
+        return pending + retries
 
     def process_pending(self, limit: int = 50) -> int:
         """Processes up to `limit` outbox events (pending, plus dispatched

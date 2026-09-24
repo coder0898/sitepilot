@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -193,11 +193,17 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
 
     # ---- helpers -----------------------------------------------------
 
-    def _create_event(self, session, *, event_type, aggregate_type, aggregate_id, payload=None, key=None) -> uuid.UUID:
+    def _create_event(
+        self, session, *, event_type, aggregate_type, aggregate_id, payload=None, key=None, created_at=None,
+    ) -> uuid.UUID:
         ev = OutboxEvent(
             event_type=event_type, aggregate_type=aggregate_type, aggregate_id=aggregate_id,
             payload=payload or {}, idempotency_key=key or f"test:{uuid.uuid4()}", status="pending",
         )
+        if created_at is not None:
+            # SQLite's server-side now() has one-second resolution; ordering
+            # tests need distinct, explicit times.
+            ev.created_at = created_at
         session.add(ev)
         session.flush()
         return ev.id
@@ -637,6 +643,86 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             recipient_employee_ids,
             {self.pm_employee_id, self.supervisor_employee_id, self.admin_employee_id},
         )
+
+    # ---- event selection: new events are never starved by retries ----------
+
+    def _make_failing_events(self, count: int) -> list[uuid.UUID]:
+        """`count` older events whose only recipient (project 2's PM, no
+        phone) fails every attempt, left 'dispatched' with a failed delivery
+        - the retry set that used to fill the whole batch."""
+        self._set_phone(PM_ID, None)
+        oldest = datetime.now(timezone.utc) - timedelta(hours=1)
+        with self.Session() as session:
+            ids = [
+                self._create_event(
+                    session, event_type="project.activated", aggregate_type="project",
+                    aggregate_id=self.project2_id, payload={}, key=f"test:failing-{i}",
+                    created_at=oldest + timedelta(seconds=i),
+                )
+                for i in range(count)
+            ]
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=count)
+        for event_id in ids:
+            self.assertEqual([d.status for d in self._deliveries_for(event_id)], ["failed"])
+        return ids
+
+    def test_new_event_is_not_starved_by_a_full_batch_of_failing_retries(self):
+        self._make_failing_events(50)
+
+        with self.Session() as session:
+            new_event_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:new-after-failures",
+                created_at=datetime.now(timezone.utc),  # newer than every failing event
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+
+        with self.Session() as session:
+            self.assertEqual(session.get(OutboxEvent, new_event_id).status, "dispatched")
+        # The Supervisor (who has a phone) was actually delivered to; the PM
+        # copy fails only because this test removed the PM's phone.
+        statuses = {d.recipient_employee_id: d.status for d in self._deliveries_for(new_event_id)}
+        self.assertEqual(statuses[self.supervisor_employee_id], "sent")
+
+    def test_retries_still_run_with_spare_capacity(self):
+        failing_ids = self._make_failing_events(3)
+        self._set_phone(PM_ID, "9000000010")  # the failure is fixed
+
+        with self.Session() as session:
+            new_event_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:new-with-retries",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending(limit=50)
+
+        self.assertEqual(processed, 4)  # the new event plus all three retries
+        self.assertTrue(all(d.status == "sent" for d in self._deliveries_for(new_event_id)))
+        for event_id in failing_ids:
+            self.assertEqual([d.status for d in self._deliveries_for(event_id)], ["sent"])
+
+    def test_pending_events_are_selected_before_retries_oldest_first(self):
+        failing_ids = self._make_failing_events(2)
+        now = datetime.now(timezone.utc)
+        with self.Session() as session:
+            first = self._create_event(session, event_type="task.status_changed", aggregate_type="task",
+                                       aggregate_id=self.task_id, payload={}, key="test:p1", created_at=now)
+            second = self._create_event(session, event_type="task.status_changed", aggregate_type="task",
+                                        aggregate_id=self.task_id, payload={}, key="test:p2",
+                                        created_at=now + timedelta(seconds=1))
+            session.commit()
+
+        with self.Session() as session:
+            selected = [e.id for e in MessageDispatchService(session)._select_events(limit=3)]
+
+        self.assertEqual(selected, [first, second, failing_ids[0]])
 
     def test_gate_unassigned_reaches_previous_assignee_and_admin(self):
         # By dispatch time the gate has no assignee any more; the employee who
