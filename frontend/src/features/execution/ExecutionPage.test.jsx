@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
 import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { ExecutionPage } from "./ExecutionPage";
@@ -192,5 +192,40 @@ describe("ExecutionPage - external approval decisions", () => {
     render(<ExecutionPage user={admin}/>);
     fireEvent.click(await screen.findByRole("button", { name: /external approvals/i }));
     expect(await screen.findByText(/32 external approvals are awaiting applicability review/i)).toBeInTheDocument();
+  });
+});
+
+describe("ExecutionPage - link to a project's External Approvals", () => {
+  // The Telegram review message links to ?tab=execution&project=<code>&pane=approvals.
+  const projects = [
+    { id: "p1", name: "Sample Fitout Project", code: "P1", status: "active" },
+    { id: "p2", name: "SIS Interior", code: "P2", status: "active" },
+  ];
+
+  afterEach(() => window.history.replaceState({}, "", "/"));
+
+  it("opens the linked project on its External Approvals tab", async () => {
+    window.history.replaceState({}, "", "/?tab=execution&project=P2&pane=approvals");
+    projectsApi.list.mockResolvedValue(projects);
+    projectsApi.detail.mockResolvedValue({ id: "p2", memberships: [] });
+    projectsApi.executionTasks.mockResolvedValue({
+      project_id: "p2", project_name: "SIS Interior", total_tasks: 0, included_task_count: 0, excluded_task_count: 0, tasks: [],
+    });
+
+    render(<ExecutionPage user={{ role: "admin", id: "u-adm" }}/>);
+
+    expect(await screen.findByRole("button", { name: /external approvals/i }, { timeout: 5000 })).toHaveClass("bg-blue-600");
+    await waitFor(() => expect(taskExecutionApi.listExternalApprovals).toHaveBeenCalledWith("p2"));
+    expect(screen.getByRole("combobox")).toHaveValue("p2");
+    expect(screen.getByRole("button", { name: /external approvals/i })).toHaveClass("bg-blue-600");
+  });
+
+  it("falls back to the first project and default tab without a link", async () => {
+    projectsApi.list.mockResolvedValue(projects);
+    render(<ExecutionPage user={{ role: "admin", id: "u-adm" }}/>);
+
+    await waitFor(() => expect(screen.getByRole("combobox")).toHaveValue("p1"));
+    expect(await screen.findByRole("button", { name: /execution calendar/i }, { timeout: 5000 })).toHaveClass("bg-blue-600");
+    expect(taskExecutionApi.listExternalApprovals).not.toHaveBeenCalled();
   });
 });

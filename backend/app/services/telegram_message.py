@@ -7,6 +7,9 @@ it, so the business logic always stays behind the shared command handlers
 with a `callback` is sent as an inline button; pressing it runs that same
 command (see `telegram_callback.py`). An action without one is listed as a
 typed command under the message instead.
+
+`attachments` are stored evidence files dispatch sends right after the
+message itself (Admin evidence review).
 """
 
 from __future__ import annotations
@@ -61,10 +64,19 @@ def parse_gate_callback(data: str | None) -> GateCallback | None:
 
 
 @dataclass(frozen=True)
+class TelegramAttachment:
+    """A stored evidence file to send after the message text."""
+
+    file_id: uuid.UUID  # FileObject id - never shown to the user
+    caption: str | None = None
+
+
+@dataclass(frozen=True)
 class TelegramMessage:
     text: str
     parse_mode: str | None = None
     actions: tuple[tuple[TelegramAction, ...], ...] = field(default_factory=tuple)
+    attachments: tuple[TelegramAttachment, ...] = field(default_factory=tuple)
 
     def _command_lines(self, actions: list[TelegramAction]) -> str:
         if self.parse_mode == "HTML":

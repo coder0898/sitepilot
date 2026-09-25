@@ -23,6 +23,7 @@ import httpx
 
 from app.config import settings
 from app.services.message_dispatch import ProviderSendResult
+from app.services.whatsapp_media import MediaDownloadResult
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,82 @@ class TelegramProviderAdapter:
             "editMessageReplyMarkup",
             {"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}},
         )
+
+    # ---- files ------------------------------------------------------------
+    # Failure reasons never include the request URL: it carries the bot token,
+    # and a reason is stored (inbound rejection reason, delivery failure).
+
+    def download_file(self, file_id: str, max_bytes: int | None = None) -> MediaDownloadResult:
+        """Downloads an inbound file's bytes: `getFile` resolves the file's
+        path on Telegram's servers, then the bytes are fetched from it. A
+        size `getFile` reports above `max_bytes` stops before the download."""
+        if not self.access_token:
+            return MediaDownloadResult(ok=False, failure_code="not_configured", failure_reason="Telegram access token not set.")
+        if not file_id:
+            return MediaDownloadResult(ok=False, failure_code="media_not_found", failure_reason="No file id in the message.")
+        try:
+            response = httpx.post(
+                f"{TELEGRAM_API_BASE}/bot{self.access_token}/getFile", json={"file_id": file_id}, timeout=self.timeout,
+            )
+            data = response.json() if response.content else {}
+        except (httpx.HTTPError, ValueError):
+            return MediaDownloadResult(ok=False, failure_code="network_error", failure_reason="Telegram could not be reached.")
+        result = data.get("result") or {}
+        file_path = result.get("file_path")
+        if response.status_code >= 400 or not data.get("ok", False) or not file_path:
+            return MediaDownloadResult(
+                ok=False, failure_code="media_not_found",
+                failure_reason=data.get("description") or "Telegram did not return the file.",
+            )
+        size = result.get("file_size")
+        if max_bytes is not None and isinstance(size, int) and size > max_bytes:
+            return MediaDownloadResult(ok=False, failure_code="too_large", failure_reason="The file is too large.")
+        try:
+            file_response = httpx.get(
+                f"{TELEGRAM_API_BASE}/file/bot{self.access_token}/{file_path}", timeout=max(self.timeout, 30.0),
+            )
+        except httpx.HTTPError:
+            return MediaDownloadResult(ok=False, failure_code="network_error", failure_reason="Telegram could not be reached.")
+        if file_response.status_code >= 400:
+            return MediaDownloadResult(
+                ok=False, failure_code="media_not_found", failure_reason=f"Telegram file download failed (HTTP {file_response.status_code}).",
+            )
+        return MediaDownloadResult(ok=True, bytes=file_response.content)
+
+    def send_photo(self, chat_id: str, data: bytes, filename: str, mime_type: str, caption: str | None = None) -> ProviderSendResult:
+        return self._send_file("sendPhoto", "photo", chat_id, data, filename, mime_type, caption)
+
+    def send_document(self, chat_id: str, data: bytes, filename: str, mime_type: str, caption: str | None = None) -> ProviderSendResult:
+        return self._send_file("sendDocument", "document", chat_id, data, filename, mime_type, caption)
+
+    def _send_file(
+        self, method: str, field: str, chat_id: str, data: bytes, filename: str, mime_type: str, caption: str | None,
+    ) -> ProviderSendResult:
+        """Uploads bytes the application already holds (multipart), so the
+        recipient never gets a link into evidence storage."""
+        if not chat_id:
+            return ProviderSendResult(ok=False, failure_code="missing_chat_id", failure_reason="Recipient has no Telegram chat id on file.")
+        if not self.access_token:
+            return ProviderSendResult(ok=False, failure_code="not_configured", failure_reason="Telegram access token not set.")
+        form = {"chat_id": chat_id}
+        if caption:
+            form["caption"] = caption[:1024]  # Telegram's caption limit
+        try:
+            response = httpx.post(
+                f"{TELEGRAM_API_BASE}/bot{self.access_token}/{method}",
+                data=form, files={field: (filename, data, mime_type)}, timeout=max(self.timeout, 60.0),
+            )
+            body = response.json() if response.content else {}
+        except (httpx.HTTPError, ValueError):
+            return ProviderSendResult(ok=False, failure_code="network_error", failure_reason="Telegram could not be reached.")
+        if response.status_code >= 400 or not body.get("ok", False):
+            return ProviderSendResult(
+                ok=False,
+                failure_code=str(body.get("error_code", response.status_code)),
+                failure_reason=body.get("description") or f"HTTP {response.status_code}",
+            )
+        message_id = (body.get("result") or {}).get("message_id")
+        return ProviderSendResult(ok=True, provider_message_id=str(message_id) if message_id is not None else None)
 
     def _call(self, method: str, body: dict) -> bool:
         if not self.access_token:

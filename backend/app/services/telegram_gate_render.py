@@ -23,10 +23,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
+from urllib.parse import urlencode
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.execution_models import (
     FileObject,
     ProjectExternalApproval,
@@ -36,7 +38,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User
 from app.project_models import V2Project, V2ProjectExternalGate
 from app.services.project_gate_status_check import STATUS_CHECK_HEALTHS
-from app.services.telegram_message import TelegramAction, TelegramMessage, gate_callback
+from app.services.telegram_message import TelegramAction, TelegramAttachment, TelegramMessage, gate_callback
 
 # Users are in India; IST has no DST, so a fixed offset is exact.
 _IST = timezone(timedelta(hours=5, minutes=30), "IST")
@@ -147,12 +149,17 @@ def _message(
     rows: list[tuple[str, object]],
     paragraphs: list[str] = (),
     actions: tuple[tuple[TelegramAction, ...], ...] = (),
+    link: tuple[str, str] | None = None,
+    attachments: tuple[TelegramAttachment, ...] = (),
 ) -> TelegramMessage:
     parts = [f"<b>{_e(title)}</b>"]
     if rows:
         parts.append("\n".join(f"{_e(label)}: {_e(value)}" for label, value in rows))
     parts.extend(_e(p) for p in paragraphs)
-    return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML", actions=actions)
+    if link:
+        label, url = link
+        parts.append(f'<a href="{_e(url)}">{_e(label)}</a>')
+    return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML", actions=actions, attachments=attachments)
 
 
 # ---- actions ------------------------------------------------------------------
@@ -369,6 +376,16 @@ def _render_submitted(db: Session, payload: dict, recipient_employee_id: uuid.UU
         )
     submission_id = _uuid_or_none(payload.get("submission_id"))
     submission = db.get(ProjectExternalApprovalSubmission, submission_id) if submission_id else None
+    attachments, total_files = _review_attachments(db, submission)
+    paragraphs = []
+    note = " ".join((submission.note or "").split()) if submission else ""
+    if note:
+        paragraphs.append(f"Note: {note[:_NOTE_PREVIEW_CHARS]}{'...' if len(note) > _NOTE_PREVIEW_CHARS else ''}")
+    if total_files > len(attachments):
+        paragraphs.append(f"The first {len(attachments)} of {total_files} files follow below. See the Web App for all of them.")
+    elif attachments:
+        paragraphs.append("The submitted files follow below.")
+    paragraphs.append("Review the evidence and decide.")
     return _message(
         "External Approval Ready for Review",
         [
@@ -377,14 +394,54 @@ def _render_submitted(db: Session, payload: dict, recipient_employee_id: uuid.UU
             ("Submitted", _format_timestamp(submission.submitted_at if submission else None)),
             ("Evidence", summary),
         ],
-        ["Review the evidence in the Web App (External Approvals) and decide."],
+        paragraphs,
         actions=((
             TelegramAction("Approve", f"GATEDECIDE {g.ref} APPROVE", _cb(g, "ap")),
-            # Until the typed-reason prompt exists (gate plan chunk 3), this
-            # button only replies with the ready-to-send reject command.
             TelegramAction("Reject", f"GATEDECIDE {g.ref} REJECT <reason>", _cb(g, "rj")),
         ),),
+        link=_web_app_link(db, g),
+        attachments=attachments,
     )
+
+
+# At most this many submitted files are sent to the Admin on Telegram; the
+# Web App link covers the rest.
+MAX_REVIEW_ATTACHMENTS = 5
+_NOTE_PREVIEW_CHARS = 500
+
+
+def _review_attachments(
+    db: Session, submission: ProjectExternalApprovalSubmission | None,
+) -> tuple[tuple[TelegramAttachment, ...], int]:
+    """(the first `MAX_REVIEW_ATTACHMENTS` submitted files, total file count)."""
+    if submission is None:
+        return (), 0
+    rows = list(
+        db.execute(
+            select(FileObject.id, FileObject.original_filename)
+            .join(ProjectExternalApprovalEvidence, ProjectExternalApprovalEvidence.file_id == FileObject.id)
+            .where(ProjectExternalApprovalEvidence.submission_id == submission.id)
+            # Upload order: evidence rows share their submission's timestamp,
+            # but each file was stored by its own message.
+            .order_by(FileObject.created_at, FileObject.original_filename)
+        ).all()
+    )
+    total = len(rows)
+    attachments = tuple(
+        TelegramAttachment(file_id=file_id, caption=f"Evidence {index} of {total}: {filename}")
+        for index, (file_id, filename) in enumerate(rows[:MAX_REVIEW_ATTACHMENTS], start=1)
+    )
+    return attachments, total
+
+
+def _web_app_link(db: Session, g: _Gate) -> tuple[str, str] | None:
+    """The project's External Approvals view in the Web App, addressed by
+    the project code (the Web App's own link format), never an id."""
+    project = db.get(V2Project, g.approval.project_id) if g.approval is not None else None
+    if project is None or not settings.frontend_url:
+        return None
+    query = urlencode({"tab": "execution", "project": project.code, "pane": "approvals"})
+    return "Open in Web App", f"{settings.frontend_url.rstrip('/')}/?{query}"
 
 
 def _render_decided(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
@@ -473,9 +530,40 @@ def _render_session_opened(db: Session, payload: dict, recipient_employee_id: uu
             "You can send more than one item.",
             "When finished, submit everything for review.",
         ],
-        # GATECLOSE takes no reference - the sender's one open session names
-        # the gate - so this button carries none either.
-        actions=((TelegramAction("Submit for Review", "GATECLOSE", gate_callback("cl")),),),
+        actions=_open_session_actions(),
+    )
+
+
+def _open_session_actions(*, add_more: bool = False) -> tuple[tuple[TelegramAction, ...], ...]:
+    # GATECLOSE/GATECANCEL take no reference - the sender's one open session
+    # names the gate - so these buttons carry none either.
+    first_row = (TelegramAction("Submit for Review", "GATECLOSE", gate_callback("cl")),)
+    if add_more:
+        first_row = (TelegramAction("Add More Evidence", "(send another photo, PDF or note)", gate_callback("ad")),) + first_row
+    return (first_row, (TelegramAction("Cancel Evidence Session", "GATECANCEL", gate_callback("cx")),))
+
+
+def render_evidence_added(gate_name: str, received: str) -> TelegramMessage:
+    """Sent straight back after each item an employee adds to their open
+    evidence session (telegram_evidence.py)."""
+    return _message(
+        "Evidence Added",
+        [("Approval", gate_name), ("Received", received)],
+        ["You can add more evidence or submit everything for review."],
+        actions=_open_session_actions(add_more=True),
+    )
+
+
+def _render_session_cancelled(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    g = _gate(db, payload)
+    return _message(
+        "Evidence Session Cancelled",
+        [("Approval", g.gate_name), ("Project", g.project_name)],
+        [
+            "Nothing was submitted for review.",
+            "Tap Submit Evidence on the approval to start again.",
+        ],
+        actions=((_submit_evidence(g),),),
     )
 
 
@@ -511,6 +599,7 @@ GATE_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], TelegramMe
         "Still not submitted after the follow-up. Consider contacting the employee or reassigning from the Web App.",
     ),
     "gate_confirmation.session_opened": _render_session_opened,
+    "gate_confirmation.session_cancelled": _render_session_cancelled,
     # The confirmations below duplicate a main event the sender already
     # receives, so dispatch does not send them over Telegram (see
     # message_dispatch._TELEGRAM_REDUNDANT_GATE_CONFIRMATIONS). They still get

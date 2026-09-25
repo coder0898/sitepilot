@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CalendarCheck, CalendarRange, ClipboardList, FolderKanban, GitBranch, ShieldCheck } from "lucide-react";
 import { projectsApi } from "../../api/projectsApi";
 import { EmptyState, LoadingSpinner, RefreshButton, Select } from "../../components/ui";
+import { readRoute } from "../../lib/route";
 import { DependencyControlView } from "./components/DependencyControlView";
 import { ExecutionCalendarView } from "./components/ExecutionCalendarView";
 import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
@@ -24,6 +25,10 @@ function roleViewMeta(role) {
 }
 
 export function ExecutionPage({ user }) {
+  // A link such as ?tab=execution&project=<code>&pane=approvals (sent with a
+  // Telegram external-approval review) opens that project's External
+  // Approvals tab. Read once on mount; the page keeps its own state after.
+  const [linked] = useState(readRoute);
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectId, setProjectId] = useState("");
@@ -34,7 +39,8 @@ export function ExecutionPage({ user }) {
   // global role.
   const [project, setProject] = useState(null);
   const viewMeta = roleViewMeta(user.role);
-  const [activeTab, setActiveTab] = useState(viewMeta.key);
+  const [activeTab, setActiveTab] = useState(linked.pane === "approvals" ? "approvals" : viewMeta.key);
+  const linkedTab = useRef(linked.pane === "approvals" ? "approvals" : null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
   // Internal Employee only: which of their own tasks is open in the Task
@@ -56,12 +62,16 @@ export function ExecutionPage({ user }) {
       .then(items => {
         if (!active) return;
         setProjects(items);
-        setProjectId(current => (items.some(project => project.id === current) ? current : items[0]?.id || ""));
+        setProjectId(current => {
+          if (items.some(project => project.id === current)) return current;
+          const linkedProject = linked.project && items.find(project => project.code === linked.project);
+          return linkedProject?.id || items[0]?.id || "";
+        });
       })
       .catch(err => { if (active) setError(err.message || "Unable to load active projects."); })
       .finally(() => { if (active) setProjectsLoading(false); });
     return () => { active = false; };
-  }, [reloadToken]);
+  }, [reloadToken, linked.project]);
 
   useEffect(() => {
     if (!projectId) {
@@ -107,8 +117,14 @@ export function ExecutionPage({ user }) {
   const selectedProject = projects.find(project => project.id === projectId);
 
   // A project switch must not leave the previous project's open task detail
-  // behind for the new project.
-  useEffect(() => { setSelectedTaskId(null); setMyTasks([]); setActiveTab(viewMeta.key); }, [projectId]);
+  // behind for the new project. The first project chosen keeps a linked tab.
+  useEffect(() => {
+    setSelectedTaskId(null);
+    setMyTasks([]);
+    if (!projectId) return;
+    setActiveTab(linkedTab.current || viewMeta.key);
+    linkedTab.current = null;
+  }, [projectId]);
 
   const selectedMyTask = myTasks.find(task => task.id === selectedTaskId) || null;
 

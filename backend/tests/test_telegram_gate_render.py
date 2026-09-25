@@ -286,7 +286,7 @@ class TelegramGateRenderTests(unittest.TestCase):
     def test_session_opened_confirmation(self):
         message = self.render("gate_confirmation.session_opened", self.payload(gate_name="Fire NOC", project_name="SIS Interior"), self.employee_profile)
         self.assertIn("Submit Evidence", message.text)
-        self.assertEqual([a.command for row in message.actions for a in row], ["GATECLOSE"])
+        self.assertEqual([a.command for row in message.actions for a in row], ["GATECLOSE", "GATECANCEL"])
 
     def test_typed_fallback_lists_commands_until_buttons_exist(self):
         text = render_telegram_message(
@@ -338,7 +338,13 @@ class TelegramGateRenderTests(unittest.TestCase):
 
     def test_session_opened_submit_button_needs_no_gate_id(self):
         message = self.render("gate_confirmation.session_opened", self.payload(), self.employee_profile)
-        self.assertEqual(message.button_rows(), [[{"text": "Submit for Review", "callback_data": "g1:cl"}]])
+        self.assertEqual(
+            message.button_rows(),
+            [
+                [{"text": "Submit for Review", "callback_data": "g1:cl"}],
+                [{"text": "Cancel Evidence Session", "callback_data": "g1:cx"}],
+            ],
+        )
 
     def test_fyi_copies_have_no_buttons(self):
         for event_type in ("project_external_approval.assigned", "project_external_approval.decided"):

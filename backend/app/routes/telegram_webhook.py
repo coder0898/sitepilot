@@ -18,7 +18,9 @@ any other non-empty text to `TelegramInboundService` (U14) for full
 command parity - unless the bot is waiting for a typed answer from that
 chat (a rejection reason or health note), which takes the text first - or
 an inline-button press to `TelegramCallbackService` (which runs the same
-typed command the button stands for). Telegram's own `update_id` is stored alongside the raw
+typed command the button stands for). A photo or document goes to
+`TelegramEvidenceService` as evidence for the sender's open evidence session
+(gate plan chunk 4). Telegram's own `update_id` is stored alongside the raw
 update, and a duplicate delivery short-circuits BEFORE either handler
 runs (the `IntegrityError` branch below returns early) - Telegram's Bot
 API redelivers on a slow/failed response, the same at-least-once behavior
@@ -44,6 +46,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import mimetypes
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
@@ -55,9 +58,42 @@ from app.execution_models import TelegramInboundUpdate
 from app.services.outbox_scheduler import run_dispatch_pass
 from app.services.telegram_callback import TelegramCallbackService
 from app.services.telegram_connect import TelegramConnectService
-from app.services.telegram_inbound import TelegramInboundService
+from app.services.telegram_evidence import TelegramEvidenceService
 
 logger = logging.getLogger(__name__)
+
+# Media kinds Telegram sends that are not evidence types; each is still
+# routed as a document so the sender gets a "not supported" reply instead of
+# silence.
+_OTHER_MEDIA_KINDS = ("video", "animation", "audio", "voice", "video_note", "sticker")
+
+
+def _extract_media(message: dict) -> dict | None:
+    """The file in a message, as the shared evidence path's media metadata
+    (`id`, `kind`, `mime_type`, `filename`, `file_size`, `caption`), or None
+    for a text-only message. For a photo, Telegram sends several sizes of the
+    same image; the largest is used. Telegram re-encodes photos as JPEG."""
+    caption = message.get("caption")
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        largest = max(
+            (p for p in photos if isinstance(p, dict)),
+            key=lambda p: (p.get("file_size") or 0, (p.get("width") or 0) * (p.get("height") or 0)),
+        )
+        return {
+            "id": largest.get("file_id"), "kind": "photo", "mime_type": "image/jpeg",
+            "filename": None, "file_size": largest.get("file_size"), "caption": caption,
+        }
+    for kind in ("document", *_OTHER_MEDIA_KINDS):
+        item = message.get(kind)
+        if isinstance(item, dict):
+            filename = item.get("file_name")
+            mime_type = item.get("mime_type") or (mimetypes.guess_type(filename)[0] if filename else None)
+            return {
+                "id": item.get("file_id"), "kind": "document", "mime_type": mime_type or f"{kind}/unknown",
+                "filename": filename, "file_size": item.get("file_size"), "caption": caption,
+            }
+    return None
 
 router = APIRouter(prefix="/api/v2/telegram", tags=["v2-telegram-webhook"])
 
@@ -96,10 +132,14 @@ async def receive_inbound_telegram_update(
     callback_query_id: str | None = None
     callback_message_id: int | None = None
 
+    media: dict | None = None
     if isinstance(message, dict):
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id")) if chat.get("id") is not None else None
         message_text = message.get("text")
+        media = _extract_media(message)
+        if media is not None:
+            message_text = media.get("caption") or None
     elif isinstance(callback_query, dict):
         inner_message = callback_query.get("message") or {}
         chat = inner_message.get("chat") or {}
@@ -132,7 +172,11 @@ async def receive_inbound_telegram_update(
         db.rollback()
         return {"status": "received"}
 
-    if message_text and message_text.startswith("/start"):
+    if media is not None:
+        # A photo/document is always evidence for the sender's open session
+        # (a caption only describes it); the sender is told the outcome.
+        TelegramEvidenceService(db).handle_media(update_id=int(update_id), chat_id=chat_id, media=media)
+    elif message_text and message_text.startswith("/start"):
         # U13: connect-flow.
         TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text)
     elif message_text:
@@ -145,9 +189,10 @@ async def receive_inbound_telegram_update(
             background_tasks.add_task(_dispatch_now)
         if not handled:
             # U14: full command parity (vendor ACCEPT/DECLINE/CLARIFY, employee
-            # STATUS, all six GATE* commands) - reuses InboundMessageService's
-            # shared dispatch, not a separate implementation per command.
-            TelegramInboundService(db).process(int(update_id), chat_id, message_text)
+            # STATUS, all GATE* commands) - reuses InboundMessageService's
+            # shared dispatch, not a separate implementation per command. A
+            # note added to an open evidence session is confirmed back.
+            TelegramEvidenceService(db).handle_text(update_id=int(update_id), chat_id=chat_id, text=message_text)
     elif callback_data is not None:
         # Inline-button press: runs the same GATE* command a user could type.
         acted = TelegramCallbackService(db).handle(

@@ -18,6 +18,10 @@ Two buttons first ask a question (gate plan chunk 3), stored as a
 The pending question captures the next text message before it can be read
 as a command or evidence text (`handle_text`).
 
+Evidence session buttons (gate plan chunk 4): [Cancel Evidence Session] runs
+GATECANCEL; [Add More Evidence] runs nothing - it only acknowledges, since
+the next photo/PDF/note is added anyway.
+
 Feedback, so nothing fails silently:
 - the button's loading spinner is always answered with a short toast;
 - on success the pressed message's buttons are removed, so the completed
@@ -73,6 +77,9 @@ _BUTTON_ACTIONS = {
     "ap": _ButtonAction("approve this approval", "Approved"),
     "rj": _ButtonAction("reject this approval", "Reason needed"),
     "cn": _ButtonAction("cancel the rejection", "Cancelled"),
+    "cx": _ButtonAction("cancel the evidence session", "Evidence session cancelled", needs_gate=False),
+    # Nothing to run: the next photo/PDF/note is simply added.
+    "ad": _ButtonAction("add more evidence", "Send your next photo, PDF or note", needs_gate=False),
 }
 
 _UNLINKED = "This Telegram account isn't linked to SiteOps. Ask your Admin for a new connect link."
@@ -103,6 +110,8 @@ def _command_for(callback: GateCallback) -> str | None:
         "ap": f"GATEDECIDE {ref} APPROVE",
         "rj": f"GATEDECIDE {ref} REJECT",
         "cn": f"GATEDECIDE {ref} REJECT",
+        "cx": "GATECANCEL",
+        "ad": "",
     }[callback.code]
 
 
@@ -131,6 +140,9 @@ class TelegramCallbackService:
             self._reply(chat_id, _e(_STALE))
             return False
 
+        if callback.code == "ad":
+            self._answer(callback_query_id, _BUTTON_ACTIONS["ad"].done_toast)
+            return False
         if callback.code == "rj":
             self._ask_reject_reason(chat_id, callback_query_id, callback)
             return False

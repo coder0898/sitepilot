@@ -95,6 +95,7 @@ run fewest-attempts first - see `_select_events`.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Protocol
@@ -104,6 +105,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.execution_models import (
+    FileObject,
     MessageDelivery,
     OutboxEvent,
     ProjectExternalApproval,
@@ -112,9 +114,16 @@ from app.execution_models import (
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
+from app.services import evidence_storage
 from app.services.message_templates import TemplateSpec, render_components, resolve
 from app.services.telegram_render import render_telegram
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
+
+logger = logging.getLogger(__name__)
+
+# Sent as Telegram photos; any other evidence type (WebP, PDF) goes as a
+# document, which Telegram shows as a downloadable file.
+_TELEGRAM_PHOTO_MIME_TYPES = frozenset({"image/jpeg", "image/png"})
 
 # The only two `V2ProjectMembership.project_role` values this service ever
 # treats as notification recipients. `'super_admin'` is deliberately never
@@ -831,11 +840,38 @@ class MessageDispatchService:
             delivery.provider_message_id = result.provider_message_id
             delivery.failure_code = None
             delivery.failure_reason = None
+            if channel == "telegram" and message.attachments:
+                # Only after the message itself went out: a delivery that is
+                # 'sent' is never re-sent, so files can't arrive twice.
+                self._send_telegram_attachments(adapter, send_target, message.attachments)
         else:
             delivery.status = "failed"
             delivery.failure_code = result.failure_code
             delivery.failure_reason = result.failure_reason
         self.db.flush()
+
+    def _send_telegram_attachments(self, adapter, chat_id: str, attachments) -> None:
+        """Sends stored evidence files after a Telegram message (Admin
+        evidence review), uploading the bytes from evidence storage - the
+        recipient never gets a storage link. Best-effort: the message they
+        follow is already delivered and links to the Web App, where every
+        file is available, so a file that can't be sent is logged, not
+        retried."""
+        for attachment in attachments:
+            file_object = self.db.get(FileObject, attachment.file_id)
+            try:
+                data = evidence_storage.read(file_object.storage_key) if file_object is not None else None
+            except evidence_storage.EvidenceStorageError:
+                data = None
+            if data is None:
+                logger.warning("Evidence file %s could not be read for Telegram review.", attachment.file_id)
+                continue
+            send = adapter.send_photo if file_object.mime_type in _TELEGRAM_PHOTO_MIME_TYPES else adapter.send_document
+            result = send(chat_id, data, file_object.original_filename, file_object.mime_type, attachment.caption)
+            if not result.ok:
+                logger.warning(
+                    "Evidence file %s was not sent on Telegram: %s", attachment.file_id, result.failure_reason,
+                )
 
     # ---- entry point ------------------------------------------------
 
