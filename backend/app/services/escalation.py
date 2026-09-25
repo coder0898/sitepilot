@@ -53,6 +53,7 @@ from app.execution_models import (
     Task,
     TaskProgressUpdate,
 )
+from app.project_models import V2Project
 from app.services.outbox import OutboxService
 
 # Mirrors `TERMINAL_STATUSES` in `app/services/project_visibility.py` (also
@@ -61,6 +62,10 @@ from app.services.outbox import OutboxService
 # `get_project`, a route-layer dependency this pure sweep-logic service has
 # no reason to carry.
 TERMINAL_STATUSES = ("completed", "cancelled")
+
+# Gates on a project in one of these statuses get no due reminder, follow-up
+# or Admin escalation: nobody is working the project any more.
+NO_GATE_REMINDER_PROJECT_STATUSES = ("archived",)
 
 ESCALATION_HOURS = 6
 """How long a `followup`-stage tracking row must have been open before an
@@ -186,9 +191,20 @@ class EscalationService:
 
     def _is_approval_still_awaiting_followup(self, approval: ProjectExternalApproval) -> bool:
         """An approval's "expected update not received" condition: still
-        `assigned` (not yet submitted, approved, rejected, or unassigned).
-        Live re-check used by `sweep_approval_escalations`."""
-        return approval.status == "assigned"
+        `assigned` (not yet submitted, approved, rejected, or unassigned) on
+        a project that is still worked (not archived). Live re-check used by
+        `sweep_approval_escalations`."""
+        if approval.status != "assigned":
+            return False
+        project_status = self.db.scalar(select(V2Project.status).where(V2Project.id == approval.project_id))
+        return project_status not in NO_GATE_REMINDER_PROJECT_STATUSES
+
+    @staticmethod
+    def _on_reminded_project():
+        """Condition for approvals whose project still gets gate reminders."""
+        return ProjectExternalApproval.project_id.in_(
+            select(V2Project.id).where(V2Project.status.not_in(NO_GATE_REMINDER_PROJECT_STATUSES))
+        )
 
     # ---- sweeps -----------------------------------------------------------
 
@@ -272,6 +288,7 @@ class EscalationService:
                     ProjectExternalApproval.status == "assigned",
                     ProjectExternalApproval.due_at.isnot(None),
                     ProjectExternalApproval.due_at <= today,
+                    self._on_reminded_project(),
                 )
             ).all()
         )
@@ -301,9 +318,10 @@ class EscalationService:
     def sweep_approval_escalations(self, now: datetime) -> list[ProjectExternalApproval]:
         """For every open `followup`-stage approval tracking row at least
         `ESCALATION_HOURS` old, re-derives live whether the approval is
-        still `assigned`: still assigned -> escalate to `admin_escalation`
-        (once); moved past `assigned` (submitted/approved/rejected/
-        unassigned) -> resolve the `followup` row and escalate no
+        still `assigned` on a project that is not archived: still awaiting
+        -> escalate to `admin_escalation` (once); moved past `assigned`
+        (submitted/approved/rejected/unassigned), or its project archived
+        since the follow-up -> resolve the `followup` row and escalate no
         further."""
         escalated: list[ProjectExternalApproval] = []
         cutoff = now - timedelta(hours=ESCALATION_HOURS)
@@ -360,6 +378,7 @@ class EscalationService:
                 select(ProjectExternalApproval).where(
                     ProjectExternalApproval.due_at == tomorrow,
                     ProjectExternalApproval.status == "assigned",
+                    self._on_reminded_project(),
                 )
             ).all()
         )
