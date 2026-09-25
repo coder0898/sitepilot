@@ -176,11 +176,14 @@ def _health_values(exclude: tuple[str, ...] = ()) -> list[str]:
     return [h for h in _HEALTH_ORDER if h in STATUS_CHECK_HEALTHS and h not in exclude]
 
 
-def _health_actions(g: _Gate, exclude: tuple[str, ...] = ()) -> tuple[TelegramAction, ...]:
-    return tuple(
+def _health_rows(g: _Gate, exclude: tuple[str, ...] = ()) -> tuple[tuple[TelegramAction, ...], ...]:
+    """Health buttons, two per row so a label like "Waiting on External"
+    is not squeezed on a phone."""
+    actions = [
         TelegramAction(HEALTH_LABELS[h], f"GATESTATUS {g.ref} {h}", _cb(g, "hs", h))
         for h in _health_values(exclude)
-    )
+    ]
+    return tuple(tuple(actions[i:i + 2]) for i in range(0, len(actions), 2))
 
 
 def _submit_evidence(g: _Gate, label: str = "Submit Evidence") -> TelegramAction:
@@ -188,7 +191,7 @@ def _submit_evidence(g: _Gate, label: str = "Submit Evidence") -> TelegramAction
 
 
 def _progress_actions(g: _Gate, exclude: tuple[str, ...] = ()) -> tuple[tuple[TelegramAction, ...], ...]:
-    return (_health_actions(g, exclude), (_submit_evidence(g),))
+    return (*_health_rows(g, exclude), (_submit_evidence(g),))
 
 
 # ---- templates ----------------------------------------------------------------
@@ -461,7 +464,7 @@ def _render_decided(db: Session, payload: dict, recipient_employee_id: uuid.UUID
             "External Approval Rejected",
             [("Approval", g.gate_name), ("Project", g.project_name), ("Rejected by", decider), ("Reason", reason)],
             ["Please correct the issue and submit the updated evidence again."],
-            actions=((_submit_evidence(g, "Submit Evidence Again"),), _health_actions(g)),
+            actions=((_submit_evidence(g, "Submit Evidence Again"),), *_health_rows(g)),
         )
     if approved:
         return _message(

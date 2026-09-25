@@ -101,7 +101,7 @@ class ProjectGateSubmissionOut(BaseModel):
 
 class ProjectExternalApprovalStatusCheckIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    health: Literal["on_track", "blocked", "need_help"]
+    health: Literal["on_track", "waiting_external", "blocked", "need_help"]
     note: str | None = Field(default=None, max_length=2000)
 
     @field_validator("note")

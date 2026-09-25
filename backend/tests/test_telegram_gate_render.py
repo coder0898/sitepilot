@@ -313,16 +313,50 @@ class TelegramGateRenderTests(unittest.TestCase):
         )
         self.assertNotIn("Reply with", message.text_for_buttons())  # every action is a button
 
-    def test_progress_buttons_are_health_row_then_evidence(self):
+    def test_progress_buttons_are_health_rows_then_evidence(self):
         message = self.render("project_external_approval.accepted", self.payload(), self.employee_profile)
         hex_id = self.approval.id.hex
         self.assertEqual(
             [[b["callback_data"] for b in row] for row in message.button_rows()],
             [
-                [f"g1:hs:{hex_id}:on_track", f"g1:hs:{hex_id}:blocked", f"g1:hs:{hex_id}:need_help"],
+                [f"g1:hs:{hex_id}:on_track", f"g1:hs:{hex_id}:waiting_external"],
+                [f"g1:hs:{hex_id}:blocked", f"g1:hs:{hex_id}:need_help"],
                 [f"g1:op:{hex_id}"],
             ],
         )
+
+    # ---- Waiting on External (chunk 6) -------------------------------------------------
+
+    def test_waiting_on_external_is_offered_alongside_the_other_statuses(self):
+        message = self.render("project_external_approval.accepted", self.payload(), self.employee_profile)
+        labels = [b["text"] for row in message.button_rows()[:2] for b in row]
+        self.assertEqual(labels, ["On Track", "Waiting on External", "Blocked", "Need Help"])
+
+    def test_waiting_on_external_is_offered_on_the_rework_message(self):
+        payload = self.payload(
+            assigned_to_user_id=str(self.employee.id), decision="rejected", reason="Blurry",
+            decided_by=str(self.admin.id),
+        )
+        message = self.render("project_external_approval.decided", payload, self.employee_profile)
+        self.assertIn(f"g1:hs:{self.approval.id.hex}:waiting_external",
+                      [b["callback_data"] for row in message.button_rows() for b in row])
+
+    def test_overdue_still_offers_waiting_on_external_but_not_on_track(self):
+        message = self.render("project_external_approval.followup_required",
+                              self.payload(assigned_to_user_id=str(self.employee.id)), self.employee_profile)
+        labels = [b["text"] for row in message.button_rows() for b in row]
+        self.assertIn("Waiting on External", labels)
+        self.assertNotIn("On Track", labels)
+
+    def test_status_update_shows_waiting_on_external_to_employee_and_admin(self):
+        payload = self.payload(health="waiting_external", note="Fire dept inspection on Monday",
+                               assigned_to_user_id=str(self.employee.id))
+        for profile in (self.employee_profile, self.admin_profile):
+            text = self.render("project_external_approval.status_checked", payload, profile).text
+            self.assertIn("Status: Waiting on External", text)
+            self.assertNotIn("waiting_external", text)
+        admin_text = self.render("project_external_approval.status_checked", payload, self.admin_profile).text
+        self.assertIn("Progress update only - not yet submitted for decision.", admin_text)
 
     def test_admin_review_has_approve_and_reject_buttons(self):
         payload = self.payload(submission_id=str(self.submission.id), submitted_by=str(self.employee.id))

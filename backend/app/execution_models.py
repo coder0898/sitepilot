@@ -442,7 +442,7 @@ class ProjectExternalApprovalStatusCheck(Base):
     __tablename__ = "project_external_approval_status_checks"
     __table_args__ = (
         CheckConstraint(
-            "health in ('on_track', 'blocked', 'need_help')",
+            "health in ('on_track', 'waiting_external', 'blocked', 'need_help')",
             name="ck_v2_project_external_approval_status_checks_health",
         ),
         Index("ix_v2_project_external_approval_status_checks_approval_recorded", "approval_id", "recorded_at"),

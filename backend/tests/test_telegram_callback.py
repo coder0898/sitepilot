@@ -241,6 +241,45 @@ class TelegramCallbackTests(unittest.TestCase):
         check = self.session.query(ProjectExternalApprovalStatusCheck).one()
         self.assertEqual((check.health, check.note), ("need_help", None))
 
+    # ---- Waiting on External (chunk 6) ------------------------------------------------
+
+    def test_waiting_on_external_button_asks_for_a_note_then_records_it(self):
+        self.assertFalse(self.press(ASSIGNEE_CHAT, self.cb("hs", "waiting_external")))
+        self.assertIn("<b>Status: Waiting on External</b>", self.calls("sendMessage")[0]["text"])
+
+        handled, acted = self.send_text(ASSIGNEE_CHAT, "Awaiting Fire Department inspection date")
+
+        self.assertEqual((handled, acted), (True, True))
+        check = self.session.query(ProjectExternalApprovalStatusCheck).one()
+        self.assertEqual((check.health, check.note), ("waiting_external", "Awaiting Fire Department inspection date"))
+        self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "assigned")
+
+    def test_waiting_on_external_with_skip_note(self):
+        self.press(ASSIGNEE_CHAT, self.cb("hs", "waiting_external"))
+        self.assertTrue(self.press(ASSIGNEE_CHAT, self.cb("sk"), message_id=1))
+        check = self.session.query(ProjectExternalApprovalStatusCheck).one()
+        self.assertEqual((check.health, check.note), ("waiting_external", None))
+
+    def test_waiting_on_external_button_fits_telegrams_limit(self):
+        self.assertLessEqual(len(self.cb("hs", "waiting_external").encode()), 64)
+
+    def test_typed_gatestatus_waiting_external_on_telegram_and_whatsapp(self):
+        ref = self.approval.id.hex[:8]
+        outcome = TelegramInboundService(self.session).process(8001, ASSIGNEE_CHAT, f"GATESTATUS {ref} waiting_external")
+        self.assertEqual(outcome.processing_status, "processed")
+
+        self.session.get(User, ASSIGNEE_ID).phone = "+919000000002"
+        self.session.commit()
+        from app.services.inbound_message import InboundMessageService
+        outcome = InboundMessageService(self.session).process(
+            "wamid.we1", "+919000000002", f"GATESTATUS {ref} waiting_external Waiting on the society NOC",
+        )
+        self.assertEqual(outcome.processing_status, "processed")
+        checks = self.session.query(ProjectExternalApprovalStatusCheck).order_by(ProjectExternalApprovalStatusCheck.recorded_at).all()
+        self.assertEqual([c.health for c in checks], ["waiting_external", "waiting_external"])
+        self.assertEqual(checks[-1].note, "Waiting on the society NOC")
+        self.assertEqual(self.session.get(ProjectExternalApproval, self.approval.id).status, "assigned")
+
     def test_skip_twice_says_already_answered(self):
         self.press(ASSIGNEE_CHAT, self.cb("hs", "on_track"))
         self.press(ASSIGNEE_CHAT, self.cb("sk"), message_id=1)

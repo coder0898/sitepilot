@@ -2,8 +2,8 @@
 
 `ProjectGateStatusCheckService.record` records a
 `ProjectExternalApprovalStatusCheck` row against a `ProjectExternalApproval`
-- the assignee's self-reported health ('on_track', 'blocked', or
-'need_help'). This is the direct structural analog of the BLOCKED-overlay
+- the assignee's self-reported health ('on_track', 'waiting_external',
+'blocked', or 'need_help'). This is the direct structural analog of the BLOCKED-overlay
 decision already applied to tasks (`TaskBlocker`): it is an independently
 queryable, point-in-time record, never a lifecycle status. This service
 NEVER writes `ProjectExternalApproval.status` and is never read by the
@@ -28,7 +28,7 @@ from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
 
-STATUS_CHECK_HEALTHS = ("on_track", "blocked", "need_help")
+STATUS_CHECK_HEALTHS = ("on_track", "waiting_external", "blocked", "need_help")
 
 
 class ProjectGateStatusCheckService:
