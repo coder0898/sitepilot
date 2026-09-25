@@ -710,6 +710,7 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
 
     def test_pending_events_are_selected_before_retries_oldest_first(self):
         failing_ids = self._make_failing_events(2)
+        self._set_phone(PM_ID, "9000000010")  # reachable again, so the retries are eligible
         now = datetime.now(timezone.utc)
         with self.Session() as session:
             first = self._create_event(session, event_type="task.status_changed", aggregate_type="task",
@@ -723,6 +724,118 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             selected = [e.id for e in MessageDispatchService(session)._select_events(limit=3)]
 
         self.assertEqual(selected, [first, second, failing_ids[0]])
+
+    # ---- retries: unreachable recipients, reconnects, fewest attempts first --
+
+    def test_unreachable_recipient_is_not_retried_while_still_unreachable(self):
+        failing_ids = self._make_failing_events(3)
+
+        with self.Session() as session:
+            self.assertEqual(MessageDispatchService(session)._select_events(limit=50), [])
+            processed = MessageDispatchService(session).process_pending(limit=50)
+
+        self.assertEqual(processed, 0)
+        for event_id in failing_ids:
+            [delivery] = self._deliveries_for(event_id)
+            self.assertEqual((delivery.status, delivery.failure_code, delivery.attempt_count),
+                             ("failed", "missing_phone", 1))
+
+    def _set_telegram(self, employee_id: uuid.UUID, chat_id: str | None) -> None:
+        with self.Session() as session:
+            profile = session.get(EmployeeProfile, employee_id)
+            profile.active_channel = "telegram"
+            profile.telegram_chat_id = chat_id
+            session.commit()
+
+    def test_missed_telegram_messages_are_delivered_once_the_recipient_links_telegram(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.config import settings
+
+        self._set_telegram(self.pm_employee_id, None)
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project.activated", aggregate_type="project",
+                aggregate_id=self.project2_id, payload={}, key="test:missed-telegram",
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+        [delivery] = self._deliveries_for(event_id)
+        self.assertEqual((delivery.status, delivery.failure_code), ("failed", "missing_chat_id"))
+
+        with self.Session() as session:  # not linked yet: left alone
+            self.assertEqual(MessageDispatchService(session).process_pending(limit=50), 0)
+
+        self._set_telegram(self.pm_employee_id, "777000")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"ok": True, "result": {"message_id": 42}}
+        original_token = settings.telegram_access_token
+        settings.telegram_access_token = "test-token"
+        try:
+            with patch("app.services.telegram_provider.httpx.post", return_value=response) as post:
+                with self.Session() as session:
+                    self.assertEqual(MessageDispatchService(session).process_pending(limit=50), 1)
+        finally:
+            settings.telegram_access_token = original_token
+
+        self.assertEqual(post.call_args.kwargs["json"]["chat_id"], "777000")
+        [delivery] = self._deliveries_for(event_id)
+        self.assertEqual((delivery.status, delivery.channel, delivery.attempt_count), ("sent", "telegram", 2))
+
+    def test_newly_reachable_recipient_is_not_starved_by_repeatedly_failing_retries(self):
+        # 50 older events whose deliveries keep failing for a non-address
+        # reason and have already been retried hundreds of times.
+        stuck_ids = self._make_failing_events(50)
+
+        # A newer event whose recipient (the Supervisor) had no phone and has
+        # since been given one.
+        self._set_phone(SUPERVISOR_ID, None)
+        with self.Session() as session:
+            newer_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:newly-reachable",
+                created_at=datetime.now(timezone.utc),
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+        self._set_phone(SUPERVISOR_ID, "9000000020")
+
+        with self.Session() as session:
+            for delivery in session.scalars(
+                select(MessageDelivery).where(MessageDelivery.outbox_event_id.in_(stuck_ids))
+            ):
+                delivery.failure_code = "network_error"
+                delivery.attempt_count = 500
+            session.commit()
+
+        with self.Session() as session:
+            selected = [e.id for e in MessageDispatchService(session)._select_events(limit=50)]
+
+        self.assertEqual(len(selected), 50)
+        self.assertEqual(selected[0], newer_id)  # fewest attempts first, despite being newest
+
+    def test_retrying_one_recipient_does_not_reattempt_a_still_unreachable_one(self):
+        self._set_phone(PM_ID, None)
+        self._set_phone(SUPERVISOR_ID, None)
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:partial-reachable",
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+
+        self._set_phone(SUPERVISOR_ID, "9000000020")
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+
+        by_recipient = {d.recipient_employee_id: d for d in self._deliveries_for(event_id)}
+        self.assertEqual(by_recipient[self.supervisor_employee_id].status, "sent")
+        pm = by_recipient[self.pm_employee_id]
+        self.assertEqual((pm.status, pm.failure_code, pm.attempt_count), ("failed", "missing_phone", 1))
 
     def test_gate_unassigned_reaches_previous_assignee_and_admin(self):
         # By dispatch time the gate has no assignee any more; the employee who

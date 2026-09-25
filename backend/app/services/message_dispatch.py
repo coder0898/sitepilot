@@ -86,6 +86,11 @@ while a `'dispatched'` event with no failed deliveries is never
 re-selected - so re-running `process_pending()` immediately after a fully
 successful batch is still a safe no-op that creates zero new rows, exactly
 as the plan's verification test scenario expects.
+
+Not every failed delivery is retried every pass, though: a failure caused by
+the recipient having no address on their channel (`missing_chat_id`,
+`missing_phone`) is only retried once they are reachable again, and retries
+run fewest-attempts first - see `_select_events`.
 """
 
 from __future__ import annotations
@@ -94,7 +99,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
-from sqlalchemy import exists, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -118,6 +123,12 @@ from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorConta
 _ACCOUNTABLE_ROLES = ("project_manager", "site_supervisor")
 
 _SUCCEEDED_STATUSES = ("sent", "delivered", "read")
+
+# Failures caused by the recipient having no address on their current channel
+# (no Telegram chat linked / no phone on file). Retrying them cannot succeed
+# until that changes, so they are only retried once the recipient is
+# reachable again - see `_select_events`.
+_UNREACHABLE_FAILURE_CODES = ("missing_chat_id", "missing_phone")
 
 # Phase 1b (locked decision #1): Class A approval decisions are the one
 # task-event class where Admin becomes a CC recipient - visibility only,
@@ -767,15 +778,22 @@ class MessageDispatchService:
                 if delivery is None or delivery.status in _SUCCEEDED_STATUSES:
                     return
 
-        # Refresh the denormalized snapshot on every attempt (including a
-        # retry) so it reflects the number this specific attempt targeted.
-        delivery.recipient_phone = recipient.phone
         # U9: the channel this attempt actually targets, read fresh from the
         # recipient's identity row (U8) rather than trusting
         # `recipient.channel`'s construction-time default - the same
-        # resolve-fresh-on-every-attempt discipline `recipient_phone` above
+        # resolve-fresh-on-every-attempt discipline `recipient_phone` below
         # already follows.
         channel = self._resolve_recipient_channel(recipient)
+        if delivery.status == "failed" and delivery.failure_code in _UNREACHABLE_FAILURE_CODES:
+            address = self._resolve_telegram_chat_id(recipient) if channel == "telegram" else recipient.phone
+            if not address:
+                # Still unreachable: this event was re-selected for another
+                # recipient's retry - don't burn an attempt on this one.
+                return
+
+        # Refresh the denormalized snapshot on every attempt (including a
+        # retry) so it reflects the number this specific attempt targeted.
+        delivery.recipient_phone = recipient.phone
         delivery.channel = channel
         delivery.status = "sending"
         delivery.attempt_count += 1
@@ -821,13 +839,55 @@ class MessageDispatchService:
 
     # ---- entry point ------------------------------------------------
 
+    @staticmethod
+    def _recipient_reachable():
+        """SQL condition (correlated to `MessageDelivery`): the delivery's
+        recipient now has an address on their current channel - a linked
+        Telegram chat when on Telegram, otherwise a phone number. Mirrors
+        what `_dispatch_to_recipient` would send to."""
+        employee_reachable = (
+            select(EmployeeProfile.id)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .where(
+                EmployeeProfile.id == MessageDelivery.recipient_employee_id,
+                or_(
+                    and_(EmployeeProfile.active_channel == "telegram",
+                         func.coalesce(EmployeeProfile.telegram_chat_id, "") != ""),
+                    and_(EmployeeProfile.active_channel != "telegram", func.coalesce(User.phone, "") != ""),
+                ),
+            )
+            .exists()
+        )
+        vendor_reachable = (
+            select(V2VendorContact.id)
+            .where(
+                V2VendorContact.id == MessageDelivery.recipient_vendor_contact_id,
+                or_(
+                    and_(V2VendorContact.active_channel == "telegram",
+                         func.coalesce(V2VendorContact.telegram_chat_id, "") != ""),
+                    and_(
+                        V2VendorContact.active_channel != "telegram",
+                        or_(func.coalesce(V2VendorContact.phone, "") != "",
+                            func.coalesce(V2VendorContact.whatsapp, "") != ""),
+                    ),
+                ),
+            )
+            .exists()
+        )
+        return or_(employee_reachable, vendor_reachable)
+
     def _select_events(self, limit: int) -> list[OutboxEvent]:
         """New (`pending`) events first, oldest first; any remaining batch
         capacity goes to retries (`dispatched` events that still have a
-        failed delivery), oldest first. Selecting both in one created_at
-        order let retries that can never succeed (e.g. a recipient with no
-        Telegram chat id) fill the whole batch once there were `limit` of
-        them, so new events were never reached."""
+        retryable failed delivery).
+
+        A failure for an unreachable recipient (`_UNREACHABLE_FAILURE_CODES`)
+        is only retryable once that recipient is reachable again (e.g. they
+        linked Telegram), so it neither retries every pass forever nor takes
+        batch space. Retries are ordered by their fewest attempts, then
+        oldest, so deliveries that keep failing for other reasons (hundreds
+        of attempts) never crowd out a recipient who just became reachable
+        or failed once."""
         pending = list(
             self.db.scalars(
                 select(OutboxEvent)
@@ -839,15 +899,28 @@ class MessageDispatchService:
         remaining = limit - len(pending)
         if remaining <= 0:
             return pending
-        has_failed_delivery = exists().where(
-            MessageDelivery.outbox_event_id == OutboxEvent.id,
-            MessageDelivery.status == "failed",
+        retryable = (
+            select(
+                MessageDelivery.outbox_event_id.label("event_id"),
+                func.min(MessageDelivery.attempt_count).label("fewest_attempts"),
+            )
+            .where(
+                MessageDelivery.status == "failed",
+                or_(
+                    MessageDelivery.failure_code.is_(None),
+                    MessageDelivery.failure_code.not_in(_UNREACHABLE_FAILURE_CODES),
+                    self._recipient_reachable(),
+                ),
+            )
+            .group_by(MessageDelivery.outbox_event_id)
+            .subquery()
         )
         retries = list(
             self.db.scalars(
                 select(OutboxEvent)
-                .where(OutboxEvent.status == "dispatched", has_failed_delivery)
-                .order_by(OutboxEvent.created_at)
+                .join(retryable, retryable.c.event_id == OutboxEvent.id)
+                .where(OutboxEvent.status == "dispatched")
+                .order_by(retryable.c.fewest_attempts, OutboxEvent.created_at)
                 .limit(remaining)
             ).all()
         )
