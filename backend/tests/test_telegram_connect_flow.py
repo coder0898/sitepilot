@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.database import get_db
-from app.execution_models import TelegramConnectToken, TelegramInboundUpdate
+from app.execution_models import TelegramConnectToken, TelegramInboundUpdate, TelegramPendingInput
 from app.models import EmployeeProfile, User, UserRole
 from app.routes.telegram_webhook import router as telegram_webhook_router
 from app.vendor_models import V2Vendor, V2VendorContact
@@ -58,7 +58,7 @@ class TelegramConnectFlowTests(unittest.TestCase):
 
         for table in (
             User.__table__, EmployeeProfile.__table__, V2Vendor.__table__, V2VendorContact.__table__,
-            TelegramConnectToken.__table__, TelegramInboundUpdate.__table__,
+            TelegramConnectToken.__table__, TelegramInboundUpdate.__table__, TelegramPendingInput.__table__,
         ):
             table.create(self.engine)
 

@@ -442,7 +442,7 @@ class ProjectExternalApprovalStatusCheck(Base):
     __tablename__ = "project_external_approval_status_checks"
     __table_args__ = (
         CheckConstraint(
-            "health in ('on_track', 'blocked', 'need_help')",
+            "health in ('on_track', 'waiting_external', 'blocked', 'need_help')",
             name="ck_v2_project_external_approval_status_checks_health",
         ),
         Index("ix_v2_project_external_approval_status_checks_approval_recorded", "approval_id", "recorded_at"),
@@ -518,6 +518,10 @@ class TaskProgressUpdate(Base):
     submitted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     source: Mapped[str] = mapped_column(Text, nullable=False, default="portal")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Set when a verification or approval decision (either outcome) covers
+    this update. Null = logged since the task's last decision, i.e. the only
+    progress a new submission may rest on."""
 
 
 class FileObject(Base):
@@ -633,6 +637,9 @@ class TaskBlocker(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    reported_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    """Who logged the blocker (any channel), so they are told when it is
+    resolved. Null on blockers logged before it was recorded."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -1116,6 +1123,58 @@ class TelegramConnectToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TelegramPendingInput(Base):
+    """Gate plan chunk 3: a question the bot is waiting for a typed answer
+    to - the Admin's rejection reason, or an optional note after a gate
+    health button. At most one per chat (asking again replaces it); the next
+    text message from that chat answers it before being treated as a
+    command or evidence text. Deleted once answered, skipped or cancelled;
+    `expires_at` bounds how long it can capture the next message. See
+    `app.services.telegram_pending_input`."""
+
+    __tablename__ = "telegram_pending_inputs"
+    __table_args__ = (
+        UniqueConstraint("chat_id", name="uq_v2_telegram_pending_inputs_chat"),
+        CheckConstraint(
+            "kind in ('gate_reject_reason', 'gate_health_note', 'task_early_start_reason', "
+            "'task_verify_reject_reason', 'task_approval_reject_reason', 'task_blocker_type', "
+            "'task_blocker_description', 'task_add_progress')",
+            name="ck_v2_telegram_pending_inputs_kind",
+        ),
+        # Telegram task plan U6 (KTD7): a gate question points at its gate, a
+        # task question at its task - exactly one, matching the kind.
+        CheckConstraint(
+            "(kind in ('gate_reject_reason', 'gate_health_note') and approval_id is not null and task_id is null) or "
+            "(kind not in ('gate_reject_reason', 'gate_health_note') and task_id is not null and approval_id is null)",
+            name="ck_v2_telegram_pending_inputs_target",
+        ),
+        CheckConstraint(
+            "(kind = 'gate_health_note' and health is not null) or "
+            "(kind <> 'gate_health_note' and health is null)",
+            name="ck_v2_telegram_pending_inputs_health",
+        ),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="CASCADE"),
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="CASCADE"),
+    )
+    draft_text: Mapped[str | None] = mapped_column(Text)
+    """An earlier answer carried into the next question of the same flow."""
+    review_token: Mapped[str | None] = mapped_column(Text)
+    """Which submission a review question belongs to (KTD19)."""
+    health: Mapped[str | None] = mapped_column(Text)
+    prompt_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class GateEvidenceSession(Base):

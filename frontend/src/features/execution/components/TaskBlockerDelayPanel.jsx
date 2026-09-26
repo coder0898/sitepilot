@@ -9,7 +9,7 @@ const DELAY_RESPONSIBILITY_OPTIONS = [
   ["design", "Design"], ["site_readiness", "Site readiness"], ["internal", "Internal"], ["other", "Other"],
 ];
 
-function BlockerRow({ projectId, task, blocker, onChanged }) {
+function BlockerRow({ projectId, task, blocker, onChanged, canResolve }) {
   const [resolving, setResolving] = useState(false);
   const [error, setError] = useState("");
 
@@ -29,7 +29,7 @@ function BlockerRow({ projectId, task, blocker, onChanged }) {
   return <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <span className="flex items-center gap-2"><strong className="capitalize text-slate-800">{blocker.type}</strong><Pill tone={blocker.resolved_at ? "green" : "orange"}>{blocker.resolved_at ? "Resolved" : "Open"}</Pill></span>
-      {!blocker.resolved_at && <Button size="sm" variant="secondary" loading={resolving} onClick={resolve}>Resolve</Button>}
+      {!blocker.resolved_at && canResolve && <Button size="sm" variant="secondary" loading={resolving} onClick={resolve}>Resolve</Button>}
     </div>
     <p className="mt-0.5 text-slate-600">{blocker.description}</p>
     {error && <p className="mt-1 text-xs font-bold text-rose-700">{error}</p>}
@@ -144,7 +144,10 @@ function DelayForm({ projectId, task, onDone, onChanged }) {
 // the toggle themselves. Re-applied whenever it changes, not just on mount,
 // so a second quick-action click while this panel is already open still
 // switches to the requested form.
-export function TaskBlockerDelayPanel({ projectId, task, onChanged, autoOpen }) {
+// `canResolve`: whether this viewer may resolve a blocker - the backend allows
+// only the project's Supervisor, PM or an Admin (task_blocker._require_resolver);
+// anyone else would only be refused, so the button is not offered.
+export function TaskBlockerDelayPanel({ projectId, task, onChanged, autoOpen, canResolve = false }) {
   const [openForm, setOpenForm] = useState(autoOpen || null); // "blocker" | "delay" | null
   useEffect(() => { if (autoOpen) setOpenForm(autoOpen); }, [autoOpen]);
   const openBlockers = task.blockers.filter(b => !b.resolved_at).length;
@@ -168,7 +171,7 @@ export function TaskBlockerDelayPanel({ projectId, task, onChanged, autoOpen }) 
       <span>{task.delays.length > 0 ? `${task.delays.length} delay${task.delays.length === 1 ? "" : "s"} logged` : "No delays logged"}</span>
     </div>
 
-    {task.blockers.length > 0 && <div className="mt-2 grid gap-1.5">{task.blockers.map(blocker => <BlockerRow key={blocker.id} projectId={projectId} task={task} blocker={blocker} onChanged={onChanged}/>)}</div>}
+    {task.blockers.length > 0 && <div className="mt-2 grid gap-1.5">{task.blockers.map(blocker => <BlockerRow key={blocker.id} projectId={projectId} task={task} blocker={blocker} onChanged={onChanged} canResolve={canResolve}/>)}</div>}
     {openForm === "blocker" && <BlockerForm projectId={projectId} task={task} onChanged={onChanged} onDone={() => setOpenForm(null)}/>}
 
     {task.delays.length > 0 && <div className="mt-2 grid gap-1.5">{task.delays.map(delay => <div key={delay.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="capitalize text-slate-800">{delay.responsibility_type.replaceAll("_", " ")}</strong><span className="text-xs font-bold text-slate-500">{delay.impact_days} day{delay.impact_days === 1 ? "" : "s"}</span></div><p className="mt-0.5 text-slate-600">{delay.reason}</p></div>)}</div>}

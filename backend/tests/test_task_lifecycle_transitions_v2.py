@@ -393,6 +393,17 @@ class TaskLifecycleTransitionsApiTests(unittest.TestCase):
             self.assertIsNotNone(audit)
             self.assertEqual(audit.after_json["lifecycle_status"], "completed")
 
+            # The milestone cascade keeps its own per-task key: exactly one
+            # "completed" event for the milestone, not one per predecessor.
+            milestone_events = session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == t004.id,
+                    OutboxEvent.event_type == "task.status_changed",
+                )
+            ).all()
+            self.assertEqual(len(milestone_events), 1)
+            self.assertEqual(milestone_events[0].payload["target_status"], "completed")
+
     # ---- edge cases -------------------------------------------------------
 
     def test_transition_not_in_allow_list_is_rejected(self):

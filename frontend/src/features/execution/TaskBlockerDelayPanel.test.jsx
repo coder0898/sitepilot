@@ -58,11 +58,23 @@ describe("TaskBlockerDelayPanel", () => {
     taskExecutionApi.resolveBlocker.mockResolvedValue({});
     const onChanged = vi.fn();
     const withBlocker = { ...task, blockers: [{ id: "b1", type: "material", description: "Waiting on cement.", resolved_at: null }] };
-    render(<TaskBlockerDelayPanel projectId="p1" task={withBlocker} onChanged={onChanged}/>);
+    render(<TaskBlockerDelayPanel projectId="p1" task={withBlocker} onChanged={onChanged} canResolve/>);
     expect(screen.getByText("Open")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     await waitFor(() => expect(taskExecutionApi.resolveBlocker).toHaveBeenCalledWith("p1", "t1", "b1"));
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  // Telegram task plan U12: the backend lets only the Supervisor, PM or an
+  // Admin resolve a blocker, so nobody else is offered the button.
+  it("hides Resolve from someone who may not resolve blockers, but keeps the blocker visible", () => {
+    const withBlocker = { ...task, blockers: [{ id: "b1", type: "material", description: "Waiting on cement.", resolved_at: null }] };
+    render(<TaskBlockerDelayPanel projectId="p1" task={withBlocker} onChanged={vi.fn()} canResolve={false}/>);
+    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText("Waiting on cement.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resolve" })).not.toBeInTheDocument();
+    // Logging a blocker stays available to everyone on the project.
+    expect(screen.getByRole("button", { name: /report blocker/i })).toBeInTheDocument();
   });
 
   it("does not show Resolve for an already-resolved blocker", () => {

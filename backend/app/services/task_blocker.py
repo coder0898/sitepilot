@@ -105,6 +105,9 @@ class TaskBlockerService:
             type=clean_type,
             description=clean_description,
             owner_employee_id=owner_employee_id,
+            # Telegram task plan U12: recorded for every channel, so the
+            # reporter is told when the blocker is resolved.
+            reported_by=actor.id,
         )
         self.db.add(blocker)
         self.db.flush()
@@ -119,6 +122,7 @@ class TaskBlockerService:
                 "blocker_id": str(blocker.id),
                 "type": clean_type,
                 "description": clean_description,
+                "reported_by": str(actor.id),
             },
             idempotency_key=f"task:{task.id}:task.blocker_created:{blocker.id}",
         )
@@ -162,6 +166,7 @@ class TaskBlockerService:
                 "project_id": str(project.id),
                 "blocker_id": str(blocker.id),
                 "resolved_by": str(actor.id),
+                "reported_by": str(blocker.reported_by) if blocker.reported_by else None,
             },
             idempotency_key=f"task:{task.id}:task.blocker_resolved:{blocker.id}",
         )

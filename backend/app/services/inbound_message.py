@@ -182,6 +182,10 @@ GATE_STATUS_COMMAND = "GATESTATUS"
 # route to their own handlers and a different downstream service.
 GATE_SESSION_OPEN_COMMAND = "GATEOPEN"
 GATE_SESSION_CLOSE_COMMAND = "GATECLOSE"
+# Abandons the sender's open evidence session without submitting it
+# (GateEvidenceSessionService.discard_session). Like GATECLOSE it takes no
+# <ref> - the sender's one open session names the gate.
+GATE_SESSION_CANCEL_COMMAND = "GATECANCEL"
 # U12: the WhatsApp analogue of a portal Admin decision on a submitted gate
 # (ProjectGateDecisionService.decide, already existing) - kept as its own
 # constant rather than folded into GATE_COMMANDS because it routes to its
@@ -191,8 +195,19 @@ GATE_DECIDE_COMMAND = "GATEDECIDE"
 GATE_DECIDE_DECISION_BY_KEYWORD = {"APPROVE": "approved", "REJECT": "rejected"}
 EMPLOYEE_COMMANDS = {
     EMPLOYEE_COMMAND, *GATE_COMMANDS, GATE_STATUS_COMMAND,
-    GATE_SESSION_OPEN_COMMAND, GATE_SESSION_CLOSE_COMMAND, GATE_DECIDE_COMMAND,
+    GATE_SESSION_OPEN_COMMAND, GATE_SESSION_CLOSE_COMMAND, GATE_SESSION_CANCEL_COMMAND, GATE_DECIDE_COMMAND,
 }
+
+# Rejection reasons for evidence sent into a session, named so a channel can
+# turn each into its own reply (telegram_evidence.py) without parsing text.
+NO_OPEN_SESSION_REASON = "You have no open evidence session. Send GATEOPEN <ref> first."
+SESSION_NOT_ASSIGNED_REASON = (
+    "This approval is no longer assigned to you for evidence, so nothing was added. "
+    "Send GATECANCEL to close this evidence submission."
+)
+UNSUPPORTED_ATTACHMENT_REASON = "Unsupported attachment type; evidence must be JPG, PNG, WebP, or PDF."
+OVERSIZED_ATTACHMENT_REASON = "Attachment is too large; evidence must be 10 MB or smaller."
+DOWNLOAD_FAILED_REASON_PREFIX = "Could not download the attachment"
 
 # The project roles that may drive a task-lifecycle transition at all
 # (TaskLifecycleService._require_role_for_transition) - reused verbatim as
@@ -204,6 +219,9 @@ EMPLOYEE_COMMANDS = {
 # `in_progress`/`submitted` transitions per task_lifecycle.py - excluding
 # them here was a WhatsApp-path-only gap, not a deliberate narrower rule.
 _STATUS_DRIVING_ROLES = ("site_supervisor", "project_manager", "internal_employee")
+
+# Projects whose tasks a STATUS command can no longer target.
+_CLOSED_PROJECT_STATUSES = ("completed", "archived")
 
 _RESPONSE_BY_COMMAND = {
     "ACCEPT": "accepted",
@@ -333,6 +351,8 @@ class InboundMessageService:
             return self._handle_gate_close_command(
                 provider_message_id, sender_phone, message_text, user, employee, parts,
             )
+        if keyword == GATE_SESSION_CANCEL_COMMAND:
+            return self._handle_gate_cancel_command(provider_message_id, sender_phone, message_text, user, employee)
         if keyword == GATE_DECIDE_COMMAND:
             return self._handle_gate_decide_command(
                 provider_message_id, sender_phone, message_text, user, employee, parts,
@@ -345,6 +365,15 @@ class InboundMessageService:
                 )
 
             task_code, target_status = parts[1], parts[2]
+            # Cancelling needs a real, typed reason and stays a Web App
+            # action. A messaging channel used to pass an automatic
+            # "Reported via ..." text as that reason, which satisfied the
+            # lifecycle's reason rule without anyone giving one.
+            if target_status.lower() == "cancelled":
+                return self._save(
+                    provider_message_id, sender_phone, message_text, "employee", employee.id,
+                    "rejected", "Cancellation is only available in the Web App.",
+                )
             task = self._resolve_task_for_employee(task_code, employee)
             if task is None:
                 return self._save(
@@ -355,10 +384,13 @@ class InboundMessageService:
             try:
                 # The EXACT SAME service call a portal status-update action
                 # would make - transition() owns all role/dependency/state
-                # checks itself; nothing here duplicates that logic.
+                # checks itself; nothing here duplicates that logic. No
+                # reason is passed: an automatic text would otherwise be
+                # recorded as the reason for an early start. An early typed
+                # start is therefore refused by the lifecycle's own rule; the
+                # channel is still recorded through `source`.
                 TaskLifecycleService(self.db).transition(
                     task.project_id, task.id, target_status, actor=user,
-                    reason=f"Reported via {self._inbound_channel_label}.",
                     source=self._inbound_channel,
                 )
             except HTTPException as exc:
@@ -388,7 +420,15 @@ class InboundMessageService:
         )
 
     def _resolve_task_for_employee(self, task_code: str, employee: EmployeeProfile) -> Task | None:
-        candidates = self.db.scalars(select(Task).where(Task.original_code == task_code)).all()
+        # Task codes come from the template, so every project has its own
+        # T022 - a code is only unique among the sender's live projects.
+        # Completed/archived projects are excluded, otherwise lingering
+        # membership in an old project makes every code ambiguous.
+        candidates = self.db.scalars(
+            select(Task)
+            .join(V2Project, V2Project.id == Task.project_id)
+            .where(Task.original_code == task_code, V2Project.status.not_in(_CLOSED_PROJECT_STATUSES))
+        ).all()
         matched: list[Task] = []
         for task in candidates:
             has_driving_role = self.db.scalar(
@@ -630,6 +670,38 @@ class InboundMessageService:
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
 
+    def _handle_gate_cancel_command(
+        self,
+        provider_message_id: str,
+        sender_phone: str,
+        message_text: str,
+        user: User,
+        employee: EmployeeProfile,
+    ) -> InboundMessage:
+        session = self._open_session_for_employee(user.id)
+        if session is None:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", "You have no open evidence session to cancel.",
+            )
+        try:
+            # The shared service owns who may cancel and the discarded state.
+            GateEvidenceSessionService(self.db).discard_session(session, actor=user)
+        except HTTPException as exc:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", str(exc.detail),
+            )
+        approval = self.db.get(ProjectExternalApproval, session.approval_id)
+        if approval is not None:
+            self._emit_gate_confirmation(
+                provider_message_id, approval, user, "gate_confirmation.session_cancelled",
+                {"approval_id": str(approval.id)},
+            )
+        return self._save(
+            provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
+        )
+
     def _handle_gate_decide_command(
         self,
         provider_message_id: str,
@@ -719,7 +791,17 @@ class InboundMessageService:
         if session is None:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
-                "rejected", "You have no open evidence session. Send GATEOPEN <ref> first.",
+                "rejected", NO_OPEN_SESSION_REASON,
+            )
+
+        # Evidence is only added while the sender can still submit it: the
+        # gate is still assigned to them and awaiting evidence. Otherwise it
+        # would be accepted now and lost at GATECLOSE (KTD7's 403).
+        approval = self.db.get(ProjectExternalApproval, session.approval_id)
+        if approval is None or approval.assigned_to_user_id != user.id or approval.status != "assigned":
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", SESSION_NOT_ASSIGNED_REASON,
             )
 
         if media_metadata is not None:
@@ -753,14 +835,29 @@ class InboundMessageService:
         if mime_type not in ALLOWED_EVIDENCE_MIME_TYPES:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
-                "rejected", "Unsupported attachment type; evidence must be JPG, PNG, WebP, or PDF.",
+                "rejected", UNSUPPORTED_ATTACHMENT_REASON,
             )
 
-        download = download_inbound_media(media_metadata.get("id"))
+        # A size the channel reports up front (Telegram does) rejects an
+        # oversized file without downloading it at all.
+        declared_size = media_metadata.get("file_size")
+        if isinstance(declared_size, int) and declared_size > MAX_EVIDENCE_SIZE_BYTES:
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", OVERSIZED_ATTACHMENT_REASON,
+            )
+
+        download = self._download_media(media_metadata)
+        if not download.ok and download.failure_code == "too_large":
+            # The channel found it too large before downloading it.
+            return self._save(
+                provider_message_id, sender_phone, message_text, "employee", employee.id,
+                "rejected", OVERSIZED_ATTACHMENT_REASON,
+            )
         if not download.ok:
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
-                "rejected", f"Could not download the attachment: {download.failure_reason or download.failure_code}.",
+                "rejected", f"{DOWNLOAD_FAILED_REASON_PREFIX}: {download.failure_reason or download.failure_code}.",
             )
 
         if len(download.bytes) > MAX_EVIDENCE_SIZE_BYTES:
@@ -770,7 +867,7 @@ class InboundMessageService:
             # project_gate_submission.py.
             return self._save(
                 provider_message_id, sender_phone, message_text, "employee", employee.id,
-                "rejected", "Attachment is too large; evidence must be 10 MB or smaller.",
+                "rejected", OVERSIZED_ATTACHMENT_REASON,
             )
 
         # Same write -> checksum -> FileObject sequence
@@ -792,11 +889,23 @@ class InboundMessageService:
         self.db.add(file_object)
         self.db.flush()
 
-        GateEvidenceSessionService(self.db).append_attachment(session, file_object)
+        service = GateEvidenceSessionService(self.db)
+        service.append_attachment(session, file_object)
+        # A caption sent with the file is kept in the session note, labelled
+        # with the file it describes (the session has no per-file caption).
+        caption = (media_metadata.get("caption") or "").strip()
+        if caption:
+            service.append_text(session, f"{file_object.original_filename}: {caption}")
 
         return self._save(
             provider_message_id, sender_phone, message_text, "employee", employee.id, "processed", None,
         )
+
+    def _download_media(self, media_metadata: dict):
+        """Fetches an attachment's bytes from the channel it arrived on
+        (`MediaDownloadResult`). The only channel-specific step of the
+        evidence path; `TelegramInboundService` overrides it."""
+        return download_inbound_media(media_metadata.get("id"))
 
     def _open_session_for_employee(self, user_id: uuid.UUID) -> GateEvidenceSession | None:
         """At most one open session per employee (KTD4's DB constraint) -

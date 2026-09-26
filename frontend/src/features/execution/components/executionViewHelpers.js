@@ -187,3 +187,20 @@ export function plannedDayLabel(task) {
 export function todayAsDay() {
   return toDay(todayIso());
 }
+
+// Task type for display, from the task's existing `task_kind`/`task_class`.
+// Mirrors the backend's one classification rule
+// (backend/app/services/task_approval_metadata.build_approval_metadata):
+// an approval gate is decided by `task_kind` alone - templates also give
+// gates `task_class: "class_a"` - then `class_a` work, then standard work.
+// Milestones have no approval flow and get no type. Display only.
+export function taskTypeOf(task) {
+  if (!task || task.task_kind === "milestone") return null;
+  if (task.task_kind === "approval_gate") {
+    return { key: "approval_gate", label: "Approval Gate", flow: "Direct PM Approval", tone: "violet" };
+  }
+  if (task.task_class === "class_a") {
+    return { key: "class_a", label: "Class A", flow: "Supervisor Verification → PM Approval", tone: "yellow" };
+  }
+  return { key: "standard", label: "Standard", flow: null, tone: "gray" };
+}

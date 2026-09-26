@@ -27,9 +27,9 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -186,6 +186,48 @@ class TelegramInboundCommandsTests(unittest.TestCase):
         self.assertEqual(outcome.processing_status, "processed")
         task = self.session.get(Task, self.task.id)
         self.assertEqual(task.lifecycle_status, "in_progress")
+
+    # ---- Telegram task plan U3: no cancel, no invented early-start reason --
+
+    def test_pm_cannot_cancel_a_task_from_telegram(self):
+        """The PM may cancel in the Web App; a messaging channel used to pass
+        "Reported via Telegram." as the required cancellation reason."""
+        pm_profile = self.session.scalar(select(EmployeeProfile).where(EmployeeProfile.user_id == PM_ID))
+        pm_profile.telegram_chat_id = "556"
+        self.session.commit()
+
+        self.service.process(1, "556", "STATUS T001 cancelled")
+
+        outcome = self._last_message()
+        self.assertEqual(outcome.processing_status, "rejected")
+        self.assertEqual(outcome.rejection_reason, "Cancellation is only available in the Web App.")
+        self.assertEqual(self.session.get(Task, self.task.id).lifecycle_status, "ready")
+
+    def test_typed_early_start_is_refused_and_records_no_reason(self):
+        self.task.planned_start_date = date.today() + timedelta(days=1)
+        self.session.commit()
+
+        self.service.process(1, "555", "STATUS T001 in_progress")
+
+        outcome = self._last_message()
+        self.assertEqual(outcome.processing_status, "rejected")
+        self.assertIn("reason is required", outcome.rejection_reason)
+        task = self.session.get(Task, self.task.id)
+        self.session.refresh(task)
+        self.assertEqual(task.lifecycle_status, "ready")
+        self.assertIsNone(task.early_start_reason)
+
+    def test_typed_on_time_start_is_audited_as_telegram(self):
+        self.task.planned_start_date = date.today()
+        self.session.commit()
+
+        self.service.process(1, "555", "STATUS T001 in_progress")
+
+        self.assertEqual(self._last_message().processing_status, "processed")
+        audit = self.session.scalar(select(V2AuditEvent).where(V2AuditEvent.entity_id == self.task.id))
+        self.assertEqual(audit.source, "telegram")
+        self.assertNotIn("Reported via", audit.reason)
+        self.assertIsNone(self.session.get(Task, self.task.id).early_start_reason)
 
     # ---- vendor ACCEPT/DECLINE/CLARIFY (was hardcoded channel="whatsapp") --
 

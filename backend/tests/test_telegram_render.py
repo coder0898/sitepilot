@@ -20,10 +20,10 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.execution_models import ProjectExternalApproval, Task
+from app.execution_models import ProjectExternalApproval, Task, TaskBlocker, TaskDelayEvent, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMembership
-from app.services.telegram_render import render_telegram_message
+from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
+from app.services.telegram_render import render_telegram, render_telegram_message
 from app.vendor_models import V2Vendor
 
 
@@ -55,6 +55,7 @@ class TelegramRenderTests(unittest.TestCase):
             User.__table__, EmployeeProfile.__table__, V2Project.__table__,
             V2ProjectMembership.__table__, Task.__table__, V2Vendor.__table__,
             V2ProjectExternalGate.__table__, ProjectExternalApproval.__table__,
+            TaskSupportAssignment.__table__, V2AuditEvent.__table__, TaskBlocker.__table__, TaskDelayEvent.__table__,
         ):
             table.create(self.engine)
 
@@ -147,16 +148,78 @@ class TelegramRenderTests(unittest.TestCase):
 
     # ---- task readiness/start checks --------------------------------------
 
-    def test_task_start_check_shows_task_and_status_reply(self):
-        text = render_telegram_message(
+    def test_task_start_check_is_readable_html_without_typed_commands(self):
+        """Telegram task plan U4: readable HTML; typed STATUS hints are gone
+        (buttons replace them from U5)."""
+        message = render_telegram(
             self.db, "task.start_check",
-            {"task_id": str(self.task.id), "project_id": str(self.project.id), "planned_start_date": "2026-09-21"},
+            {"task_id": str(self.task.id), "project_id": str(self.project.id), "planned_start_date": "2026-09-21",
+             "lifecycle_status": "ready"},
             self.supervisor_profile.id,
         )
-        self.assertIn("T-014", text)
-        self.assertIn("Electrical Conduiting", text)
-        self.assertIn("`STATUS T-014 in_progress`", text)
-        self.assertIn("Reply:", text)
+        self.assertEqual(message.parse_mode, "HTML")
+        self.assertIn("<b>Start Check</b>", message.text)
+        self.assertIn("T-014 - Electrical Conduiting", message.text)
+        self.assertIn("Planned start: 21 Sep 2026", message.text)
+        self.assertNotIn("STATUS", message.text)
+
+    # ---- task.support_assigned / task.support_ended -------------------------
+
+    def _support_payload(self, employee_id):
+        return {
+            "task_id": str(self.task.id), "project_id": str(self.project.id),
+            "assignment_id": str(uuid.uuid4()), "employee_id": str(employee_id), "responsibility": "Site assist",
+        }
+
+    def test_support_assigned_to_recipient_says_it_is_theirs(self):
+        self.task.lifecycle_status = "ready"
+        self.db.commit()
+        message = render_telegram(
+            self.db, "task.support_assigned", self._support_payload(self.supervisor_profile.id), self.supervisor_profile.id,
+        )
+        text = message.text_for_buttons()
+        self.assertIn("Task Assigned to You", text)
+        self.assertIn("T-014 - Electrical Conduiting", text)
+        self.assertIn("Site assist", text)
+        self.assertIn("You are responsible for doing this task", text)
+        # Telegram task plan U5: a real button carrying the task id, never a
+        # typed STATUS command (task codes repeat across projects).
+        self.assertNotIn("STATUS", text)
+        [[button]] = message.button_rows()
+        self.assertEqual(button["text"], "Start Task")
+        self.assertEqual(button["callback_data"], f"t1:st:{self.task.id.hex}")
+
+    def test_support_assigned_to_someone_else_names_them_with_no_action(self):
+        text = render_telegram_message(
+            self.db, "task.support_assigned", self._support_payload(self.supervisor_profile.id), uuid.uuid4(),
+        )
+        self.assertIn("Employee Assigned to Task", text)
+        self.assertIn("Employee: Deepak Solanki", text)
+        self.assertIn("No action required.", text)
+
+    def test_support_ended_names_previous_employee(self):
+        text = render_telegram_message(
+            self.db, "task.support_ended",
+            {
+                "task_id": str(self.task.id), "project_id": str(self.project.id),
+                "previous_employee_id": str(self.supervisor_profile.id), "replacement_employee_id": None,
+            },
+            self.supervisor_profile.id,
+        )
+        # The recipient IS the previous employee: told it's no longer theirs.
+        self.assertIn("No Longer Assigned to You", text)
+        self.assertNotIn("Replaced by", text)
+
+        others = render_telegram_message(
+            self.db, "task.support_ended",
+            {
+                "task_id": str(self.task.id), "project_id": str(self.project.id),
+                "previous_employee_id": str(self.supervisor_profile.id), "replacement_employee_id": None,
+            },
+            uuid.uuid4(),
+        )
+        self.assertIn("Task Assignment Ended", others)
+        self.assertIn("Deepak Solanki", others)
 
     # ---- task.vendor_assigned ----------------------------------------------
 
@@ -186,9 +249,11 @@ class TelegramRenderTests(unittest.TestCase):
             },
             None,
         )
-        ref = str(self.approval.id).replace("-", "")[:8]
+        # Recipient None is never the assignee, so this is the Admin/FYI copy -
+        # full gate template coverage lives in test_telegram_gate_render.py.
         self.assertIn("Fire NOC", text)
-        self.assertIn(f"`GATEACCEPT {ref}` or `GATEDECLINE {ref}`", text)
+        self.assertIn("External Approval Assigned", text)
+        self.assertIn("No action required.", text)
 
     def test_gate_accepted_enriches_gate_name_from_db(self):
         text = render_telegram_message(
@@ -203,7 +268,7 @@ class TelegramRenderTests(unittest.TestCase):
     # ---- fallback / robustness ---------------------------------------------
 
     def test_unmapped_event_type_keeps_raw_dump(self):
-        text = render_telegram_message(self.db, "task.blocker_created", {"task_id": "abc", "type": "material"}, None)
+        text = render_telegram_message(self.db, "task.attendance_recorded", {"task_id": "abc", "type": "material"}, None)
         self.assertIn("task_id: abc", text)
         self.assertIn("type: material", text)
 

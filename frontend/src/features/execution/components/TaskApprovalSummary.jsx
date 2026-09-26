@@ -1,5 +1,6 @@
 import { ChevronDown, ShieldCheck, Stamp } from "lucide-react";
 import { Pill } from "../../../components/ui";
+import { taskTypeOf } from "./executionViewHelpers";
 
 // Human copy for the structured approval metadata the backend now derives
 // (task_kind/task_class/lifecycle_status -> verification_required,
@@ -7,7 +8,9 @@ import { Pill } from "../../../components/ui";
 // see backend/app/services/task_approval_metadata.py. Only "standard" and
 // "class_a" task classes exist per the PRD/MVP scope (no Class B/C, no
 // distinct Admin-approval class - Admin is only ever an audited fallback).
-const CLASS_LABEL = { class_a: "Class A", standard: "Standard" };
+// The type pill uses the same classification as the header badge
+// (`taskTypeOf`): an approval gate is labelled by its kind, never by the
+// "class_a" class templates also give it.
 
 const SUMMARY_LABEL = {
   not_required: "Not required",
@@ -47,11 +50,11 @@ export function TaskApprovalSummary({ task }) {
   const approval = task.approval;
   if (!approval) return null;
 
-  const classLabel = CLASS_LABEL[approval.task_class] || null;
+  const taskType = taskTypeOf(approval);
 
   return <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
     <div className="flex flex-wrap items-center gap-1.5">
-      {classLabel && <Pill tone={approval.task_class === "class_a" ? "yellow" : "gray"}>{classLabel}</Pill>}
+      {taskType && <Pill tone={taskType.tone}>{taskType.label}</Pill>}
       <Pill tone={approval.approval_required ? "orange" : "gray"}>{approval.approval_required ? "Approval required" : "No approval required"}</Pill>
       {approval.verification_required && <Pill tone="blue" className="gap-1"><ShieldCheck size={12}/> Supervisor verification</Pill>}
       {approval.approval_required && <Pill tone="yellow" className="gap-1"><Stamp size={12}/> PM approval</Pill>}

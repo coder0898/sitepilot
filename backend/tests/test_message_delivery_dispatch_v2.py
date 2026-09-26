@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -20,7 +20,7 @@ from app.execution_models import (
     TaskSupportAssignment,
 )
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.message_dispatch import MessageDispatchService
 from app.services.message_templates import DEFAULT_TEMPLATE, TemplateSpec, render_components, resolve
 from app.template_models import V2Template, V2TemplateVersion
@@ -82,6 +82,7 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             ProjectVendor.__table__,
             TaskVendorAssignment.__table__,
             TaskSupportAssignment.__table__,
+            V2AuditEvent.__table__,
         ):
             table.create(self.engine)
 
@@ -193,11 +194,17 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
 
     # ---- helpers -----------------------------------------------------
 
-    def _create_event(self, session, *, event_type, aggregate_type, aggregate_id, payload=None, key=None) -> uuid.UUID:
+    def _create_event(
+        self, session, *, event_type, aggregate_type, aggregate_id, payload=None, key=None, created_at=None,
+    ) -> uuid.UUID:
         ev = OutboxEvent(
             event_type=event_type, aggregate_type=aggregate_type, aggregate_id=aggregate_id,
             payload=payload or {}, idempotency_key=key or f"test:{uuid.uuid4()}", status="pending",
         )
+        if created_at is not None:
+            # SQLite's server-side now() has one-second resolution; ordering
+            # tests need distinct, explicit times.
+            ev.created_at = created_at
         session.add(ev)
         session.flush()
         return ev.id
@@ -638,6 +645,264 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             {self.pm_employee_id, self.supervisor_employee_id, self.admin_employee_id},
         )
 
+    # ---- event selection: new events are never starved by retries ----------
+
+    def _make_failing_events(self, count: int) -> list[uuid.UUID]:
+        """`count` older events whose only recipient (project 2's PM, no
+        phone) fails every attempt, left 'dispatched' with a failed delivery
+        - the retry set that used to fill the whole batch."""
+        self._set_phone(PM_ID, None)
+        oldest = datetime.now(timezone.utc) - timedelta(hours=1)
+        with self.Session() as session:
+            ids = [
+                self._create_event(
+                    session, event_type="project.activated", aggregate_type="project",
+                    aggregate_id=self.project2_id, payload={}, key=f"test:failing-{i}",
+                    created_at=oldest + timedelta(seconds=i),
+                )
+                for i in range(count)
+            ]
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=count)
+        for event_id in ids:
+            self.assertEqual([d.status for d in self._deliveries_for(event_id)], ["failed"])
+        return ids
+
+    def test_new_event_is_not_starved_by_a_full_batch_of_failing_retries(self):
+        self._make_failing_events(50)
+
+        with self.Session() as session:
+            new_event_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:new-after-failures",
+                created_at=datetime.now(timezone.utc),  # newer than every failing event
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+
+        with self.Session() as session:
+            self.assertEqual(session.get(OutboxEvent, new_event_id).status, "dispatched")
+        # The Supervisor (who has a phone) was actually delivered to; the PM
+        # copy fails only because this test removed the PM's phone.
+        statuses = {d.recipient_employee_id: d.status for d in self._deliveries_for(new_event_id)}
+        self.assertEqual(statuses[self.supervisor_employee_id], "sent")
+
+    def test_retries_still_run_with_spare_capacity(self):
+        failing_ids = self._make_failing_events(3)
+        self._set_phone(PM_ID, "9000000010")  # the failure is fixed
+
+        with self.Session() as session:
+            new_event_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:new-with-retries",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending(limit=50)
+
+        self.assertEqual(processed, 4)  # the new event plus all three retries
+        self.assertTrue(all(d.status == "sent" for d in self._deliveries_for(new_event_id)))
+        for event_id in failing_ids:
+            self.assertEqual([d.status for d in self._deliveries_for(event_id)], ["sent"])
+
+    def test_pending_events_are_selected_before_retries_oldest_first(self):
+        failing_ids = self._make_failing_events(2)
+        self._set_phone(PM_ID, "9000000010")  # reachable again, so the retries are eligible
+        now = datetime.now(timezone.utc)
+        with self.Session() as session:
+            first = self._create_event(session, event_type="task.status_changed", aggregate_type="task",
+                                       aggregate_id=self.task_id, payload={}, key="test:p1", created_at=now)
+            second = self._create_event(session, event_type="task.status_changed", aggregate_type="task",
+                                        aggregate_id=self.task_id, payload={}, key="test:p2",
+                                        created_at=now + timedelta(seconds=1))
+            session.commit()
+
+        with self.Session() as session:
+            selected = [e.id for e in MessageDispatchService(session)._select_events(limit=3)]
+
+        self.assertEqual(selected, [first, second, failing_ids[0]])
+
+    # ---- retries: unreachable recipients, reconnects, fewest attempts first --
+
+    def test_unreachable_recipient_is_not_retried_while_still_unreachable(self):
+        failing_ids = self._make_failing_events(3)
+
+        with self.Session() as session:
+            self.assertEqual(MessageDispatchService(session)._select_events(limit=50), [])
+            processed = MessageDispatchService(session).process_pending(limit=50)
+
+        self.assertEqual(processed, 0)
+        for event_id in failing_ids:
+            [delivery] = self._deliveries_for(event_id)
+            self.assertEqual((delivery.status, delivery.failure_code, delivery.attempt_count),
+                             ("failed", "missing_phone", 1))
+
+    def _set_telegram(self, employee_id: uuid.UUID, chat_id: str | None) -> None:
+        with self.Session() as session:
+            profile = session.get(EmployeeProfile, employee_id)
+            profile.active_channel = "telegram"
+            profile.telegram_chat_id = chat_id
+            session.commit()
+
+    def test_missed_telegram_messages_are_delivered_once_the_recipient_links_telegram(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.config import settings
+
+        self._set_telegram(self.pm_employee_id, None)
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project.activated", aggregate_type="project",
+                aggregate_id=self.project2_id, payload={}, key="test:missed-telegram",
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+        [delivery] = self._deliveries_for(event_id)
+        self.assertEqual((delivery.status, delivery.failure_code), ("failed", "missing_chat_id"))
+
+        with self.Session() as session:  # not linked yet: left alone
+            self.assertEqual(MessageDispatchService(session).process_pending(limit=50), 0)
+
+        self._set_telegram(self.pm_employee_id, "777000")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"ok": True, "result": {"message_id": 42}}
+        original_token = settings.telegram_access_token
+        settings.telegram_access_token = "test-token"
+        try:
+            with patch("app.services.telegram_provider.httpx.post", return_value=response) as post:
+                with self.Session() as session:
+                    self.assertEqual(MessageDispatchService(session).process_pending(limit=50), 1)
+        finally:
+            settings.telegram_access_token = original_token
+
+        self.assertEqual(post.call_args.kwargs["json"]["chat_id"], "777000")
+        [delivery] = self._deliveries_for(event_id)
+        self.assertEqual((delivery.status, delivery.channel, delivery.attempt_count), ("sent", "telegram", 2))
+
+    def test_newly_reachable_recipient_is_not_starved_by_repeatedly_failing_retries(self):
+        # 50 older events whose deliveries keep failing for a non-address
+        # reason and have already been retried hundreds of times.
+        stuck_ids = self._make_failing_events(50)
+
+        # A newer event whose recipient (the Supervisor) had no phone and has
+        # since been given one.
+        self._set_phone(SUPERVISOR_ID, None)
+        with self.Session() as session:
+            newer_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:newly-reachable",
+                created_at=datetime.now(timezone.utc),
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+        self._set_phone(SUPERVISOR_ID, "9000000020")
+
+        with self.Session() as session:
+            for delivery in session.scalars(
+                select(MessageDelivery).where(MessageDelivery.outbox_event_id.in_(stuck_ids))
+            ):
+                delivery.failure_code = "network_error"
+                delivery.attempt_count = 500
+            session.commit()
+
+        with self.Session() as session:
+            selected = [e.id for e in MessageDispatchService(session)._select_events(limit=50)]
+
+        self.assertEqual(len(selected), 50)
+        self.assertEqual(selected[0], newer_id)  # fewest attempts first, despite being newest
+
+    def test_retrying_one_recipient_does_not_reattempt_a_still_unreachable_one(self):
+        self._set_phone(PM_ID, None)
+        self._set_phone(SUPERVISOR_ID, None)
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.status_changed", aggregate_type="task",
+                aggregate_id=self.task_id, payload={"target_status": "ready"}, key="test:partial-reachable",
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+
+        self._set_phone(SUPERVISOR_ID, "9000000020")
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending(limit=50)
+
+        by_recipient = {d.recipient_employee_id: d for d in self._deliveries_for(event_id)}
+        self.assertEqual(by_recipient[self.supervisor_employee_id].status, "sent")
+        pm = by_recipient[self.pm_employee_id]
+        self.assertEqual((pm.status, pm.failure_code, pm.attempt_count), ("failed", "missing_phone", 1))
+
+    def test_gate_unassigned_reaches_previous_assignee_and_admin(self):
+        # By dispatch time the gate has no assignee any more; the employee who
+        # lost it is only known from the payload.
+        approval_id = self._make_gate_approval(assigned_to_user_id=None)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project_external_approval.unassigned", aggregate_type="project_external_approval",
+                aggregate_id=approval_id,
+                payload={"approval_id": str(approval_id), "previous_assignee_id": str(INTERNAL_EMPLOYEE_ID)},
+                key="test:gate-unassigned",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        recipient_employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id)]
+        self.assertCountEqual(recipient_employee_ids, [self.internal_employee_employee_id, self.admin_employee_id])
+
+    def test_gate_reassigned_reaches_new_and_previous_assignee_once_each(self):
+        approval_id = self._make_gate_approval(assigned_to_user_id=SUPERVISOR_ID)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project_external_approval.reassigned", aggregate_type="project_external_approval",
+                aggregate_id=approval_id,
+                payload={
+                    "approval_id": str(approval_id), "assigned_to_user_id": str(SUPERVISOR_ID),
+                    "previous_assignee_id": str(INTERNAL_EMPLOYEE_ID),
+                },
+                key="test:gate-reassigned",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        recipient_employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id)]
+        self.assertCountEqual(
+            recipient_employee_ids,
+            [self.supervisor_employee_id, self.internal_employee_employee_id, self.admin_employee_id],
+        )
+
+    def test_gate_assigned_does_not_add_a_previous_assignee(self):
+        approval_id = self._make_gate_approval(assigned_to_user_id=INTERNAL_EMPLOYEE_ID)
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="project_external_approval.assigned", aggregate_type="project_external_approval",
+                aggregate_id=approval_id,
+                payload={
+                    "approval_id": str(approval_id), "assigned_to_user_id": str(INTERNAL_EMPLOYEE_ID),
+                    "previous_assignee_id": None,
+                },
+                key="test:gate-assigned-no-previous",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        recipient_employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id)]
+        self.assertCountEqual(recipient_employee_ids, [self.internal_employee_employee_id, self.admin_employee_id])
+
     def test_task_status_changed_event_does_not_resolve_admin(self):
         # task.status_changed is NOT in _ADMIN_CC_TASK_EVENTS - only PM/
         # Supervisor are resolved, same as before Phase 1b.
@@ -856,6 +1121,74 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         deliveries = self._deliveries_for(event_id)
         employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
         self.assertNotIn(self.internal_employee_employee_id, employee_ids)
+
+    def test_support_assigned_reaches_the_assigned_employee(self):
+        assignment_id = self._make_support_assignment(status="active")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.support_assigned", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "task_id": str(self.task_id), "project_id": str(self.project_id),
+                    "assignment_id": str(assignment_id),
+                    "employee_id": str(self.internal_employee_employee_id), "responsibility": "Assist supervisor",
+                },
+                key="test:support-assigned",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            processed = MessageDispatchService(session).process_pending()
+        self.assertEqual(processed, 1)
+
+        employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
+        self.assertIn(self.internal_employee_employee_id, employee_ids)
+        self.assertIn(self.pm_employee_id, employee_ids)
+        self.assertIn(self.supervisor_employee_id, employee_ids)
+
+    def test_support_ended_reaches_previous_employee_after_assignment_is_inactive(self):
+        assignment_id = self._make_support_assignment(status="ended")
+
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.support_ended", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "task_id": str(self.task_id), "project_id": str(self.project_id),
+                    "assignment_id": str(assignment_id),
+                    "previous_employee_id": str(self.internal_employee_employee_id),
+                    "replacement_employee_id": None, "reason_code": "reassigned",
+                },
+                key="test:support-ended",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
+        self.assertIn(self.internal_employee_employee_id, employee_ids)
+
+    def test_support_assigned_to_supervisor_does_not_duplicate_their_delivery(self):
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type="task.support_assigned", aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "task_id": str(self.task_id), "project_id": str(self.project_id),
+                    "assignment_id": str(uuid.uuid4()),
+                    "employee_id": str(self.supervisor_employee_id), "responsibility": "Cover",
+                },
+                key="test:support-assigned-dup",
+            )
+            session.commit()
+
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+
+        employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
+        self.assertEqual(employee_ids.count(self.supervisor_employee_id), 1)
 
     def test_delay_recorded_reaches_pm_supervisor_support_employee_and_vendor(self):
         # A delay must reach everyone actually concerned with the task, not
@@ -1131,6 +1464,145 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
                 )
             )
         self.assertEqual(recipients, [])
+
+    # ---- Telegram task plan U4: participants, active members, noise rules ----
+
+    def _dispatch_one(self, event_type: str, payload: dict | None = None) -> list[MessageDelivery]:
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type=event_type, aggregate_type="task", aggregate_id=self.task_id,
+                payload={"task_id": str(self.task_id), "project_id": str(self.project_id), **(payload or {})},
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+        return self._deliveries_for(event_id)
+
+    def _recipient_ids(self, deliveries) -> set:
+        return {d.recipient_employee_id for d in deliveries}
+
+    def _assign_internal_employee(self) -> None:
+        with self.Session.begin() as session:
+            session.add(TaskSupportAssignment(
+                task_id=self.task_id, project_id=self.project_id, employee_id=self.internal_employee_employee_id,
+                responsibility="Execution", assigned_by=SUPERVISOR_ID,
+            ))
+
+    def _record_submission_by(self, user_id: uuid.UUID) -> None:
+        with self.Session.begin() as session:
+            session.add(V2AuditEvent(
+                actor_user_id=user_id, action="TASK_STATUS_CHANGED", entity_type="task", entity_id=self.task_id,
+                project_id=self.project_id, source="portal", before_json={"lifecycle_status": "in_progress"},
+                after_json={"lifecycle_status": "submitted"}, reason="Submitted.",
+            ))
+
+    def test_review_outcome_reaches_the_assigned_employee_too(self):
+        self._assign_internal_employee()
+        for event_type in ("task.status_changed", "task.verification_recorded"):
+            with self.subTest(event_type=event_type):
+                deliveries = self._dispatch_one(event_type, {"target_status": "submitted", "decision": "rejected"})
+                self.assertEqual(
+                    self._recipient_ids(deliveries),
+                    {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
+                )
+
+    def test_the_submitter_is_told_the_outcome_once_even_when_also_the_supervisor(self):
+        self._record_submission_by(SUPERVISOR_ID)
+        deliveries = self._dispatch_one("task.verification_recorded", {"decision": "rejected"})
+        self.assertEqual(len(deliveries), 2)
+        self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id, self.supervisor_employee_id})
+
+    def test_an_employee_submitter_is_told_the_outcome_without_an_assignment(self):
+        self._record_submission_by(INTERNAL_EMPLOYEE_ID)
+        deliveries = self._dispatch_one("task.approval_recorded", {"decision": "rejected"})
+        self.assertIn(self.internal_employee_employee_id, self._recipient_ids(deliveries))
+
+    def test_a_submitter_who_is_not_a_project_member_is_not_added(self):
+        # An Admin who submitted (no membership) hears nothing as a participant.
+        self._record_submission_by(ADMIN_ID)
+        deliveries = self._dispatch_one("task.status_changed", {"target_status": "submitted"})
+        self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id, self.supervisor_employee_id})
+
+    def test_removed_or_deactivated_people_receive_nothing(self):
+        self._assign_internal_employee()
+        with self.Session.begin() as session:
+            membership = session.scalar(select(V2ProjectMembership).where(
+                V2ProjectMembership.project_id == self.project_id,
+                V2ProjectMembership.employee_id == self.internal_employee_employee_id,
+            ))
+            membership.ends_at = datetime.now(timezone.utc)
+            session.get(User, PM_ID).active = False
+        deliveries = self._dispatch_one("task.status_changed", {"target_status": "in_progress"})
+        self.assertEqual(self._recipient_ids(deliveries), {self.supervisor_employee_id})
+
+    def test_admin_copy_of_an_approval_is_kept_without_membership(self):
+        deliveries = self._dispatch_one("task.approval_recorded", {"decision": "approved"})
+        self.assertIn(self.admin_employee_id, self._recipient_ids(deliveries))
+
+    def test_telegram_skips_progress_items_and_decision_status_steps_but_whatsapp_does_not(self):
+        self._set_telegram(self.supervisor_employee_id, "555000")
+        for event_type, payload in (
+            ("task.evidence_submitted", {"progress_update_id": str(uuid.uuid4())}),
+            ("task.status_changed", {"target_status": "in_progress", "cause": "decision"}),
+        ):
+            with self.subTest(event_type=event_type):
+                deliveries = self._dispatch_one(event_type, payload)
+                # The Telegram Supervisor gets no row at all; the WhatsApp PM
+                # still gets it exactly as before.
+                self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id})
+
+    # ---- Telegram task plan U8 (KTD20): Admin only when nobody eligible can review ----
+
+    def _end_membership(self, employee_id) -> None:
+        with self.Session.begin() as session:
+            membership = session.scalar(select(V2ProjectMembership).where(
+                V2ProjectMembership.project_id == self.project_id, V2ProjectMembership.employee_id == employee_id,
+            ))
+            membership.ends_at = datetime.now(timezone.utc)
+
+    def _submitted(self, submitter_id) -> list[MessageDelivery]:
+        return self._dispatch_one("task.status_changed", {
+            "target_status": "submitted", "actor_user_id": str(submitter_id), "submitted_by": str(submitter_id),
+            "progress_update_ids": [],
+        })
+
+    def test_a_submission_with_an_eligible_verifier_does_not_go_to_admin(self):
+        deliveries = self._submitted(INTERNAL_EMPLOYEE_ID)
+        self.assertNotIn(self.admin_employee_id, self._recipient_ids(deliveries))
+
+    def test_admin_is_asked_when_the_only_verifier_submitted_the_work_themselves(self):
+        # No PM on the project, and the Supervisor executed and submitted it:
+        # they may not verify their own work, so nobody on the project can.
+        self._end_membership(self.pm_employee_id)
+        deliveries = self._submitted(SUPERVISOR_ID)
+        self.assertIn(self.admin_employee_id, self._recipient_ids(deliveries))
+
+    def test_an_approval_gate_submission_goes_to_admin_only_without_a_pm(self):
+        with self.Session.begin() as session:
+            session.get(Task, self.task_id).task_kind = "approval_gate"
+        self.assertNotIn(self.admin_employee_id, self._recipient_ids(self._submitted(INTERNAL_EMPLOYEE_ID)))
+        self._end_membership(self.pm_employee_id)
+        self.assertIn(self.admin_employee_id, self._recipient_ids(self._submitted(INTERNAL_EMPLOYEE_ID)))
+
+    def test_telegram_still_gets_a_status_change_that_no_decision_caused(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.config import settings
+
+        self._set_telegram(self.supervisor_employee_id, "555000")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"ok": True, "result": {"message_id": 1}}
+        original_token = settings.telegram_access_token
+        settings.telegram_access_token = "test-token"
+        try:
+            with patch("app.services.telegram_provider.httpx.post", return_value=response) as post:
+                deliveries = self._dispatch_one("task.status_changed", {"target_status": "ready"})
+        finally:
+            settings.telegram_access_token = original_token
+        self.assertIn(self.supervisor_employee_id, self._recipient_ids(deliveries))
+        sent_text = post.call_args.kwargs["json"]["text"]
+        self.assertIn("<b>Task Ready</b>", sent_text)
+        self.assertEqual(post.call_args.kwargs["json"]["parse_mode"], "HTML")
 
 
 if __name__ == "__main__":

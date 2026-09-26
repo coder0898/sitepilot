@@ -721,6 +721,123 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         self.assertEqual(unblocked.status_code, 200, unblocked.text)
         self.assertEqual(unblocked.json()["lifecycle_status"], "in_progress")
 
+    # ---- review cycle: only progress logged since the last decision counts ----
+
+    NEW_PROGRESS_REFUSAL = "Log a new progress update"
+
+    def progress_rows(self, task_id) -> list[TaskProgressUpdate]:
+        with self.Session() as session:
+            return list(session.scalars(select(TaskProgressUpdate).where(TaskProgressUpdate.task_id == task_id)))
+
+    def start_as_supervisor(self, project_id: str, task_id) -> None:
+        self.act_as_supervisor()
+        for status in ("ready", "in_progress"):
+            self.assertEqual(self.transition(project_id, task_id, status).status_code, 200)
+
+    def submit_with_notes(self, project_id: str, task_id, *notes: str) -> None:
+        """PM logs every note (so the Supervisor can verify), Supervisor submits."""
+        self.act_as_pm()
+        for note in notes:
+            self.assertEqual(self.submit_progress(project_id, task_id, note=note).status_code, 200)
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project_id, task_id, "submitted").status_code, 200)
+
+    def test_every_update_of_a_rejected_cycle_is_marked_reviewed(self):
+        """The decision covers every update of the cycle, not just the latest
+        one a verification names."""
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.start_as_supervisor(project["id"], t001.id)
+        self.submit_with_notes(project["id"], t001.id, "First item.", "Second item.", "Third item.")
+
+        self.act_as_supervisor()
+        self.assertEqual(self.verify(project["id"], t001.id, "rejected", remarks="Redo.").status_code, 200)
+
+        rows = self.progress_rows(t001.id)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(row.reviewed_at is not None for row in rows))
+
+    def test_rejected_cycle_cannot_be_resubmitted_until_new_progress_is_logged(self):
+        """AE2: before U2 only the latest update was consumed, so an older
+        update of the rejected cycle still satisfied the resubmission."""
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.start_as_supervisor(project["id"], t001.id)
+        self.submit_with_notes(project["id"], t001.id, "Earlier note.", "Later note.")
+        self.assertEqual(self.verify(project["id"], t001.id, "rejected", remarks="Redo.").status_code, 200)
+
+        refused = self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn(self.NEW_PROGRESS_REFUSAL, refused.json()["detail"])
+
+        self.act_as_pm()
+        self.assertEqual(self.submit_progress(project["id"], t001.id, note="Reworked.").status_code, 200)
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project["id"], t001.id, "submitted").status_code, 200)
+
+    def test_class_a_pm_rejection_requires_new_progress_before_resubmission(self):
+        project = self.activate_project()
+        t002 = self.tasks_by_code(project["id"])["T002"]
+        self.drive_to_submitted(project["id"], t002.id)
+        self.act_as_supervisor()
+        self.assertEqual(self.verify(project["id"], t002.id, "verified").status_code, 200)
+        self.act_as_pm()
+        rejected = self.approve(project["id"], t002.id, "rejected", remarks="Wrong finish grade.")
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["task"]["lifecycle_status"], "in_progress")
+
+        self.act_as_supervisor()
+        refused = self.transition(project["id"], t002.id, "submitted")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn(self.NEW_PROGRESS_REFUSAL, refused.json()["detail"])
+
+        self.act_as_pm()
+        self.assertEqual(self.submit_progress(project["id"], t002.id, note="Regraded.").status_code, 200)
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project["id"], t002.id, "submitted").status_code, 200)
+
+    def test_approval_gate_first_submission_needs_progress(self):
+        """R19: an intentional shared change - approval-gate tasks used to be
+        submittable with no progress at all."""
+        project = self.activate_project()
+        t003 = self.tasks_by_code(project["id"])["T003"]
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project["id"], t003.id, "ready").status_code, 200)
+        self.add_internal_member(project["id"])
+        self.assertEqual(self.assign_support(project["id"], t003.id).status_code, 200)
+        self.act_as_internal()
+        self.assertEqual(self.transition(project["id"], t003.id, "in_progress").status_code, 200)
+
+        refused = self.transition(project["id"], t003.id, "submitted")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn(self.NEW_PROGRESS_REFUSAL, refused.json()["detail"])
+
+        self.assertEqual(self.submit_progress(project["id"], t003.id, note="Permit filed.").status_code, 200)
+        self.assertEqual(self.transition(project["id"], t003.id, "submitted").status_code, 200)
+
+    def test_approval_gate_pm_rejection_requires_new_progress_before_resubmission(self):
+        project = self.activate_project()
+        t003 = self.tasks_by_code(project["id"])["T003"]
+        self.drive_to_submitted(project["id"], t003.id)
+        self.act_as_pm()
+        self.assertEqual(self.approve(project["id"], t003.id, "rejected", remarks="Unsigned copy.").status_code, 200)
+
+        self.act_as_internal()
+        refused = self.transition(project["id"], t003.id, "submitted")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn(self.NEW_PROGRESS_REFUSAL, refused.json()["detail"])
+
+        self.assertEqual(self.submit_progress(project["id"], t003.id, note="Signed copy.").status_code, 200)
+        self.assertEqual(self.transition(project["id"], t003.id, "submitted").status_code, 200)
+
+    def test_an_approving_decision_also_closes_the_cycle(self):
+        project = self.activate_project()
+        t003 = self.tasks_by_code(project["id"])["T003"]
+        self.drive_to_submitted(project["id"], t003.id)
+        self.act_as_pm()
+        self.assertEqual(self.approve(project["id"], t003.id, "approved").status_code, 200)
+        self.assertTrue(all(row.reviewed_at is not None for row in self.progress_rows(t003.id)))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -126,7 +126,9 @@ class EvidenceRetentionSweepTests(unittest.TestCase):
                 project_id=self.project_id, baseline_id=uuid.uuid4(), baseline_task_id=uuid.uuid4(),
                 original_code="T001", template_sequence=1, title="Mobilise",
                 schedule_classification="execution", applicability="mandatory",
-                evidence_required=False, lifecycle_status="planned",
+                # in_progress: the only state progress (and its evidence) can
+                # be logged in.
+                evidence_required=False, lifecycle_status="in_progress",
             )
             session.add(self.task)
             session.flush()

@@ -423,6 +423,7 @@ def _progress_update_out(db: Session, progress_update) -> TaskProgressUpdateOut:
         submitted_by=progress_update.submitted_by,
         source=progress_update.source,
         created_at=progress_update.created_at,
+        reviewed_at=progress_update.reviewed_at,
         evidence=evidence_out,
     )
 

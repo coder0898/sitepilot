@@ -18,6 +18,8 @@ Lifecycle (KTD4, KTD6-KTD10):
     Open --[GATECLOSE with a note and/or attachments]--> NoSession (submit(), KTD17)
     Open --[no message for EVIDENCE_SESSION_SILENCE_DAYS (KTD5)]--> NoSession
         (session + attachments discarded, never submitted - KTD6)
+    Open --[GATECANCEL by the employee who opened it]--> NoSession
+        (discarded exactly like an expiry - never submitted)
     Open --[employee no longer the assignee at GATECLOSE time (KTD7)]--> Open
         (403, buffered evidence lost, session left open until it separately expires)
 
@@ -224,6 +226,25 @@ class GateEvidenceSessionService:
         self.db.commit()
         self.db.refresh(session)
         return submission
+
+    # ---- cancel ---------------------------------------------------------------
+
+    def discard_session(self, session: GateEvidenceSession, actor: User) -> GateEvidenceSession:
+        """The employee abandons their open session: it is discarded the same
+        way `expire_stale_sessions` discards a silent one (`expired_at` set,
+        never submitted, attachment rows kept), freeing their one-open-session
+        slot. Only the employee who opened it may cancel it - still true after
+        the gate is reassigned away from them, so they are never stuck with a
+        session they can no longer close."""
+        if session.employee_id != actor.id:
+            raise HTTPException(403, "Only the employee who started this evidence submission can cancel it.")
+        if session.closed_at is not None or session.expired_at is not None:
+            raise HTTPException(409, "This evidence submission is no longer open.")
+        session.expired_at = datetime.now(timezone.utc)
+        self.db.add(session)
+        self.db.commit()
+        self.db.refresh(session)
+        return session
 
     # ---- expiry sweep -----------------------------------------------------
 

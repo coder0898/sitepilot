@@ -53,6 +53,44 @@ describe("TaskDetailDrawer", () => {
     expect(await screen.findByText("Mark out partition lines per the approved layout.")).toBeInTheDocument();
   });
 
+  describe("task type badge (from the task's task_kind / task_class)", () => {
+    const renderWith = async overrides => {
+      taskExecutionApi.detail.mockResolvedValue(detail(overrides));
+      render(<TaskDetailDrawer projectId="p1" project={project} task={task(overrides)} user={admin} candidates={[]} onClose={vi.fn()} onChanged={vi.fn()}/>);
+      await screen.findByText("Task Details");
+    };
+
+    it("labels standard work Standard, with no approval-flow text", async () => {
+      await renderWith({ task_kind: "work", task_class: "standard" });
+      expect(screen.getByText("Standard")).toBeInTheDocument();
+      expect(screen.queryByText(/PM Approval/)).not.toBeInTheDocument();
+    });
+
+    it("labels Class A work and shows Supervisor Verification → PM Approval", async () => {
+      await renderWith({ task_kind: "work", task_class: "class_a" });
+      expect(screen.getByText("Class A")).toBeInTheDocument();
+      expect(screen.getByText("Supervisor Verification → PM Approval")).toBeInTheDocument();
+    });
+
+    it("labels an approval gate by its kind, even when its class is class_a, with Direct PM Approval", async () => {
+      await renderWith({ task_kind: "approval_gate", task_class: "class_a" });
+      expect(screen.getByText("Approval Gate")).toBeInTheDocument();
+      expect(screen.getByText("Direct PM Approval")).toBeInTheDocument();
+      expect(screen.queryByText("Class A")).not.toBeInTheDocument();
+    });
+
+    it("treats a task with no kind or class as standard work", async () => {
+      await renderWith({ task_kind: null, task_class: null });
+      expect(screen.getByText("Standard")).toBeInTheDocument();
+    });
+
+    it("gives a milestone no type badge", async () => {
+      await renderWith({ task_kind: "milestone", task_class: null });
+      expect(screen.queryByText("Standard")).not.toBeInTheDocument();
+      expect(screen.queryByText("Approval Gate")).not.toBeInTheDocument();
+    });
+  });
+
   it("switches to Action Forms and back via tabs", async () => {
     taskExecutionApi.detail.mockResolvedValue(detail({ lifecycle_status: "in_progress" }));
     render(<TaskDetailDrawer projectId="p1" project={project} task={task({ lifecycle_status: "in_progress" })} user={admin} candidates={[]} onClose={vi.fn()} onChanged={vi.fn()}/>);

@@ -274,6 +274,9 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
     "gate_confirmation.session_closed": TemplateSpec(
         "TBD_gate_confirmation_session_closed", "en", ("actor_user_id", "gate_name", "project_name"),
     ),
+    "gate_confirmation.session_cancelled": TemplateSpec(
+        "TBD_gate_confirmation_session_cancelled", "en", ("actor_user_id", "gate_name", "project_name"),
+    ),
     "gate_confirmation.decided": TemplateSpec(
         "TBD_gate_confirmation_decided", "en",
         ("actor_user_id", "gate_name", "project_name", "decision"),

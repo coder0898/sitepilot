@@ -207,6 +207,31 @@ class ProjectGateStatusCheckTests(unittest.TestCase):
             self.assertEqual(events[0].aggregate_type, "project_external_approval")
             self.assertEqual(events[0].payload["health"], "on_track")
 
+    def test_waiting_external_is_a_health_update_only(self):
+        # Chunk 6: recorded like any other health; the approval's own status
+        # (the formal lifecycle) is untouched.
+        approval = self.make_approval()
+        check = self.service.record(
+            self.project_id, approval.id, self.internal_user(), health="waiting_external",
+            note="Submitted to the Fire Department; waiting for their inspection date.",
+        )
+        self.assertEqual(check.health, "waiting_external")
+        self.assertEqual(self.stored(approval.id).status, "assigned")
+        with self.Session() as session:
+            event = session.scalar(select(OutboxEvent).where(
+                OutboxEvent.event_type == "project_external_approval.status_checked",
+            ))
+            self.assertEqual(event.payload["health"], "waiting_external")
+
+    def test_portal_payload_accepts_waiting_external(self):
+        from pydantic import ValidationError
+
+        from app.schemas.project_gate_decision import ProjectExternalApprovalStatusCheckIn
+
+        self.assertEqual(ProjectExternalApprovalStatusCheckIn(health="waiting_external").health, "waiting_external")
+        with self.assertRaises(ValidationError):
+            ProjectExternalApprovalStatusCheckIn(health="at_risk")
+
     # ---- access control -------------------------------------------------
 
     def test_a_different_internal_employee_cannot_record_a_status_check(self):

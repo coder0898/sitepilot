@@ -15,9 +15,9 @@ from sqlalchemy.pool import StaticPool
 
 import app.services.outbox_scheduler as outbox_scheduler
 from app.config import settings
-from app.execution_models import MessageDelivery, OutboxEvent, Task
+from app.execution_models import MessageDelivery, OutboxEvent, Task, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2Project, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.template_models import V2Template, V2TemplateVersion
 from app.vendor_models import V2Vendor, V2VendorContact
 
@@ -57,7 +57,7 @@ class OutboxDispatchScheduleTests(unittest.TestCase):
             V2Template.__table__, V2TemplateVersion.__table__,
             V2Project.__table__, V2ProjectMembership.__table__,
             Task.__table__, OutboxEvent.__table__, MessageDelivery.__table__,
-            V2Vendor.__table__, V2VendorContact.__table__,
+            V2Vendor.__table__, V2VendorContact.__table__, V2AuditEvent.__table__, TaskSupportAssignment.__table__,
         ):
             table.create(self.engine)
 

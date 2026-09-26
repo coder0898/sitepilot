@@ -14,8 +14,13 @@ database query, before any `telegram_inbound_updates` row is written.
 
 This unit verifies and stores the raw update, then recognizes a
 `/start <token>` message and hands it to `TelegramConnectService` (U13),
-or any other non-empty text to `TelegramInboundService` (U14) for full
-command parity. Telegram's own `update_id` is stored alongside the raw
+any other non-empty text to `TelegramInboundService` (U14) for full
+command parity - unless the bot is waiting for a typed answer from that
+chat (a rejection reason or health note), which takes the text first - or
+an inline-button press to `TelegramCallbackService` (which runs the same
+typed command the button stands for). A photo or document goes to
+`TelegramEvidenceService` as evidence for the sender's open evidence session
+(gate plan chunk 4). Telegram's own `update_id` is stored alongside the raw
 update, and a duplicate delivery short-circuits BEFORE either handler
 runs (the `IntegrityError` branch below returns early) - Telegram's Bot
 API redelivers on a slow/failed response, the same at-least-once behavior
@@ -41,18 +46,56 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import mimetypes
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
 from app.execution_models import TelegramInboundUpdate
+from app.services.outbox_scheduler import run_dispatch_pass
+from app.services.telegram_callback import TelegramCallbackService
 from app.services.telegram_connect import TelegramConnectService
-from app.services.telegram_inbound import TelegramInboundService
+from app.services.telegram_evidence import TelegramEvidenceService
+from app.services.telegram_message import is_task_callback
+from app.services.telegram_task_callback import TelegramTaskCallbackService
 
 logger = logging.getLogger(__name__)
+
+# Media kinds Telegram sends that are not evidence types; each is still
+# routed as a document so the sender gets a "not supported" reply instead of
+# silence.
+_OTHER_MEDIA_KINDS = ("video", "animation", "audio", "voice", "video_note", "sticker")
+
+
+def _extract_media(message: dict) -> dict | None:
+    """The file in a message, as the shared evidence path's media metadata
+    (`id`, `kind`, `mime_type`, `filename`, `file_size`, `caption`), or None
+    for a text-only message. For a photo, Telegram sends several sizes of the
+    same image; the largest is used. Telegram re-encodes photos as JPEG."""
+    caption = message.get("caption")
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        largest = max(
+            (p for p in photos if isinstance(p, dict)),
+            key=lambda p: (p.get("file_size") or 0, (p.get("width") or 0) * (p.get("height") or 0)),
+        )
+        return {
+            "id": largest.get("file_id"), "kind": "photo", "mime_type": "image/jpeg",
+            "filename": None, "file_size": largest.get("file_size"), "caption": caption,
+        }
+    for kind in ("document", *_OTHER_MEDIA_KINDS):
+        item = message.get(kind)
+        if isinstance(item, dict):
+            filename = item.get("file_name")
+            mime_type = item.get("mime_type") or (mimetypes.guess_type(filename)[0] if filename else None)
+            return {
+                "id": item.get("file_id"), "kind": "document", "mime_type": mime_type or f"{kind}/unknown",
+                "filename": filename, "file_size": item.get("file_size"), "caption": caption,
+            }
+    return None
 
 router = APIRouter(prefix="/api/v2/telegram", tags=["v2-telegram-webhook"])
 
@@ -67,7 +110,9 @@ def _verify_secret_token(header_value: str | None) -> None:
 
 
 @router.post("/inbound")
-async def receive_inbound_telegram_update(request: Request, db: Session = Depends(get_db)):
+async def receive_inbound_telegram_update(
+    request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db),
+):
     _verify_secret_token(request.headers.get("X-Telegram-Bot-Api-Secret-Token"))
 
     raw_body = await request.body()
@@ -86,16 +131,30 @@ async def receive_inbound_telegram_update(request: Request, db: Session = Depend
     chat_id: str | None = None
     message_text: str | None = None
     callback_data: str | None = None
+    callback_query_id: str | None = None
+    callback_message_id: int | None = None
+    chat_type: str | None = None
+    callback_from_id: str | None = None
 
+    media: dict | None = None
     if isinstance(message, dict):
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id")) if chat.get("id") is not None else None
+        chat_type = chat.get("type")
         message_text = message.get("text")
+        media = _extract_media(message)
+        if media is not None:
+            message_text = media.get("caption") or None
     elif isinstance(callback_query, dict):
         inner_message = callback_query.get("message") or {}
         chat = inner_message.get("chat") or {}
         chat_id = str(chat.get("id")) if chat.get("id") is not None else None
         callback_data = callback_query.get("data")
+        callback_query_id = callback_query.get("id")
+        callback_message_id = inner_message.get("message_id")
+        chat_type = chat.get("type")
+        presser = callback_query.get("from") or {}
+        callback_from_id = str(presser.get("id")) if presser.get("id") is not None else None
 
     if update_id is None or chat_id is None:
         # Malformed or unrecognized update shape - nothing to store, not an
@@ -121,13 +180,65 @@ async def receive_inbound_telegram_update(request: Request, db: Session = Depend
         db.rollback()
         return {"status": "received"}
 
-    if message_text and message_text.startswith("/start"):
+    if media is not None:
+        # A photo/document is task progress while the sender's Add Progress
+        # mode is open (Telegram task plan U7); otherwise it is evidence for
+        # their open gate session (a caption only describes it). Either way
+        # the sender is told the outcome.
+        handled, acted = TelegramTaskCallbackService(db).handle_progress_media(
+            update_id=int(update_id), chat_id=chat_id, chat_type=chat_type, media=media,
+        )
+        if acted:
+            background_tasks.add_task(_dispatch_now)
+        if not handled:
+            TelegramEvidenceService(db).handle_media(update_id=int(update_id), chat_id=chat_id, media=media)
+    elif message_text and message_text.startswith("/start"):
         # U13: connect-flow.
         TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text)
     elif message_text:
-        # U14: full command parity (vendor ACCEPT/DECLINE/CLARIFY, employee
-        # STATUS, all six GATE* commands) - reuses InboundMessageService's
-        # shared dispatch, not a separate implementation per command.
-        TelegramInboundService(db).process(int(update_id), chat_id, message_text)
+        # A question the bot asked (rejection reason / health note) takes
+        # the next text message first; otherwise it is a normal message.
+        handled, acted = TelegramCallbackService(db).handle_text(
+            update_id=int(update_id), chat_id=chat_id, text=message_text, chat_type=chat_type,
+        )
+        if acted:
+            background_tasks.add_task(_dispatch_now)
+        if not handled:
+            # U14: full command parity (vendor ACCEPT/DECLINE/CLARIFY, employee
+            # STATUS, all GATE* commands) - reuses InboundMessageService's
+            # shared dispatch, not a separate implementation per command. A
+            # note added to an open evidence session is confirmed back.
+            TelegramEvidenceService(db).handle_text(update_id=int(update_id), chat_id=chat_id, text=message_text)
+    elif is_task_callback(callback_data):
+        # Task button (Telegram task plan U5+): calls the shared task services
+        # directly, private chat and chat owner only.
+        acted = TelegramTaskCallbackService(db).handle(
+            update_id=int(update_id), chat_id=chat_id, chat_type=chat_type, from_id=callback_from_id,
+            message_id=callback_message_id, callback_query_id=callback_query_id, data=callback_data,
+        )
+        if acted:
+            background_tasks.add_task(_dispatch_now)
+    elif callback_data is not None:
+        # Inline-button press: runs the same GATE* command a user could type.
+        acted = TelegramCallbackService(db).handle(
+            update_id=int(update_id), chat_id=chat_id, message_id=callback_message_id,
+            callback_query_id=callback_query_id, data=callback_data,
+        )
+        if acted:
+            # Deliver the action's follow-up message now rather than on the
+            # dispatcher's next interval, so the button feels immediate.
+            background_tasks.add_task(_dispatch_now)
 
     return {"status": "received"}
+
+
+def _dispatch_now() -> None:
+    """One extra outbox dispatch pass, the same pass the background
+    dispatcher runs on its interval (safe to overlap - dispatch tolerates
+    concurrent passes). A failure only delays delivery to the next pass."""
+    if not settings.outbox_dispatch_enabled:
+        return
+    try:
+        run_dispatch_pass()
+    except Exception:  # noqa: BLE001 - never surface a delivery hiccup to the webhook
+        logger.exception("Immediate dispatch pass after a Telegram button press failed.")

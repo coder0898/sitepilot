@@ -471,6 +471,75 @@ class EscalationServiceTests(unittest.TestCase):
                 self.outbox_events(session, "project_external_approval.escalated_to_admin", approval_id), [],
             )
 
+    # ---- archived projects get no gate reminders/follow-ups/escalations ------
+
+    def make_project(self, session, status: str) -> uuid.UUID:
+        project_id = uuid.uuid4()
+        session.add(V2Project(
+            id=project_id, code=f"PRJ-{status}", name=f"{status} project", client_name="Client",
+            site_address="Site", start_date=date(2026, 8, 1), status=status, created_by=ADMIN_ID,
+        ))
+        session.flush()
+        return project_id
+
+    def test_archived_project_gate_gets_no_followup_but_active_one_does(self):
+        with self.Session.begin() as session:
+            active = self.make_approval(session)
+            archived = self.make_approval(session, project_id=self.make_project(session, "archived"))
+        active_id, archived_id = active.id, archived.id
+
+        with self.Session() as session:
+            result = EscalationService(session).sweep_approval_followups(self.now)
+        self.assertEqual([a.id for a in result], [active_id])
+
+        with self.Session() as session:
+            self.assertIsNone(self.open_tracking(session, "project_external_approval", archived_id, "followup"))
+            self.assertEqual(self.outbox_events(session, "project_external_approval.followup_required", archived_id), [])
+
+    def test_archived_project_gate_gets_no_due_reminder_but_active_one_does(self):
+        tomorrow = self.now.date() + timedelta(days=1)
+        with self.Session.begin() as session:
+            active = self.make_approval(session, due_at=tomorrow)
+            archived = self.make_approval(session, due_at=tomorrow, project_id=self.make_project(session, "archived"))
+        active_id, archived_id = active.id, archived.id
+
+        with self.Session() as session:
+            result = EscalationService(session).emit_gate_due_reminders(self.now)
+        self.assertEqual([a.id for a in result], [active_id])
+        with self.Session() as session:
+            self.assertEqual(self.outbox_events(session, "project_external_approval.due_reminder", archived_id), [])
+
+    def test_followup_open_when_project_is_archived_resolves_without_escalating(self):
+        with self.Session.begin() as session:
+            approval = self.make_approval(session)
+            session.flush()
+            session.add(EscalationTracking(
+                entity_type="project_external_approval", entity_id=approval.id, stage="followup",
+                triggered_at=self.now - timedelta(hours=7),
+            ))
+            # Archived after the follow-up went out, before the escalation sweep.
+            session.get(V2Project, self.project_id).status = "archived"
+        approval_id = approval.id
+
+        with self.Session() as session:
+            result = EscalationService(session).sweep_approval_escalations(self.now)
+        self.assertEqual(result, [])
+
+        with self.Session() as session:
+            followup = self.open_tracking(session, "project_external_approval", approval_id, "followup")
+            self.assertEqual(_aware(followup.resolved_at), self.now)
+            self.assertIsNone(self.open_tracking(session, "project_external_approval", approval_id, "admin_escalation"))
+            self.assertEqual(self.outbox_events(session, "project_external_approval.escalated_to_admin", approval_id), [])
+
+    def test_only_archived_projects_are_excluded(self):
+        # Scope of this fix: completed / on-hold projects keep today's behaviour.
+        with self.Session.begin() as session:
+            completed = self.make_approval(session, project_id=self.make_project(session, "completed"))
+            on_hold = self.make_approval(session, project_id=self.make_project(session, "on_hold"))
+        with self.Session() as session:
+            result = EscalationService(session).sweep_approval_followups(self.now)
+        self.assertEqual({a.id for a in result}, {completed.id, on_hold.id})
+
     def test_approval_escalation_is_idempotent_for_the_same_now(self):
         with self.Session.begin() as session:
             approval = self.make_approval(session)

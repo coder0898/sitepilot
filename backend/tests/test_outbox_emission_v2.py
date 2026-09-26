@@ -743,6 +743,166 @@ class OutboxEmissionApiTests(unittest.TestCase):
             self.assertEqual(target_statuses.count("completed"), 1)
             self.assertEqual(sorted(target_statuses), ["completed", "in_progress", "ready", "submitted", "verified"])
 
+    # ---- 5. rework loops: one event per occurrence ------------------------
+
+    def resubmit_as_supervisor(self, project_id: str, task_id, note: str):
+        self.act_as_supervisor()
+        sp = self.submit_progress(project_id, task_id, note=note)
+        self.assertEqual(sp.status_code, 200, sp.text)
+        r = self.transition(project_id, task_id, "submitted")
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_rework_loop_emits_every_submission_and_every_rejection(self):
+        """AE1: before occurrence keys, the second `submitted` and the second
+        rejection collapsed onto the first cycle's keys and emitted nothing,
+        so the reviewer and the executor were never told."""
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+        self.drive_to_submitted(project["id"], t001.id)
+
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "rejected", remarks="Cable run is crooked.")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        self.resubmit_as_supervisor(project["id"], t001.id, note="Re-ran the cable.")
+
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "rejected", remarks="Still loose at the box.")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        status_rows = self.outbox_rows(aggregate_id=t001.id, event_type="task.status_changed")
+        targets = [row.payload["target_status"] for row in status_rows]
+        self.assertEqual(targets.count("submitted"), 2)
+        self.assertEqual(targets.count("rejected"), 2)
+        # First start + one reopen per rejection.
+        self.assertEqual(targets.count("in_progress"), 3)
+
+        verification_rows = self.outbox_rows(aggregate_id=t001.id, event_type="task.verification_recorded")
+        self.assertEqual(len(verification_rows), 2)
+        self.assertEqual(
+            sorted(row.payload["remarks"] for row in verification_rows),
+            ["Cable run is crooked.", "Still loose at the box."],
+        )
+        self.assertEqual(len({row.idempotency_key for row in verification_rows}), 2)
+
+    def test_rework_loop_verify_after_rejection_emits_both_decisions(self):
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+        self.drive_to_submitted(project["id"], t001.id)
+
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "rejected", remarks="Redo.")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.resubmit_as_supervisor(project["id"], t001.id, note="Redone.")
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        decisions = sorted(
+            row.payload["decision"]
+            for row in self.outbox_rows(aggregate_id=t001.id, event_type="task.verification_recorded")
+        )
+        self.assertEqual(decisions, ["rejected", "verified"])
+
+    def test_pm_rejecting_in_two_cycles_emits_two_approval_events(self):
+        project = self.activate_project()
+        t002 = self.task_by_code(project["id"], "T002")
+        self.drive_to_submitted(project["id"], t002.id)
+
+        for cycle, reason in enumerate(("Permit copy unreadable.", "Wrong permit number."), start=1):
+            self.act_as_pm()
+            r = self.approve(project["id"], t002.id, "rejected", remarks=reason)
+            self.assertEqual(r.status_code, 200, r.text)
+            if cycle == 1:
+                self.act_as_internal()
+                sp = self.submit_progress(project["id"], t002.id, note="Re-uploaded permit.")
+                self.assertEqual(sp.status_code, 200, sp.text)
+                r = self.transition(project["id"], t002.id, "submitted")
+                self.assertEqual(r.status_code, 200, r.text)
+
+        approval_rows = self.outbox_rows(aggregate_id=t002.id, event_type="task.approval_recorded")
+        self.assertEqual(len(approval_rows), 2)
+        self.assertEqual(
+            sorted(row.payload["remarks"] for row in approval_rows),
+            ["Permit copy unreadable.", "Wrong permit number."],
+        )
+        targets = [
+            row.payload["target_status"]
+            for row in self.outbox_rows(aggregate_id=t002.id, event_type="task.status_changed")
+        ]
+        self.assertEqual(targets.count("submitted"), 2)
+
+    def test_status_events_name_the_actor_and_mark_decision_driven_steps(self):
+        """Telegram task plan U4 (KTD11): the intermediate status steps a
+        decision drives carry `cause: decision` (Telegram skips them - the
+        decision's own event tells everyone); user-driven steps do not."""
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+        self.drive_to_submitted(project["id"], t001.id)
+        self.act_as_admin()
+        self.assertEqual(self.verify(project["id"], t001.id, "rejected", remarks="Redo.").status_code, 200)
+
+        rows = self.outbox_rows(aggregate_id=t001.id, event_type="task.status_changed")
+        by_target = {}
+        for row in rows:
+            by_target.setdefault(row.payload["target_status"], []).append(row.payload)
+        for target in ("ready", "submitted"):
+            self.assertNotIn("cause", by_target[target][0])
+            self.assertEqual(by_target[target][0]["actor_user_id"], str(SUPERVISOR_ID))
+        self.assertEqual(by_target["rejected"][0]["cause"], "decision")
+        reopened = [p for p in by_target["in_progress"] if p["before_status"] == "rejected"]
+        self.assertEqual(reopened[0]["cause"], "decision")
+        self.assertEqual(reopened[0]["actor_user_id"], str(ADMIN_ID))
+        first_start = [p for p in by_target["in_progress"] if p["before_status"] == "ready"]
+        self.assertNotIn("cause", first_start[0])
+
+    def test_occurrence_keys_name_their_source_row_and_retry_is_a_no_op(self):
+        """The key is the specific occurrence (audit row / decision row), so
+        re-emitting that same occurrence still collapses to one event."""
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+        self.drive_to_submitted(project["id"], t001.id)
+        self.act_as_admin()
+        r = self.verify(project["id"], t001.id, "rejected", remarks="Redo.")
+        self.assertEqual(r.status_code, 200, r.text)
+
+        with self.Session() as session:
+            submitted_audit = next(
+                audit for audit in session.scalars(
+                    select(V2AuditEvent).where(
+                        V2AuditEvent.entity_id == t001.id,
+                        V2AuditEvent.action == "TASK_STATUS_CHANGED",
+                    )
+                )
+                if audit.after_json["lifecycle_status"] == "submitted"
+            )
+            verification = session.scalar(select(TaskVerification).where(TaskVerification.task_id == t001.id))
+
+        status_keys = {
+            row.idempotency_key
+            for row in self.outbox_rows(aggregate_id=t001.id, event_type="task.status_changed")
+        }
+        submitted_key = f"task:{t001.id}:task.status_changed:submitted:{submitted_audit.id}"
+        self.assertIn(submitted_key, status_keys)
+        verification_key = f"task:{t001.id}:task.verification_recorded:rejected:{verification.id}"
+        self.assertEqual(
+            [row.idempotency_key for row in self.outbox_rows(aggregate_id=t001.id, event_type="task.verification_recorded")],
+            [verification_key],
+        )
+
+        with self.Session() as session:
+            for key in (submitted_key, verification_key):
+                retried = OutboxService(session).emit(
+                    event_type="task.status_changed", aggregate_type="task", aggregate_id=t001.id,
+                    payload={}, idempotency_key=key,
+                )
+                self.assertIsNone(retried)
+            session.commit()
+        self.assertEqual(
+            len([row for row in self.outbox_rows() if row.idempotency_key in (submitted_key, verification_key)]),
+            2,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

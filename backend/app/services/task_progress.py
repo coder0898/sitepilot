@@ -130,8 +130,29 @@ class TaskProgressService:
         source: str = "portal",
     ) -> TaskProgressUpdate:
         project = self._require_access(project_id, actor)
-        task = self._get_task(project.id, task_id)
+        # Same row lock TaskLifecycleService.transition() takes, held until the
+        # commit below. A progress item and a Submit racing on one task are
+        # therefore serialized: either the progress commits first and belongs
+        # to that submission, or the submit commits first and this call sees
+        # `submitted` below and is refused - never a progress update left
+        # outside the cycle that gets reviewed. `populate_existing` so the
+        # status checked is the one read under the lock, not a cached copy.
+        task = self.db.scalar(
+            select(Task)
+            .where(Task.id == task_id, Task.project_id == project.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if not task:
+            raise HTTPException(404, "Task not found.")
         self._require_progress_actor(project, task, actor)
+        # One rule for every channel: progress belongs to work in progress.
+        # Checked before any file is stored, so a refusal leaves nothing behind.
+        if task.lifecycle_status != "in_progress":
+            raise HTTPException(
+                409,
+                f"Progress can only be logged while the task is in progress (it is currently {task.lifecycle_status}).",
+            )
 
         clean_note = (note or "").strip() or None
         clean_status_claim = (status_claim or "").strip() or None
