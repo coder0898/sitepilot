@@ -269,6 +269,18 @@ class _Ctx:
             TelegramAction("Reject", "", task_callback("pr", self.task.id, token)),
         ),)
 
+    def rework_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Add Progress] [Submit Again] on "Rework Required" (U11), for
+        whoever may log progress on the reopened task. Submit Again is the
+        same Submit for Review action (U8): the new-progress rule still
+        refuses it until something new is logged this round."""
+        if not self.can_log_progress():
+            return ()
+        return ((
+            TelegramAction("Add Progress", "", task_callback("ap", self.task.id)),
+            TelegramAction("Submit Again", "", task_callback("sb", self.task.id)),
+        ),)
+
     def progress_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
         if not self.can_log_progress():
             return ()
@@ -484,7 +496,7 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
 def _render_rework(ctx: _Ctx, reviewer_label: str, reviewer: str, reason: object) -> TelegramMessage:
     rows = ctx.rows(*ctx.type_rows(), (reviewer_label, reviewer), ("Reason", reason or "Not given"))
     step = _REWORK_STEP if ctx.is_executor() else "Sent back for rework. " + _FYI
-    return _message(ctx, "Rework Required", rows, step)
+    return _message(ctx, "Rework Required", rows, step, ctx.rework_actions())
 
 
 def _render_verification_recorded(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
