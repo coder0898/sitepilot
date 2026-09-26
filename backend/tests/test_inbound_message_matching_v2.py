@@ -570,6 +570,26 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
             assignment = session.get(TaskVendorAssignment, uuid.UUID(assignment_id))
             self.assertEqual(assignment.status, "acknowledged")
 
+    def test_status_cancel_is_refused_on_whatsapp_even_for_an_admin(self):
+        """Telegram task plan U3: cancellation needs a real typed reason and
+        stays in the Web App for every messaging channel - the typed command
+        used to supply "Reported via WhatsApp." as that reason."""
+        project = self.activate_project()
+        task = self.task_by_code(project["id"], "T001")
+
+        response = self.post_inbound({
+            "provider_message_id": "wamid.cancel-1",
+            "sender_phone": ADMIN_PHONE,
+            "message_text": f"STATUS {task.original_code} cancelled",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+
+        rows = self.inbound_rows()
+        self.assertEqual(rows[0].processing_status, "rejected")
+        self.assertEqual(rows[0].rejection_reason, "Cancellation is only available in the Web App.")
+        with self.Session() as session:
+            self.assertEqual(session.get(Task, task.id).lifecycle_status, "planned")
+
     def test_employee_status_transition_produces_identical_lifecycle_change(self):
         project = self.activate_project()
         task = self.task_by_code(project["id"], "T001")

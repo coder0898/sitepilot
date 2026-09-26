@@ -729,15 +729,26 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         with self.Session() as session:
             return list(session.scalars(select(TaskProgressUpdate).where(TaskProgressUpdate.task_id == task_id)))
 
+    def start_as_supervisor(self, project_id: str, task_id) -> None:
+        self.act_as_supervisor()
+        for status in ("ready", "in_progress"):
+            self.assertEqual(self.transition(project_id, task_id, status).status_code, 200)
+
+    def submit_with_notes(self, project_id: str, task_id, *notes: str) -> None:
+        """PM logs every note (so the Supervisor can verify), Supervisor submits."""
+        self.act_as_pm()
+        for note in notes:
+            self.assertEqual(self.submit_progress(project_id, task_id, note=note).status_code, 200)
+        self.act_as_supervisor()
+        self.assertEqual(self.transition(project_id, task_id, "submitted").status_code, 200)
+
     def test_every_update_of_a_rejected_cycle_is_marked_reviewed(self):
+        """The decision covers every update of the cycle, not just the latest
+        one a verification names."""
         project = self.activate_project()
         t001 = self.tasks_by_code(project["id"])["T001"]
-        self.drive_to_submitted(project["id"], t001.id)
-        self.act_as_pm()
-        for note in ("Second item.", "Third item."):
-            # Logged while submitted is still possible until U3 closes it; the
-            # decision must cover these too, not just the one it names.
-            self.assertEqual(self.submit_progress(project["id"], t001.id, note=note).status_code, 200)
+        self.start_as_supervisor(project["id"], t001.id)
+        self.submit_with_notes(project["id"], t001.id, "First item.", "Second item.", "Third item.")
 
         self.act_as_supervisor()
         self.assertEqual(self.verify(project["id"], t001.id, "rejected", remarks="Redo.").status_code, 200)
@@ -751,10 +762,8 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         update of the rejected cycle still satisfied the resubmission."""
         project = self.activate_project()
         t001 = self.tasks_by_code(project["id"])["T001"]
-        self.drive_to_submitted(project["id"], t001.id)
-        self.act_as_pm()
-        self.assertEqual(self.submit_progress(project["id"], t001.id, note="Later note.").status_code, 200)
-        self.act_as_supervisor()
+        self.start_as_supervisor(project["id"], t001.id)
+        self.submit_with_notes(project["id"], t001.id, "Earlier note.", "Later note.")
         self.assertEqual(self.verify(project["id"], t001.id, "rejected", remarks="Redo.").status_code, 200)
 
         refused = self.transition(project["id"], t001.id, "submitted")

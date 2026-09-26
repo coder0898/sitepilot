@@ -365,6 +365,15 @@ class InboundMessageService:
                 )
 
             task_code, target_status = parts[1], parts[2]
+            # Cancelling needs a real, typed reason and stays a Web App
+            # action. A messaging channel used to pass an automatic
+            # "Reported via ..." text as that reason, which satisfied the
+            # lifecycle's reason rule without anyone giving one.
+            if target_status.lower() == "cancelled":
+                return self._save(
+                    provider_message_id, sender_phone, message_text, "employee", employee.id,
+                    "rejected", "Cancellation is only available in the Web App.",
+                )
             task = self._resolve_task_for_employee(task_code, employee)
             if task is None:
                 return self._save(
@@ -375,10 +384,13 @@ class InboundMessageService:
             try:
                 # The EXACT SAME service call a portal status-update action
                 # would make - transition() owns all role/dependency/state
-                # checks itself; nothing here duplicates that logic.
+                # checks itself; nothing here duplicates that logic. No
+                # reason is passed: an automatic text would otherwise be
+                # recorded as the reason for an early start. An early typed
+                # start is therefore refused by the lifecycle's own rule; the
+                # channel is still recorded through `source`.
                 TaskLifecycleService(self.db).transition(
                     task.project_id, task.id, target_status, actor=user,
-                    reason=f"Reported via {self._inbound_channel_label}.",
                     source=self._inbound_channel,
                 )
             except HTTPException as exc:

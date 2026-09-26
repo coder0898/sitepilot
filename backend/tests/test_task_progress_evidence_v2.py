@@ -256,10 +256,15 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
         return project
 
     def task_t001(self, project_id: str) -> Task:
-        with self.Session() as session:
-            return session.scalar(
+        """T001, already `in_progress`: progress may only be logged on work
+        in progress (TaskProgressService), and these tests are about
+        progress/evidence rules, not the lifecycle that gets a task there."""
+        with self.Session.begin() as session:
+            task = session.scalar(
                 select(Task).where(Task.project_id == uuid.UUID(project_id), Task.original_code == "T001")
             )
+            task.lifecycle_status = "in_progress"
+        return task
 
     @property
     def internal_employee_id(self) -> uuid.UUID:
@@ -550,6 +555,47 @@ class TaskProgressEvidenceApiTests(unittest.TestCase):
         upload_dir = Path(settings.upload_dir)
         if upload_dir.is_dir():
             self.assertEqual(list(upload_dir.rglob(f"*{storage_key}*")), [])
+
+    # ---- Telegram task plan U3: progress only while in_progress --------------
+
+    def test_progress_is_refused_outside_in_progress_and_leaves_nothing_behind(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        self.act_as_supervisor()
+
+        for status in ("planned", "ready", "submitted", "verified", "completed"):
+            with self.subTest(status=status):
+                with self.Session.begin() as session:
+                    session.get(Task, task.id).lifecycle_status = status
+                response = self.submit_progress(
+                    project["id"], task.id, note="Should not be stored.",
+                    files={"evidence": ("bay3.png", TINY_PNG_BYTES, "image/png")},
+                )
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertIn("only be logged while the task is in progress", response.json()["detail"])
+                self.assertIn(status, response.json()["detail"])
+
+        with self.Session() as session:
+            self.assertEqual(session.scalars(select(TaskProgressUpdate)).all(), [])
+            self.assertEqual(session.scalars(select(FileObject)).all(), [])
+        # Refused before the storage write, not cleaned up after it.
+        self.assertEqual(self.evidence_store, {})
+
+    def test_progress_is_accepted_in_progress(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        self.act_as_supervisor()
+        response = self.submit_progress(project["id"], task.id, note="Bay 3 done.")
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_admin_is_held_to_the_same_state_rule(self):
+        project = self.activate_project()
+        task = self.task_t001(project["id"])
+        with self.Session.begin() as session:
+            session.get(Task, task.id).lifecycle_status = "submitted"
+        self.act_as_admin()
+        response = self.submit_progress(project["id"], task.id, note="Admin late note.")
+        self.assertEqual(response.status_code, 409, response.text)
 
 
 if __name__ == "__main__":
