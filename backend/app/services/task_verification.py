@@ -166,14 +166,15 @@ class TaskVerificationService:
                 409, "You submitted this task's progress - a different Supervisor, PM, or Admin must verify it.",
             )
 
-        self.db.add(TaskVerification(
+        verification = TaskVerification(
             task_id=task.id,
             submission_update_id=submission.id,
             decision=decision,
             remarks=clean_remarks,
             verified_by=actor.id,
             decision_mode=decision_mode,
-        ))
+        )
+        self.db.add(verification)
         self.db.flush()
 
         # Emitted here - BEFORE the first `self.lifecycle.transition(...)`
@@ -197,7 +198,9 @@ class TaskVerificationService:
                 "verified_by": str(actor.id),
                 "decision_mode": decision_mode,
             },
-            idempotency_key=f"task:{task.id}:task.verification_recorded:{decision}",
+            # One event per decision row: a task rejected in two cycles
+            # must notify twice (see transition()'s status_changed key).
+            idempotency_key=f"task:{task.id}:task.verification_recorded:{decision}:{verification.id}",
         )
 
         if decision == "rejected":

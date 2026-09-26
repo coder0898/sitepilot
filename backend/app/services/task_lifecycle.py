@@ -610,7 +610,7 @@ class TaskLifecycleService:
             # alone says only that some start was early, not which transition
             # it was given for.
             after_json["early_start_reason"] = early_start_reason
-        self.db.add(V2AuditEvent(
+        audit_event = V2AuditEvent(
             actor_user_id=actor.id,
             action="TASK_STATUS_CHANGED",
             entity_type="task",
@@ -620,7 +620,8 @@ class TaskLifecycleService:
             before_json={"lifecycle_status": before_status},
             after_json=after_json,
             reason=clean_reason,
-        ))
+        )
+        self.db.add(audit_event)
         self.db.flush()
 
         # Single instrumentation point for every user-initiated status
@@ -639,7 +640,11 @@ class TaskLifecycleService:
                 "target_status": target_status,
                 "reason": clean_reason,
             },
-            idempotency_key=f"task:{task.id}:task.status_changed:{target_status}",
+            # Keyed by this transition's own audit row, not by target status:
+            # a rework loop reaches `submitted`/`in_progress` again and again,
+            # and each occurrence must notify. Retrying the same occurrence
+            # still collapses onto the one key.
+            idempotency_key=f"task:{task.id}:task.status_changed:{target_status}:{audit_event.id}",
         )
 
         if target_status == "completed":

@@ -194,14 +194,15 @@ class TaskApprovalService:
                 409, "Only approval gates and Class A work tasks go through PM approval.",
             )
 
-        self.db.add(TaskApprovalDecision(
+        approval_decision = TaskApprovalDecision(
             task_id=task.id,
             verification_id=verification.id if verification else None,
             decision=decision,
             remarks=clean_remarks,
             decided_by=actor.id,
             decision_mode=decision_mode,
-        ))
+        )
+        self.db.add(approval_decision)
         self.db.flush()
 
         # Same transaction-boundary trap as TaskVerificationService.verify:
@@ -221,7 +222,9 @@ class TaskApprovalService:
                 "verification_id": str(verification.id) if verification else None,
                 "decision_mode": decision_mode,
             },
-            idempotency_key=f"task:{task.id}:task.approval_recorded:{decision}",
+            # One event per decision row, so each PM rejection in a rework
+            # loop notifies (see transition()'s status_changed key).
+            idempotency_key=f"task:{task.id}:task.approval_recorded:{decision}:{approval_decision.id}",
         )
 
         if decision == "rejected":
