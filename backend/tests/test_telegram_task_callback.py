@@ -22,6 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.execution_models import (
+    FileObject,
     InboundMessage,
     OutboxEvent,
     ProjectExternalApproval,
@@ -29,6 +30,8 @@ from app.execution_models import (
     Task,
     TaskApprovalDecision,
     TaskDependency,
+    TaskEvidence,
+    TaskProgressUpdate,
     TaskSupportAssignment,
     TaskVerification,
     TelegramInboundUpdate,
@@ -58,7 +61,10 @@ class _FakeResponse:
         return {"ok": True, "result": {"message_id": 1}}
 
 
-class TelegramTaskCallbackTests(unittest.TestCase):
+class TaskButtonHarness(unittest.TestCase):
+    """Shared setup for the task-button tests (also used by
+    test_telegram_task_progress.py)."""
+
     def setUp(self):
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool,
@@ -75,6 +81,7 @@ class TelegramTaskCallbackTests(unittest.TestCase):
             Task.__table__, TaskDependency.__table__, TaskSupportAssignment.__table__, TaskVerification.__table__,
             TaskApprovalDecision.__table__, V2AuditEvent.__table__, OutboxEvent.__table__, InboundMessage.__table__,
             TelegramInboundUpdate.__table__, V2VendorContact.__table__, TelegramPendingInput.__table__,
+            TaskProgressUpdate.__table__, TaskEvidence.__table__, FileObject.__table__,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -187,6 +194,8 @@ class TelegramTaskCallbackTests(unittest.TestCase):
     def last_inbound(self) -> InboundMessage:
         return self.session.scalar(select(InboundMessage).order_by(InboundMessage.created_at.desc(), InboundMessage.provider_message_id.desc()))
 
+
+class TelegramTaskCallbackTests(TaskButtonHarness):
     # ---- success paths ------------------------------------------------------------------
 
     def test_assignee_marks_ready_audited_as_telegram_with_their_name(self):

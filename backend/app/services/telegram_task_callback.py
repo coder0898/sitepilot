@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -35,13 +35,19 @@ from sqlalchemy.orm import Session
 
 from app.execution_models import InboundMessage, Task, TelegramInboundUpdate
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2ProjectMembership
+from app.project_models import V2Project, V2ProjectMembership
+from app.services.inbound_message import EMPLOYEE_COMMANDS, VENDOR_COMMANDS
 from app.services.task_lifecycle import EarlyStartReasonRequired, TaskLifecycleService
+from app.services.task_progress import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES, TaskProgressService
 from app.services.telegram_message import parse_task_callback, task_callback
 from app.services.telegram_pending_input import (
+    ADD_PROGRESS_TTL,
+    KIND_TASK_ADD_PROGRESS,
     KIND_TASK_EARLY_START_REASON,
     PENDING_INPUT_TTL,
     TakenInput,
+    close_add_progress_mode,
+    open_add_progress_mode,
     peek_pending,
     set_pending,
     take_pending,
@@ -65,6 +71,20 @@ TASK_BUTTONS = {
 
 # [Cancel] under the early-start question (U6).
 CANCEL_EARLY_START = "ce"
+# [Add Progress] opens the Add Progress mode for a task; [Done] closes it (U7).
+ADD_PROGRESS = "ap"
+DONE_ADDING = "dn"
+
+# A text starting with one of these closes Add Progress mode and runs as the
+# command it is, never becoming a progress note (KTD8).
+_COMMAND_KEYWORDS = frozenset(EMPLOYEE_COMMANDS | VENDOR_COMMANDS)
+
+_PROGRESS_TYPE_OR_SIZE = (
+    "This file type or size isn't supported. Please send a photo (JPG, PNG, WebP) or a PDF "
+    "of up to 10 MB, or use the Web App."
+)
+_PROGRESS_DOWNLOAD_FAILED = "The file couldn't be downloaded from Telegram. Please send it again."
+_ADD_PROGRESS_MINUTES = int(ADD_PROGRESS_TTL.total_seconds() // 60)
 
 UNLINKED = "This Telegram account isn't linked to SiteOps. Ask your Admin for a new connect link."
 STALE = "This button is no longer available."
@@ -80,6 +100,15 @@ def _e(value: object) -> str:
 
 def _format_date(value: date) -> str:
     return value.strftime("%d %b %Y").lstrip("0")
+
+
+def _shorten(text: str, limit: int = 60) -> str:
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
+
+
+# Audit label for Add Progress presses and items (not a lifecycle transition).
+_ADD_PROGRESS_BUTTON = _TaskButton("Add Progress", "add progress", "Send your progress", "in_progress")
 
 
 class TelegramTaskCallbackService:
@@ -103,6 +132,10 @@ class TelegramTaskCallbackService:
         callback = parse_task_callback(data)
         if callback is not None and callback.code == CANCEL_EARLY_START:
             return self._cancel_early_start(chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id)
+        if callback is not None and callback.code == ADD_PROGRESS:
+            return self._open_add_progress(update_id, chat_id, chat_type, from_id, callback_query_id, callback.task_id)
+        if callback is not None and callback.code == DONE_ADDING:
+            return self._done_adding(chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id)
         button = TASK_BUTTONS.get(callback.code) if callback else None
         if button is None:
             self._answer(callback_query_id, STALE)
@@ -240,6 +273,189 @@ class TelegramTaskCallbackService:
             return False
         self._record(update_id, chat_id, button, employee, "processed", None, task, body=body)
         return True
+
+    # ---- Add Progress (U7) ----------------------------------------------------------------
+
+    def _open_add_progress(
+        self, update_id: int, chat_id: str, chat_type: str | None, from_id: str | None,
+        callback_query_id: str | None, task_id,
+    ) -> bool:
+        what = "add progress"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        user, employee, task = checked
+        refusal = self._progress_refusal(user, task)
+        if refusal:
+            self._fail(chat_id, callback_query_id, what, refusal)
+            return False
+
+        set_pending(self.db, chat_id=chat_id, kind=KIND_TASK_ADD_PROGRESS, task_id=task.id, ttl=ADD_PROGRESS_TTL)
+        self.db.commit()
+        self._record(update_id, chat_id, _ADD_PROGRESS_BUTTON, employee, "processed", None, task)
+        self._answer(callback_query_id, "Send your progress")
+        self._ask(
+            chat_id,
+            f"<b>Add Progress: {_e(task.original_code)} - {_e(task.title)}</b>\n\n"
+            "Send a note, a photo or a PDF. Each message is saved as one progress update; "
+            "a caption is saved as the note of its photo or PDF.\n\n"
+            f"This closes after {_ADD_PROGRESS_MINUTES} minutes without a message, or when you tap Done.",
+            self._done_row(task),
+        )
+        return False
+
+    def _done_adding(
+        self, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, task_id,
+    ) -> bool:
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, "close Add Progress", PRIVATE_ONLY)
+            return False
+        pending = open_add_progress_mode(self.db, chat_id)
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        if pending is None or pending.task_id != task_id:
+            self.db.commit()
+            self._answer(callback_query_id, "Already closed")
+            return False
+        close_add_progress_mode(self.db, chat_id)
+        self.db.commit()
+        self._answer(callback_query_id, "Done")
+        self._reply(chat_id, "<b>Add Progress closed</b>\n\nYour progress updates are saved.")
+        return False
+
+    def handle_progress_text(
+        self, *, update_id: int, chat_id: str, chat_type: str | None, text: str,
+    ) -> tuple[bool, bool]:
+        """A text message while Add Progress mode may be open. Returns
+        (handled, acted): not handled means it is not a progress note (no open
+        mode, or a command) and goes on to normal processing."""
+        pending = open_add_progress_mode(self.db, chat_id)
+        if pending is None:
+            self.db.commit()  # an expired mode was dropped
+            return False, False
+        if chat_type is not None and chat_type != "private":
+            return False, False
+        keyword = text.split()[0].upper() if text.split() else ""
+        if keyword in _COMMAND_KEYWORDS:
+            close_add_progress_mode(self.db, chat_id)
+            self.db.commit()
+            return False, False
+        acted = self._store_progress(update_id, chat_id, pending, note=text, received=f'Note: "{_shorten(text)}"')
+        return True, acted
+
+    def handle_progress_media(self, *, update_id: int, chat_id: str, chat_type: str | None, media: dict) -> tuple[bool, bool]:
+        """A photo or document while Add Progress mode may be open. Returns
+        (handled, acted); not handled goes on to the gate evidence path."""
+        pending = open_add_progress_mode(self.db, chat_id)
+        if pending is None:
+            self.db.commit()
+            return False, False
+        if chat_type is not None and chat_type != "private":
+            return False, False
+        mime_type = media.get("mime_type")
+        declared = media.get("file_size")
+        if mime_type not in ALLOWED_EVIDENCE_MIME_TYPES or (isinstance(declared, int) and declared > MAX_EVIDENCE_SIZE_BYTES):
+            # Refused before any download.
+            self._reply(chat_id, f"<b>Couldn't add this progress</b>\n\n{_e(_PROGRESS_TYPE_OR_SIZE)}")
+            return True, False
+        download = self.provider.download_file(media.get("id"), max_bytes=MAX_EVIDENCE_SIZE_BYTES)
+        if not download.ok:
+            reason = _PROGRESS_TYPE_OR_SIZE if download.failure_code == "too_large" else _PROGRESS_DOWNLOAD_FAILED
+            self._reply(chat_id, f"<b>Couldn't add this progress</b>\n\n{_e(reason)}")
+            return True, False
+        is_photo = media.get("kind") == "photo"
+        filename = media.get("filename") or ("photo.jpg" if is_photo else "document")
+        caption = (media.get("caption") or "").strip() or None
+        label = "Photo" if is_photo else filename
+        acted = self._store_progress(
+            update_id, chat_id, pending, note=caption,
+            received=f"{label} (with caption)" if caption else label,
+            evidence=(download.bytes, filename, mime_type),
+        )
+        return True, acted
+
+    def _store_progress(
+        self, update_id: int, chat_id: str, pending, *, note: str | None, received: str,
+        evidence: tuple[bytes, str, str] | None = None,
+    ) -> bool:
+        """One Telegram item = one normal progress update (KTD5), through the
+        same service the Web App uses."""
+        what = "add this progress"
+        if self.db.scalar(select(InboundMessage.id).where(InboundMessage.provider_message_id == str(update_id))):
+            return False  # this Telegram update was already handled - never store it twice
+        checked = self._person_and_task(chat_id, pending.task_id)
+        if isinstance(checked, str):
+            close_add_progress_mode(self.db, chat_id)
+            self.db.commit()
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(checked)}")
+            return False
+        user, employee, task = checked
+        body = f"[progress] {task.original_code}: {received}"
+        try:
+            TaskProgressService(self.db).submit_progress(
+                task.project_id, task.id, user, note=note,
+                evidence_bytes=evidence[0] if evidence else None,
+                evidence_filename=evidence[1] if evidence else None,
+                evidence_content_type=evidence[2] if evidence else None,
+                source="telegram",
+            )
+        except HTTPException as exc:
+            self.db.rollback()
+            # e.g. the task was submitted or reassigned meanwhile: nothing more
+            # can be added, so the mode closes.
+            close_add_progress_mode(self.db, chat_id)
+            self.db.commit()
+            self._record(update_id, chat_id, _ADD_PROGRESS_BUTTON, employee, "rejected", str(exc.detail), task, body=body)
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(exc.detail)}")
+            return False
+
+        mode = open_add_progress_mode(self.db, chat_id)
+        if mode is not None:
+            mode.expires_at = datetime.now(timezone.utc) + ADD_PROGRESS_TTL  # slides from the last item
+        self.db.commit()
+        self._record(update_id, chat_id, _ADD_PROGRESS_BUTTON, employee, "processed", None, task, body=body)
+        self._ask(
+            chat_id,
+            f"<b>Progress Added</b>\n\nTask: {_e(task.original_code)} - {_e(task.title)}\n"
+            f"Received: {_e(received)}\n\nSend more, or tap Done.",
+            self._done_row(task),
+        )
+        return True
+
+    def _done_row(self, task: Task) -> list[list[dict]]:
+        return [[{"text": "Done", "callback_data": task_callback(DONE_ADDING, task.id)}]]
+
+    def _progress_refusal(self, user: User, task: Task) -> str | None:
+        """Why this person can't log progress on this task right now, in the
+        progress service's own words - checked when the mode opens so the
+        refusal comes before anything is sent. Each item is still checked
+        again by `submit_progress` itself."""
+        if task.lifecycle_status != "in_progress":
+            return f"Progress can only be logged while the task is in progress (it is currently {task.lifecycle_status})."
+        service = TaskProgressService(self.db)
+        try:
+            service._require_progress_actor(self.db.get(V2Project, task.project_id), task, user)
+        except HTTPException as exc:
+            return str(exc.detail)
+        return None
+
+    def _person_and_task(self, chat_id: str, task_id):
+        """(user, employee, task) after the KTD22 guards, or the refusal text."""
+        identity = self._linked_person(chat_id)
+        if identity is None:
+            return UNLINKED
+        user, employee = identity
+        task = self.db.get(Task, task_id) if task_id else None
+        if task is None:
+            return STALE
+        if not self._may_act_on_project(user, employee, task):
+            return NOT_A_MEMBER
+        return user, employee, task
 
     # ---- guards ---------------------------------------------------------------------
 

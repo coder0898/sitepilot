@@ -182,6 +182,23 @@ class _Ctx:
             return self.is_assignee()
         return not _is_approval_gate(self) and (self.is_supervisor() or self.is_pm())
 
+    def can_log_progress(self) -> bool:
+        """Mirrors TaskProgressService's rules: only while in progress; the
+        assigned Internal Employee once one is assigned, otherwise the
+        Supervisor/PM; Admin always."""
+        if self.task is None or self.task.lifecycle_status != "in_progress":
+            return False
+        if self.is_admin():
+            return True
+        if self.has_assignee():
+            return self.is_assignee()
+        return self.is_supervisor() or self.is_pm()
+
+    def progress_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
+        if not self.can_log_progress():
+            return ()
+        return ((TelegramAction("Add Progress", "", task_callback("ap", self.task.id)),),)
+
     def start_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
         """[Mark Task Ready] or [Start Task], whichever the task's current
         status allows this recipient to press - or none."""
@@ -248,8 +265,9 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
         extra = [("Started by", actor)] if actor else []
         if ctx.task is not None and ctx.task.early_start_reason and payload.get("before_status") in ("planned", "ready"):
             extra.append(("Early start reason", ctx.task.early_start_reason))
-        step = "Log your progress as you work." if ctx.is_executor() else _FYI
-        return _message(ctx, "Task Started", ctx.rows(*extra), step)
+        actions = ctx.progress_actions()
+        step = "Log your progress as you work." if actions or ctx.is_executor() else _FYI
+        return _message(ctx, "Task Started", ctx.rows(*extra), step, actions)
 
     if target == "submitted":
         rows = ctx.rows(("Submitted by", actor or "Unknown user"))
@@ -397,13 +415,15 @@ def _render_rescheduled(db: Session, payload: dict, recipient_employee_id: uuid.
 
 
 def _render_daily_check(
-    title: str, executor_step: str, with_start_buttons: bool = False,
+    title: str, executor_step: str, with_start_buttons: bool = False, with_progress_button: bool = False,
 ) -> Callable[[Session, dict, uuid.UUID | None], TelegramMessage]:
     def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
         ctx = _Ctx(db, payload, recipient_employee_id)
         status = _STATUS_LABELS.get(payload.get("lifecycle_status"), _label(payload.get("lifecycle_status")))
         rows = ctx.rows(("Status", status), ("Planned start", _date(payload.get("planned_start_date"))))
         actions = ctx.start_actions() if with_start_buttons else ()
+        if with_progress_button:
+            actions = actions + ctx.progress_actions()
         return _message(ctx, title, rows, executor_step if actions or ctx.is_executor() else _FYI, actions)
 
     return _render
@@ -437,8 +457,12 @@ TASK_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], TelegramMe
     "task.start_check": _render_daily_check(
         "Start Check", "This task is due to start. Start it when work begins.", with_start_buttons=True,
     ),
-    "task.midday_check": _render_daily_check("Midday Check", "Please log today's progress so far."),
-    "task.eod_check": _render_daily_check("End-of-Day Check", "Please log what was completed today."),
+    "task.midday_check": _render_daily_check(
+        "Midday Check", "Please log today's progress so far.", with_progress_button=True,
+    ),
+    "task.eod_check": _render_daily_check(
+        "End-of-Day Check", "Please log what was completed today.", with_progress_button=True,
+    ),
     "task.eod_followup_required": _render_no_update("Progress Update Overdue"),
     "task.escalated_to_admin": _render_no_update("Escalated: Progress Update Overdue"),
 }

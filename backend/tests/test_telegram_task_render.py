@@ -329,6 +329,33 @@ class TelegramTaskRenderTests(unittest.TestCase):
         payload = {"before_status": "planned", "target_status": "ready"}
         self.assertEqual(self._buttons("task.status_changed", payload, self.employee_profile), [])
 
+    # ---- U7: Add Progress button ----------------------------------------------------------
+
+    def test_add_progress_goes_to_whoever_may_log_progress_while_in_progress(self):
+        self.task.lifecycle_status = "in_progress"
+        self.db.commit()
+        started = {"before_status": "ready", "target_status": "in_progress", "actor_user_id": str(self.employee.id)}
+        self.assertEqual(self._buttons("task.status_changed", started, self.employee_profile), ["Add Progress"])
+        # An employee is assigned, so only they log progress.
+        self.assertEqual(self._buttons("task.status_changed", started, self.supervisor_profile), [])
+        check = {"lifecycle_status": "in_progress", "planned_start_date": "2026-09-24"}
+        for event_type in ("task.midday_check", "task.eod_check"):
+            self.assertEqual(self._buttons(event_type, check, self.employee_profile), ["Add Progress"])
+
+    def test_add_progress_uses_a_task_button_not_a_typed_command(self):
+        self.task.lifecycle_status = "in_progress"
+        self.db.commit()
+        message = self._render("task.midday_check", {"lifecycle_status": "in_progress"}, self.employee_profile)
+        [[button]] = message.button_rows()
+        self.assertEqual(button["callback_data"], f"t1:ap:{self.task.id.hex}")
+        self.assertNotIn("Reply with", message.text_for_buttons())
+
+    def test_no_add_progress_once_submitted(self):
+        self.task.lifecycle_status = "submitted"
+        self.db.commit()
+        check = {"lifecycle_status": "submitted", "planned_start_date": "2026-09-24"}
+        self.assertEqual(self._buttons("task.eod_check", check, self.employee_profile), [])
+
     def test_missing_ids_degrade_to_placeholders(self):
         for event_type in TASK_RENDERERS:
             with self.subTest(event_type=event_type):

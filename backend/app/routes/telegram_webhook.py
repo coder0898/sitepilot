@@ -181,9 +181,17 @@ async def receive_inbound_telegram_update(
         return {"status": "received"}
 
     if media is not None:
-        # A photo/document is always evidence for the sender's open session
-        # (a caption only describes it); the sender is told the outcome.
-        TelegramEvidenceService(db).handle_media(update_id=int(update_id), chat_id=chat_id, media=media)
+        # A photo/document is task progress while the sender's Add Progress
+        # mode is open (Telegram task plan U7); otherwise it is evidence for
+        # their open gate session (a caption only describes it). Either way
+        # the sender is told the outcome.
+        handled, acted = TelegramTaskCallbackService(db).handle_progress_media(
+            update_id=int(update_id), chat_id=chat_id, chat_type=chat_type, media=media,
+        )
+        if acted:
+            background_tasks.add_task(_dispatch_now)
+        if not handled:
+            TelegramEvidenceService(db).handle_media(update_id=int(update_id), chat_id=chat_id, media=media)
     elif message_text and message_text.startswith("/start"):
         # U13: connect-flow.
         TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text)

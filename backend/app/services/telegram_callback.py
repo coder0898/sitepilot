@@ -52,6 +52,7 @@ from app.services.telegram_pending_input import (
     KIND_HEALTH_NOTE,
     KIND_REJECT_REASON,
     PENDING_INPUT_TTL,
+    close_add_progress_mode,
     is_task_question,
     peek_pending,
     set_pending,
@@ -159,6 +160,11 @@ class TelegramCallbackService:
             self.provider.remove_buttons(chat_id, message_id)
             return False
 
+        if callback.code == "op" and close_add_progress_mode(self.db, chat_id):
+            # Opening a gate evidence session closes Add Progress mode, so the
+            # next photo goes to the gate, not to the task (KTD8).
+            self.db.commit()
+
         return self._run(update_id, chat_id, command, _BUTTON_ACTIONS[callback.code], callback_query_id, message_id)
 
     # ---- typed answers ----------------------------------------------------------
@@ -170,6 +176,14 @@ class TelegramCallbackService:
         Returns (handled, acted): `handled` False means there was no question
         and the message should be processed as a normal command/evidence
         text; `acted` True means an action ran successfully."""
+        # An open Add Progress mode (Telegram task plan U7) takes the message
+        # as a progress note without being consumed - unless it is a command.
+        handled, acted = TelegramTaskCallbackService(self.db, self.provider).handle_progress_text(
+            update_id=update_id, chat_id=chat_id, chat_type=chat_type, text=text,
+        )
+        if handled:
+            return True, acted
+
         taken = take_pending(self.db, chat_id)
         if taken is None:
             return False, False
