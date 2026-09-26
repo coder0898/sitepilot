@@ -757,6 +757,10 @@ class MessageDispatchService:
                 vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
                 if vendor_task_recipient is not None:
                     recipients.append(vendor_task_recipient)
+            if event.event_type == "task.blocker_resolved":
+                # Telegram task plan U12: whoever reported the blocker is told
+                # it was resolved (still subject to the active-member filter).
+                recipients.extend(self._resolve_user_id_recipient((event.payload or {}).get("reported_by")))
             if event.event_type == "task.delay_recorded":
                 # A delay must reach everyone actually working this task, not
                 # just its PM/Supervisor: any Internal Employee support-

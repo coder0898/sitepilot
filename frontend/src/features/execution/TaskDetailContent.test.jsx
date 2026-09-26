@@ -173,6 +173,32 @@ describe("TaskDetailContent - Action Forms tab", () => {
   // Telegram task plan U2: the backend counts only updates no decision has
   // covered yet (`reviewed_at` null), for work AND approval-gate tasks. The
   // board must refuse the same submissions before any request is sent.
+  // Telegram task plan U12: Resolve follows the backend's resolver rule.
+  describe("blocker Resolve visibility", () => {
+    const withOpenBlocker = { ...detail, lifecycle_status: "in_progress", blockers: [
+      { id: "b1", task_id: "t1", project_id: "p1", type: "Material", description: "Tiles not delivered", resolved_at: null },
+    ] };
+
+    it("hides Resolve from an internal employee", async () => {
+      taskExecutionApi.detail.mockResolvedValue(withOpenBlocker);
+      renderDetail({ user: employee });
+      expect(await screen.findByText("Tiles not delivered")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Resolve" })).not.toBeInTheDocument();
+    });
+
+    it("shows Resolve to the Supervisor, the PM and an Admin", async () => {
+      for (const user of [supervisor, projectManager, admin]) {
+        taskExecutionApi.detail.mockResolvedValue(withOpenBlocker);
+        const { unmount } = render(<TaskDetailContent
+          projectId="p1" project={defaultProject} task={baseTask} user={user} roles={actorProjectRoles(defaultProject, user)}
+          candidates={[]} onChanged={vi.fn()} activeTab="actions"
+        />);
+        expect(await screen.findByRole("button", { name: "Resolve" })).toBeInTheDocument();
+        unmount();
+      }
+    });
+  });
+
   describe("submission rule parity (reviewed_at)", () => {
     const reviewed = { id: "pu1", note: "Old cycle.", created_at: "2026-08-02T00:00:00Z", reviewed_at: "2026-08-03T00:00:00Z", evidence: [] };
     const freshNote = { id: "pu2", note: "Fixed.", created_at: "2026-08-04T00:00:00Z", reviewed_at: null, evidence: [] };

@@ -637,6 +637,9 @@ class TaskBlocker(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+    reported_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    """Who logged the blocker (any channel), so they are told when it is
+    resolved. Null on blockers logged before it was recorded."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

@@ -33,13 +33,14 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import InboundMessage, Task, TaskProgressUpdate, TelegramInboundUpdate
+from app.execution_models import InboundMessage, Task, TaskBlocker, TaskProgressUpdate, TelegramInboundUpdate
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.inbound_message import EMPLOYEE_COMMANDS, VENDOR_COMMANDS
 from app.services.task_lifecycle import EarlyStartReasonRequired, TaskLifecycleService
 from app.services.task_progress import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES, TaskProgressService
 from app.services.task_approval import TaskApprovalService
+from app.services.task_blocker import TaskBlockerService
 from app.services.task_verification import TaskVerificationService
 from app.services.telegram_message import parse_task_callback, task_callback
 from app.services.telegram_pending_input import (
@@ -47,6 +48,8 @@ from app.services.telegram_pending_input import (
     KIND_TASK_ADD_PROGRESS,
     KIND_TASK_EARLY_START_REASON,
     KIND_TASK_APPROVAL_REJECT_REASON,
+    KIND_TASK_BLOCKER_DESCRIPTION,
+    KIND_TASK_BLOCKER_TYPE,
     KIND_TASK_VERIFY_REJECT_REASON,
     PENDING_INPUT_TTL,
     TakenInput,
@@ -105,6 +108,11 @@ CANCEL_REJECT_VERIFICATION = "vc"
 APPROVE = "pa"
 REJECT_APPROVAL = "pr"
 CANCEL_REJECT_APPROVAL = "pc"
+# Blockers (U12): [Report Blocker] and its [Cancel] carry the task id;
+# [Resolve] carries the blocker id (`t1:bs:<blocker>`).
+REPORT_BLOCKER = "rb"
+CANCEL_BLOCKER = "bc"
+RESOLVE_BLOCKER = "bs"
 OLDER_SUBMISSION = "This review is for an older submission - open the latest review message."
 
 # A text starting with one of these closes Add Progress mode and runs as the
@@ -145,6 +153,8 @@ _ADD_PROGRESS_BUTTON = _TaskButton("Add Progress", "add progress", "Send your pr
 _VERIFY_BUTTON = _TaskButton("Verify", "verify this task", "Verified", "verified")
 _REJECT_BUTTON = _TaskButton("Reject", "reject this task", "Rejected", "rejected")
 _APPROVE_BUTTON = _TaskButton("Approve", "approve this task", "Approved", "completed")
+# Audit label for blocker reports and resolutions (U12) - not a transition.
+_BLOCKER_BUTTON = _TaskButton("Blocker", "report a blocker", "Reported", "in_progress")
 _REJECT_APPROVAL_BUTTON = _TaskButton("PM Reject", "reject this task", "Rejected", "rejected")
 
 
@@ -177,6 +187,15 @@ class TelegramTaskCallbackService:
             return self._review_button(update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback, data)
         if callback is not None and callback.code in (APPROVE, REJECT_APPROVAL, CANCEL_REJECT_APPROVAL):
             return self._approval_button(update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback, data)
+        if callback is not None and callback.code == REPORT_BLOCKER:
+            return self._report_blocker(chat_id, chat_type, from_id, callback_query_id, callback.task_id)
+        if callback is not None and callback.code == CANCEL_BLOCKER:
+            return self._cancel_blocker(chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id)
+        if callback is not None and callback.code == RESOLVE_BLOCKER:
+            # The id this button carries is the blocker's, not a task's.
+            return self._resolve_blocker(
+                update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id, data,
+            )
         button = TASK_BUTTONS.get(callback.code) if callback else None
         if button is None:
             self._answer(callback_query_id, STALE)
@@ -285,6 +304,8 @@ class TelegramTaskCallbackService:
             KIND_TASK_EARLY_START_REASON: "Tap Start Task again",
             KIND_TASK_VERIFY_REJECT_REASON: "Tap Reject on the review message again",
             KIND_TASK_APPROVAL_REJECT_REASON: "Tap Reject on the approval message again",
+            KIND_TASK_BLOCKER_TYPE: "Tap Report Blocker again",
+            KIND_TASK_BLOCKER_DESCRIPTION: "Tap Report Blocker again",
         }.get(pending.kind, "Start again from the task message")
         if taken.expired:
             self._reply(
@@ -301,6 +322,8 @@ class TelegramTaskCallbackService:
             return self._decide_approval(
                 update_id, chat_id, None, None, pending.task_id, pending.review_token, "rejected", answer,
             )
+        if pending.kind in (KIND_TASK_BLOCKER_TYPE, KIND_TASK_BLOCKER_DESCRIPTION):
+            return self._blocker_answer(update_id, chat_id, pending, answer)
         return self._start_early(update_id, chat_id, pending.task_id, answer)
 
     def _start_early(self, update_id: int, chat_id: str, task_id, reason: str) -> bool:
@@ -486,10 +509,13 @@ class TelegramTaskCallbackService:
     def _progress_buttons(self, task: Task) -> list[list[dict]]:
         """[Submit for Review] [Done] under the Add Progress prompt and each
         Progress Added reply (U8)."""
-        return [[
-            {"text": "Submit for Review", "callback_data": task_callback("sb", task.id)},
-            {"text": "Done", "callback_data": task_callback(DONE_ADDING, task.id)},
-        ]]
+        return [
+            [
+                {"text": "Submit for Review", "callback_data": task_callback("sb", task.id)},
+                {"text": "Done", "callback_data": task_callback(DONE_ADDING, task.id)},
+            ],
+            [{"text": "Report Blocker", "callback_data": task_callback(REPORT_BLOCKER, task.id)}],
+        ]
 
     def _progress_refusal(self, user: User, task: Task) -> str | None:
         """Why this person can't log progress on this task right now, in the
@@ -619,6 +645,135 @@ class TelegramTaskCallbackService:
         if message_id is not None:
             self.provider.remove_buttons(chat_id, message_id)
         return True
+
+    # ---- Blockers (U12) -------------------------------------------------------------------
+
+    def _report_blocker(self, chat_id: str, chat_type: str | None, from_id: str | None, callback_query_id: str | None, task_id) -> bool:
+        what = "report a blocker"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        _, _, task = checked
+        pending = set_pending(self.db, chat_id=chat_id, kind=KIND_TASK_BLOCKER_TYPE, task_id=task.id)
+        self._answer(callback_query_id, "Type needed")
+        pending.prompt_message_id = self._ask(
+            chat_id,
+            f"<b>Report Blocker: {_e(task.original_code)} - {_e(task.title)}</b>\n\n"
+            "What type of blocker is it? For example: Material, Manpower, Access, Design, Client.\n"
+            f"Send it as your next message within {_MINUTES} minutes.",
+            self._cancel_blocker_row(task),
+        )
+        self.db.commit()
+        return False
+
+    def _cancel_blocker(
+        self, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, task_id,
+    ) -> bool:
+        what = "cancel the blocker report"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        pending = peek_pending(self.db, chat_id)
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        if (
+            pending is None or pending.kind not in (KIND_TASK_BLOCKER_TYPE, KIND_TASK_BLOCKER_DESCRIPTION)
+            or pending.task_id != task_id
+        ):
+            self._fail(chat_id, callback_query_id, what, NOT_PENDING)
+            return False
+        take_pending(self.db, chat_id)
+        self.db.commit()
+        self._answer(callback_query_id, "Cancelled")
+        self._reply(chat_id, "<b>Blocker report cancelled</b>\n\nNo blocker was recorded.")
+        return False
+
+    def _blocker_answer(self, update_id: int, chat_id: str, pending, answer: str) -> bool:
+        """The type answer asks for the description next (type kept in
+        draft_text); the description answer records the blocker through
+        TaskBlockerService - the same call as the Web App - with the person as
+        its reporter."""
+        what = "report a blocker"
+        checked = self._person_and_task(chat_id, pending.task_id)
+        if isinstance(checked, str):
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(checked)}")
+            return False
+        user, employee, task = checked
+        if pending.kind == KIND_TASK_BLOCKER_TYPE:
+            question = set_pending(
+                self.db, chat_id=chat_id, kind=KIND_TASK_BLOCKER_DESCRIPTION, task_id=task.id, draft_text=answer,
+            )
+            question.prompt_message_id = self._ask(
+                chat_id,
+                f"<b>Blocker type: {_e(answer)}</b>\n\nNow describe the blocker - what is stopping the work?\n"
+                f"Send it as your next message within {_MINUTES} minutes.",
+                self._cancel_blocker_row(task),
+            )
+            self.db.commit()
+            return False
+        body = f"[reply] Blocker on {task.original_code}: {pending.draft_text}: {answer}"
+        try:
+            TaskBlockerService(self.db).create_blocker(task.project_id, task.id, user, pending.draft_text, answer)
+        except HTTPException as exc:
+            self.db.rollback()
+            self._record(update_id, chat_id, _BLOCKER_BUTTON, employee, "rejected", str(exc.detail), task, body=body)
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(exc.detail)}")
+            return False
+        self._record(update_id, chat_id, _BLOCKER_BUTTON, employee, "processed", None, task, body=body)
+        self._reply(
+            chat_id,
+            f"<b>Blocker Reported</b>\n\nTask: {_e(task.original_code)} - {_e(task.title)}\n"
+            f"Type: {_e(pending.draft_text)}\nDescription: {_e(answer)}\n\n"
+            "Your Supervisor and PM have been told. You will be told when it is resolved.",
+        )
+        return True
+
+    def _resolve_blocker(
+        self, update_id: int, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, blocker_id, data: str | None,
+    ) -> bool:
+        what = "resolve this blocker"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        if message_id is not None and self._already_done(update_id, chat_id, message_id, data):
+            self._answer(callback_query_id, "Already done")
+            self.provider.remove_buttons(chat_id, message_id)
+            return False
+        # The task and project always come from the blocker itself, never
+        # from the button.
+        blocker = self.db.get(TaskBlocker, blocker_id)
+        if blocker is None:
+            self._fail(chat_id, callback_query_id, what, STALE)
+            return False
+        checked = self._person_and_task(chat_id, blocker.task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        user, employee, task = checked
+        body = f"[button] Resolve blocker on {task.original_code}: {blocker.type}"
+        try:
+            TaskBlockerService(self.db).resolve_blocker(blocker.project_id, blocker.task_id, blocker.id, user)
+        except HTTPException as exc:
+            self.db.rollback()
+            self._record(update_id, chat_id, _BLOCKER_BUTTON, employee, "rejected", str(exc.detail), task, body=body)
+            self._fail(chat_id, callback_query_id, what, str(exc.detail))
+            if message_id is not None and exc.status_code == 409:
+                self.provider.remove_buttons(chat_id, message_id)
+            return False
+        self._record(update_id, chat_id, _BLOCKER_BUTTON, employee, "processed", None, task, body=body)
+        self._answer(callback_query_id, "Resolved")
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        return True
+
+    def _cancel_blocker_row(self, task: Task) -> list[list[dict]]:
+        return [[{"text": "Cancel", "callback_data": task_callback(CANCEL_BLOCKER, task.id)}]]
 
     # ---- PM approval (U10) -----------------------------------------------------------------
 

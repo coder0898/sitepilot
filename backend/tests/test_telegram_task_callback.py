@@ -29,6 +29,7 @@ from app.execution_models import (
     ProjectExternalApprovalTask,
     Task,
     TaskApprovalDecision,
+    TaskBlocker,
     TaskDependency,
     TaskEvidence,
     TaskProgressUpdate,
@@ -82,7 +83,7 @@ class TaskButtonHarness(unittest.TestCase):
             Task.__table__, TaskDependency.__table__, TaskSupportAssignment.__table__, TaskVerification.__table__,
             TaskApprovalDecision.__table__, V2AuditEvent.__table__, OutboxEvent.__table__, InboundMessage.__table__,
             TelegramInboundUpdate.__table__, V2VendorContact.__table__, TelegramPendingInput.__table__,
-            TaskProgressUpdate.__table__, TaskEvidence.__table__, FileObject.__table__,
+            TaskProgressUpdate.__table__, TaskEvidence.__table__, FileObject.__table__, TaskBlocker.__table__,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)

@@ -323,8 +323,8 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.assertEqual(self._buttons("task.support_assigned", assigned, self.supervisor_profile), ["Mark Task Ready"])
         check = {"lifecycle_status": "planned", "planned_start_date": "2026-09-24"}
         self.assertEqual(self._buttons("task.readiness_check", check, self.employee_profile), ["Mark Task Ready"])
-        # The midday check carries no start buttons.
-        self.assertEqual(self._buttons("task.midday_check", check, self.employee_profile), [])
+        # The midday check carries no start buttons - only Report Blocker (U12).
+        self.assertEqual(self._buttons("task.midday_check", check, self.employee_profile), ["Report Blocker"])
 
     def test_unassigned_work_can_be_started_by_the_supervisor(self):
         self.class_a.lifecycle_status = "ready"
@@ -351,18 +351,18 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.task.lifecycle_status = "in_progress"
         self.db.commit()
         started = {"before_status": "ready", "target_status": "in_progress", "actor_user_id": str(self.employee.id)}
-        self.assertEqual(self._buttons("task.status_changed", started, self.employee_profile), ["Add Progress"])
-        # An employee is assigned, so only they log progress.
-        self.assertEqual(self._buttons("task.status_changed", started, self.supervisor_profile), [])
+        self.assertEqual(self._buttons("task.status_changed", started, self.employee_profile), ["Add Progress", "Report Blocker"])
+        # An employee is assigned, so only they log progress; any member may report a blocker.
+        self.assertEqual(self._buttons("task.status_changed", started, self.supervisor_profile), ["Report Blocker"])
         check = {"lifecycle_status": "in_progress", "planned_start_date": "2026-09-24"}
         for event_type in ("task.midday_check", "task.eod_check"):
-            self.assertEqual(self._buttons(event_type, check, self.employee_profile), ["Add Progress"])
+            self.assertEqual(self._buttons(event_type, check, self.employee_profile), ["Add Progress", "Report Blocker"])
 
     def test_add_progress_uses_a_task_button_not_a_typed_command(self):
         self.task.lifecycle_status = "in_progress"
         self.db.commit()
         message = self._render("task.midday_check", {"lifecycle_status": "in_progress"}, self.employee_profile)
-        [[button]] = message.button_rows()
+        [[button], [report]] = message.button_rows()
         self.assertEqual(button["callback_data"], f"t1:ap:{self.task.id.hex}")
         self.assertNotIn("Reply with", message.text_for_buttons())
 
@@ -370,7 +370,8 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.task.lifecycle_status = "submitted"
         self.db.commit()
         check = {"lifecycle_status": "submitted", "planned_start_date": "2026-09-24"}
-        self.assertEqual(self._buttons("task.eod_check", check, self.employee_profile), [])
+        # No Add Progress once submitted; Report Blocker stays (U12).
+        self.assertEqual(self._buttons("task.eod_check", check, self.employee_profile), ["Report Blocker"])
 
     # ---- U8: review message built from the submission snapshot ------------------------------
 

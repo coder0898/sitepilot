@@ -269,6 +269,20 @@ class _Ctx:
             TelegramAction("Reject", "", task_callback("pr", self.task.id, token)),
         ),)
 
+    def report_blocker_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Report Blocker] (U12) for any active project member or Admin -
+        the blocker service's own rule for who may log one - on a task that is
+        not finished."""
+        if self.task is None or self.task.lifecycle_status in ("completed", "cancelled"):
+            return ()
+        if not (self.is_admin() or self.project_roles()):
+            return ()
+        return ((TelegramAction("Report Blocker", "", task_callback("rb", self.task.id)),),)
+
+    def can_resolve_blockers(self) -> bool:
+        """The blocker service's resolver rule: Supervisor, PM or Admin."""
+        return self.is_admin() or self.is_supervisor() or self.is_pm()
+
     def rework_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
         """[Add Progress] [Submit Again] on "Rework Required" (U11), for
         whoever may log progress on the reopened task. Submit Again is the
@@ -443,9 +457,9 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
         extra = [("Started by", actor)] if actor else []
         if ctx.task is not None and ctx.task.early_start_reason and payload.get("before_status") in ("planned", "ready"):
             extra.append(("Early start reason", ctx.task.early_start_reason))
-        actions = ctx.progress_actions()
-        step = "Log your progress as you work." if actions or ctx.is_executor() else _FYI
-        return _message(ctx, "Task Started", ctx.rows(*extra), step, actions)
+        progress = ctx.progress_actions()
+        step = "Log your progress as you work." if progress or ctx.is_executor() else _FYI
+        return _message(ctx, "Task Started", ctx.rows(*extra), step, progress + ctx.report_blocker_actions())
 
     if target == "submitted":
         submission = _Submission(db, payload)
@@ -585,8 +599,19 @@ def _render_support_ended(db: Session, payload: dict, recipient_employee_id: uui
 
 def _render_blocker_created(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
     ctx = _Ctx(db, payload, recipient_employee_id)
-    rows = ctx.rows(("Type", payload.get("type") or "Not given"), ("Description", payload.get("description") or "Not given"))
-    return _message(ctx, "Blocker Reported", rows, _FYI)
+    reporter = [("Reported by", _user_name(db, payload.get("reported_by")))] if payload.get("reported_by") else []
+    rows = ctx.rows(
+        ("Type", payload.get("type") or "Not given"), ("Description", payload.get("description") or "Not given"), *reporter,
+    )
+    blocker_id = _uuid_or_none(payload.get("blocker_id"))
+    blocker = db.get(TaskBlocker, blocker_id) if blocker_id else None
+    # [Resolve] (U12): only for the blocker service's resolvers, only while it
+    # is still open. The button carries the blocker's id.
+    actions: tuple[tuple[TelegramAction, ...], ...] = ()
+    if blocker is not None and blocker.resolved_at is None and ctx.can_resolve_blockers():
+        actions = ((TelegramAction("Resolve", "", task_callback("bs", blocker.id)),),)
+    step = "Resolve it once the blocker is cleared." if actions else _FYI
+    return _message(ctx, "Blocker Reported", rows, step, actions)
 
 
 def _render_blocker_resolved(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
@@ -594,7 +619,12 @@ def _render_blocker_resolved(db: Session, payload: dict, recipient_employee_id: 
     blocker_id = _uuid_or_none(payload.get("blocker_id"))
     blocker = db.get(TaskBlocker, blocker_id) if blocker_id else None
     extra = [("Blocker", f"{blocker.type}: {blocker.description}")] if blocker else []
-    return _message(ctx, "Blocker Resolved", ctx.rows(*extra, ("Resolved by", _user_name(db, payload.get("resolved_by")))), _FYI)
+    reporter = _uuid_or_none(payload.get("reported_by"))
+    is_reporter = reporter is not None and reporter == ctx.recipient_user_id
+    step = "The blocker you reported was resolved." if is_reporter else _FYI
+    return _message(
+        ctx, "Blocker Resolved", ctx.rows(*extra, ("Resolved by", _user_name(db, payload.get("resolved_by")))), step,
+    )
 
 
 def _render_delay_recorded(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
@@ -633,7 +663,10 @@ def _render_daily_check(
         actions = ctx.start_actions() if with_start_buttons else ()
         if with_progress_button:
             actions = actions + ctx.progress_actions()
-        return _message(ctx, title, rows, executor_step if actions or ctx.is_executor() else _FYI, actions)
+        step = executor_step if actions or ctx.is_executor() else _FYI
+        if with_progress_button:
+            actions = actions + ctx.report_blocker_actions()
+        return _message(ctx, title, rows, step, actions)
 
     return _render
 

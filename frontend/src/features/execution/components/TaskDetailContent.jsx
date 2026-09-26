@@ -69,6 +69,12 @@ function canCancel(user, roles) {
   return isPlatformAdmin(user) || roles.includes("project_manager");
 }
 
+// Mirrors TaskBlockerService._require_resolver: the project's Supervisor or
+// PM, or an Admin, may resolve a blocker; anyone else would be refused.
+function canResolveBlockers(user, roles) {
+  return isPlatformAdmin(user) || roles.includes("site_supervisor") || roles.includes("project_manager");
+}
+
 // Mirrors TaskSupportAssignmentService._require_controller: the Supervisor
 // controls support for work tasks, the PM for approval gates, and a milestone
 // has no support concept at all.
@@ -566,7 +572,7 @@ function ActionFormsPane({ projectId, project, task, detail, user, roles, candid
         panel is always visible while the task is still in flight, not
         gated by task state or role - any active project member may log
         one. */}
-    <div id="action-blockers-delays"><TaskBlockerDelayPanel projectId={projectId} task={detail} onChanged={refreshAll} autoOpen={autoOpenBlockerDelay}/></div>
+    <div id="action-blockers-delays"><TaskBlockerDelayPanel projectId={projectId} task={detail} onChanged={refreshAll} autoOpen={autoOpenBlockerDelay} canResolve={canResolveBlockers(user, roles)}/></div>
 
     <Card title="Support Assignment" icon={Users}>
       <TaskSupportAssignmentPanel projectId={projectId} task={detail} candidates={candidates} canAssign={canAssignSupport(detail, user, roles)} onChanged={refreshAll}/>

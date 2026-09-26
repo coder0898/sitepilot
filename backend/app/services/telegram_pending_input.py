@@ -43,12 +43,16 @@ KIND_TASK_ADD_PROGRESS = "task_add_progress"
 ADD_PROGRESS_TTL = timedelta(minutes=10)
 KIND_TASK_VERIFY_REJECT_REASON = "task_verify_reject_reason"
 KIND_TASK_APPROVAL_REJECT_REASON = "task_approval_reject_reason"
+# U12: Report Blocker asks two questions; the type is carried in draft_text
+# while the description is asked.
+KIND_TASK_BLOCKER_TYPE = "task_blocker_type"
+KIND_TASK_BLOCKER_DESCRIPTION = "task_blocker_description"
 TASK_KINDS = frozenset({
     KIND_TASK_EARLY_START_REASON,
     KIND_TASK_VERIFY_REJECT_REASON,
     KIND_TASK_APPROVAL_REJECT_REASON,
-    "task_blocker_type",
-    "task_blocker_description",
+    KIND_TASK_BLOCKER_TYPE,
+    KIND_TASK_BLOCKER_DESCRIPTION,
     KIND_TASK_ADD_PROGRESS,
 })
 
