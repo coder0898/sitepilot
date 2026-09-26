@@ -116,6 +116,7 @@ from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services import evidence_storage
 from app.services.message_templates import TemplateSpec, render_components, resolve
+from app.services.task_lifecycle import latest_submitter_user_id
 from app.services.telegram_render import render_telegram
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
 
@@ -187,6 +188,23 @@ _TELEGRAM_REDUNDANT_GATE_CONFIRMATIONS = frozenset({
     "gate_confirmation.decided",
 })
 
+# Telegram task plan KTD11 - Telegram-only noise rules for task execution:
+# every progress item (`task.evidence_submitted`) would otherwise be its own
+# message to the reviewers, and a verification/approval decision drives
+# several intermediate status changes (submitted -> rejected -> in_progress)
+# whose outcome the decision's own event already tells everyone. Those status
+# rows carry `cause: "decision"` (task_lifecycle.transition). WhatsApp
+# delivery of both is unchanged.
+_TELEGRAM_SKIPPED_TASK_EVENTS = frozenset({"task.evidence_submitted"})
+
+# Events whose outcome the people doing the work must hear themselves
+# (KTD10): see `_resolve_execution_participants`.
+_EXECUTION_OUTCOME_EVENTS = frozenset({
+    "task.status_changed",
+    "task.verification_recorded",
+    "task.approval_recorded",
+})
+
 # Gate events whose payload names a previous assignee who must also be told
 # they are no longer responsible - by dispatch time the gate's current
 # assignee is already someone else (reassign) or nobody (unassign).
@@ -253,6 +271,28 @@ class Recipient:
     vendor_contact_id: uuid.UUID | None
     phone: str
     channel: str = "whatsapp"
+
+
+def _skipped_on_telegram(event: OutboxEvent) -> bool:
+    """Events a Telegram recipient never gets, because another message they
+    receive already covers them (gate confirmations: the paired gate event;
+    progress items and decision-driven status steps: KTD11)."""
+    if event.event_type in _TELEGRAM_REDUNDANT_GATE_CONFIRMATIONS or event.event_type in _TELEGRAM_SKIPPED_TASK_EVENTS:
+        return True
+    return event.event_type == "task.status_changed" and (event.payload or {}).get("cause") == "decision"
+
+
+def _unique_recipients(recipients: list[Recipient]) -> list[Recipient]:
+    """One entry per person, first occurrence kept - e.g. a Supervisor who
+    submitted the task is both an accountable member and a participant."""
+    seen: set[tuple[uuid.UUID | None, uuid.UUID | None]] = set()
+    unique = []
+    for recipient in recipients:
+        key = (recipient.employee_id, recipient.vendor_contact_id)
+        if key not in seen:
+            seen.add(key)
+            unique.append(recipient)
+    return unique
 
 
 class WhatsAppProviderAdapter(Protocol):
@@ -524,6 +564,33 @@ class MessageDispatchService:
             for employee_id, phone in rows
         ]
 
+    def _resolve_execution_participants(self, task: Task) -> list[Recipient]:
+        """The people doing the work on `task`: every active support assignee
+        plus whoever submitted it for review (e.g. a Supervisor who executed
+        it themselves). They are told status changes and review outcomes, not
+        only the PM/Supervisor (Telegram task plan KTD10)."""
+        recipients = self._resolve_internal_employee_recipient(task)
+        submitter_user_id = latest_submitter_user_id(self.db, task.id)
+        if submitter_user_id is not None:
+            recipients.extend(self._resolve_user_id_recipient(submitter_user_id))
+        return recipients
+
+    def _only_active_project_members(self, project_id: uuid.UUID, recipients: list[Recipient]) -> list[Recipient]:
+        """Task messages reach only people still on the project: an active
+        user with an active membership (Telegram task plan R20). Vendor
+        contacts are resolved by their own rules and pass through unchanged."""
+        member_employee_ids = set(self.db.scalars(
+            select(V2ProjectMembership.employee_id)
+            .join(EmployeeProfile, EmployeeProfile.id == V2ProjectMembership.employee_id)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .where(
+                V2ProjectMembership.project_id == project_id,
+                V2ProjectMembership.ends_at.is_(None),
+                User.active.is_(True),
+            )
+        ))
+        return [r for r in recipients if r.employee_id is None or r.employee_id in member_employee_ids]
+
     def _resolve_payload_employee_recipient(self, event: OutboxEvent, key: str) -> list[Recipient]:
         """Resolves the `EmployeeProfile` id stored under `payload[key]` to a
         `Recipient`. `[]` when the key is missing/null or the employee can't
@@ -623,8 +690,6 @@ class MessageDispatchService:
                 vendor_recipient = self._resolve_vendor_recipient(event)
                 if vendor_recipient is not None:
                     recipients.append(vendor_recipient)
-            if event.event_type in _ADMIN_CC_TASK_EVENTS:
-                recipients.extend(self._resolve_admin_recipients())
             if event.event_type in _EMPLOYEE_ELIGIBLE_TASK_EVENTS:
                 recipients.extend(self._resolve_internal_employee_recipient(task))
             if event.event_type in _SUPPORT_ASSIGNMENT_EMPLOYEE_KEYS:
@@ -651,6 +716,14 @@ class MessageDispatchService:
                 vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
                 if vendor_task_recipient is not None:
                     recipients.append(vendor_task_recipient)
+            if event.event_type in _EXECUTION_OUTCOME_EVENTS:
+                recipients.extend(self._resolve_execution_participants(task))
+            recipients = self._only_active_project_members(task.project_id, recipients)
+            if event.event_type in _ADMIN_CC_TASK_EVENTS:
+                # Added after the membership filter: Admin has no project
+                # membership, and this copy is visibility, not authority.
+                recipients.extend(self._resolve_admin_recipients())
+            recipients = _unique_recipients(recipients)
         elif event.aggregate_type == "project":
             if event.event_type == "project.vendor_removed":
                 # Deliberately NOT the default PM/Supervisor-only branch
@@ -752,11 +825,8 @@ class MessageDispatchService:
         ) or ""
 
     def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
-        if (
-            event.event_type in _TELEGRAM_REDUNDANT_GATE_CONFIRMATIONS
-            and self._resolve_recipient_channel(recipient) == "telegram"
-        ):
-            return  # the sender already gets the paired main event's message
+        if self._resolve_recipient_channel(recipient) == "telegram" and _skipped_on_telegram(event):
+            return  # another message to this person already covers it
         template = spec.meta_template_name
         delivery = self._existing_delivery(event.id, recipient, template)
         if delivery is not None and delivery.status in _SUCCEEDED_STATUSES:

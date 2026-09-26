@@ -87,6 +87,26 @@ _STARTED_STATUSES = {
 }
 
 
+def latest_submitter_user_id(db: Session, task_id: uuid.UUID) -> uuid.UUID | None:
+    """Who most recently moved the task to `submitted` - the person whose
+    work is under review (read from the transition's own audit row). Used to
+    tell the executor the outcome of their submission."""
+    rows = db.execute(
+        select(V2AuditEvent.actor_user_id, V2AuditEvent.after_json)
+        .where(
+            V2AuditEvent.entity_type == "task",
+            V2AuditEvent.entity_id == task_id,
+            V2AuditEvent.action == "TASK_STATUS_CHANGED",
+            V2AuditEvent.actor_user_id.is_not(None),
+        )
+        .order_by(V2AuditEvent.occurred_at.desc(), V2AuditEvent.id.desc())
+    ).all()
+    for actor_user_id, after_json in rows:
+        if (after_json or {}).get("lifecycle_status") == "submitted":
+            return actor_user_id
+    return None
+
+
 class TaskLifecycleService:
     def __init__(self, db: Session):
         self.db = db
@@ -638,6 +658,12 @@ class TaskLifecycleService:
                 "before_status": before_status,
                 "target_status": target_status,
                 "reason": clean_reason,
+                "actor_user_id": str(actor.id),
+                # Set only for the intermediate steps a verification/approval
+                # decision drives (e.g. submitted -> rejected -> in_progress):
+                # the decision's own event already tells everyone, so Telegram
+                # skips these rows (message_dispatch). WhatsApp is unchanged.
+                **({"cause": "decision"} if _via_decision_service else {}),
             },
             # Keyed by this transition's own audit row, not by target status:
             # a rework loop reaches `submitted`/`in_progress` again and again,

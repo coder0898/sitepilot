@@ -5,13 +5,11 @@ name/variable-order registry) by design (KTD8): Telegram has no
 Meta-style approved-template system, so this module owns its own
 plain-text rendering instead of reusing that registry's shape.
 
-Covers the event types needed for the Phase 2 manual test plan
-(docs/2026-09-19-001-telegram-phase1-status-phase2-test-plan.md):
-project.activated, project.member_added, task.readiness_check/
-task.start_check, task.status_changed, task.vendor_assigned, plus vendor
-soft-removal (task.vendor_unassigned, project.vendor_removed). Every
-external-approval gate event is rendered by `telegram_gate_render.py`
-(HTML, recipient-specific). Every other event type
+Covers project.activated, project.member_added, task.vendor_assigned, plus
+vendor soft-removal (task.vendor_unassigned, project.vendor_removed). Every
+internal task-execution event is rendered by `telegram_task_render.py` and
+every external-approval gate event by `telegram_gate_render.py` (both HTML,
+recipient-specific). Every other event type
 keeps the previous raw key:value dump via `_fallback`, unchanged - this
 module does not attempt to cover every event type in the registry yet.
 
@@ -32,10 +30,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.execution_models import Task
-from app.models import EmployeeProfile, User
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.telegram_gate_render import GATE_RENDERERS
 from app.services.telegram_message import TelegramMessage
+from app.services.telegram_task_render import TASK_RENDERERS
 from app.vendor_models import V2Vendor
 
 _ROLE_LABELS = {
@@ -72,11 +70,6 @@ def _task(db: Session, task_id: object) -> Task | None:
 def _task_label(db: Session, task_id: object) -> str:
     task = _task(db, task_id)
     return f"{task.original_code} - {task.title}" if task else "Unknown task"
-
-
-def _task_code(db: Session, task_id: object) -> str:
-    task = _task(db, task_id)
-    return task.original_code if task else "?"
 
 
 def _vendor_name(db: Session, vendor_id: object) -> str:
@@ -132,30 +125,6 @@ def _render_project_member_added(db: Session, payload: dict, recipient_employee_
     return "\n".join(lines) + _footer(None)
 
 
-def _render_task_check(title: str) -> Callable[[Session, dict, uuid.UUID | None], str]:
-    def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-        task_id = payload.get("task_id")
-        lines = [
-            f"*{title}*",
-            f"Project: {_project_name(db, payload.get('project_id'))}",
-            f"Task: {_task_label(db, task_id)}",
-            f"Planned Start: {payload.get('planned_start_date') or 'Not set'}",
-        ]
-        return "\n".join(lines) + _footer(f"`STATUS {_task_code(db, task_id)} in_progress`")
-
-    return _render
-
-
-def _render_task_status_changed(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-    lines = [
-        "*Task Status Updated*",
-        f"Project: {_project_name(db, payload.get('project_id'))}",
-        f"Task: {_task_label(db, payload.get('task_id'))}",
-        f"Status: {payload.get('before_status', '?')} -> {payload.get('target_status', '?')}",
-    ]
-    return "\n".join(lines) + _footer(None)
-
-
 def _render_task_vendor_assigned(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
     ref = _short_ref(payload.get("assignment_id"))
     lines = [
@@ -190,67 +159,15 @@ def _render_project_vendor_removed(db: Session, payload: dict, recipient_employe
     return "\n".join(lines) + _footer(None)
 
 
-def _employee_name(db: Session, employee_id: object) -> str:
-    resolved = _uuid_or_none(employee_id)
-    employee = db.get(EmployeeProfile, resolved) if resolved else None
-    user = db.get(User, employee.user_id) if employee else None
-    return user.name if user else "Unknown employee"
-
-
-def _executor_next_step(task: Task | None) -> str | None:
-    """The STATUS reply an assigned employee can send from the task's current
-    status - only transitions `task_lifecycle` lets the assigned Internal
-    Employee drive (`ready`, `in_progress`, `submitted`)."""
-    if not task:
-        return None
-    code = task.original_code
-    if task.lifecycle_status == "planned":
-        return f"`STATUS {code} ready` when the site is ready, then `STATUS {code} in_progress` when you start work"
-    if task.lifecycle_status in ("ready", "rejected"):
-        return f"`STATUS {code} in_progress` when you start work"
-    if task.lifecycle_status == "in_progress":
-        return f"`STATUS {code} submitted` when work is complete"
-    return None
-
-
-def _render_task_support_assigned(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-    task_id = payload.get("task_id")
-    is_assignee = recipient_employee_id is not None and str(recipient_employee_id) == str(payload.get("employee_id"))
-    lines = [
-        "*Task Assigned to You*" if is_assignee else "*Internal Employee Assigned to Task*",
-        f"Project: {_project_name(db, payload.get('project_id'))}",
-        f"Task: {_task_label(db, task_id)}",
-    ]
-    if not is_assignee:
-        lines.append(f"Employee: {_employee_name(db, payload.get('employee_id'))}")
-    if payload.get("responsibility"):
-        lines.append(f"Responsibility: {payload['responsibility']}")
-    return "\n".join(lines) + _footer(_executor_next_step(_task(db, task_id)) if is_assignee else None)
-
-
-def _render_task_support_ended(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-    lines = [
-        "*Task Support Assignment Ended*",
-        f"Project: {_project_name(db, payload.get('project_id'))}",
-        f"Task: {_task_label(db, payload.get('task_id'))}",
-        f"Employee: {_employee_name(db, payload.get('previous_employee_id'))}",
-    ]
-    if payload.get("replacement_employee_id"):
-        lines.append(f"Replaced by: {_employee_name(db, payload['replacement_employee_id'])}")
-    return "\n".join(lines) + _footer(None)
-
-
 _RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], str | TelegramMessage]] = {
     "project.activated": _render_project_activated,
     "project.member_added": _render_project_member_added,
-    "task.readiness_check": _render_task_check("Task Readiness Check"),
-    "task.start_check": _render_task_check("Task Start Check"),
-    "task.status_changed": _render_task_status_changed,
     "task.vendor_assigned": _render_task_vendor_assigned,
-    "task.support_assigned": _render_task_support_assigned,
-    "task.support_ended": _render_task_support_ended,
     "task.vendor_unassigned": _render_task_vendor_unassigned,
     "project.vendor_removed": _render_project_vendor_removed,
+    # Internal task execution (status, review decisions, support, blockers,
+    # delays, schedule, daily prompts, follow-ups) - readable HTML.
+    **TASK_RENDERERS,
     # Every external-approval gate event and gate command confirmation.
     **GATE_RENDERERS,
 }

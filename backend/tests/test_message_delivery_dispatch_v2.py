@@ -20,7 +20,7 @@ from app.execution_models import (
     TaskSupportAssignment,
 )
 from app.models import EmployeeProfile, User, UserRole
-from app.project_models import V2Project, V2ProjectExternalGate, V2ProjectMembership
+from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.message_dispatch import MessageDispatchService
 from app.services.message_templates import DEFAULT_TEMPLATE, TemplateSpec, render_components, resolve
 from app.template_models import V2Template, V2TemplateVersion
@@ -82,6 +82,7 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             ProjectVendor.__table__,
             TaskVendorAssignment.__table__,
             TaskSupportAssignment.__table__,
+            V2AuditEvent.__table__,
         ):
             table.create(self.engine)
 
@@ -1463,6 +1464,112 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
                 )
             )
         self.assertEqual(recipients, [])
+
+    # ---- Telegram task plan U4: participants, active members, noise rules ----
+
+    def _dispatch_one(self, event_type: str, payload: dict | None = None) -> list[MessageDelivery]:
+        with self.Session() as session:
+            event_id = self._create_event(
+                session, event_type=event_type, aggregate_type="task", aggregate_id=self.task_id,
+                payload={"task_id": str(self.task_id), "project_id": str(self.project_id), **(payload or {})},
+            )
+            session.commit()
+        with self.Session() as session:
+            MessageDispatchService(session).process_pending()
+        return self._deliveries_for(event_id)
+
+    def _recipient_ids(self, deliveries) -> set:
+        return {d.recipient_employee_id for d in deliveries}
+
+    def _assign_internal_employee(self) -> None:
+        with self.Session.begin() as session:
+            session.add(TaskSupportAssignment(
+                task_id=self.task_id, project_id=self.project_id, employee_id=self.internal_employee_employee_id,
+                responsibility="Execution", assigned_by=SUPERVISOR_ID,
+            ))
+
+    def _record_submission_by(self, user_id: uuid.UUID) -> None:
+        with self.Session.begin() as session:
+            session.add(V2AuditEvent(
+                actor_user_id=user_id, action="TASK_STATUS_CHANGED", entity_type="task", entity_id=self.task_id,
+                project_id=self.project_id, source="portal", before_json={"lifecycle_status": "in_progress"},
+                after_json={"lifecycle_status": "submitted"}, reason="Submitted.",
+            ))
+
+    def test_review_outcome_reaches_the_assigned_employee_too(self):
+        self._assign_internal_employee()
+        for event_type in ("task.status_changed", "task.verification_recorded"):
+            with self.subTest(event_type=event_type):
+                deliveries = self._dispatch_one(event_type, {"target_status": "submitted", "decision": "rejected"})
+                self.assertEqual(
+                    self._recipient_ids(deliveries),
+                    {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
+                )
+
+    def test_the_submitter_is_told_the_outcome_once_even_when_also_the_supervisor(self):
+        self._record_submission_by(SUPERVISOR_ID)
+        deliveries = self._dispatch_one("task.verification_recorded", {"decision": "rejected"})
+        self.assertEqual(len(deliveries), 2)
+        self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id, self.supervisor_employee_id})
+
+    def test_an_employee_submitter_is_told_the_outcome_without_an_assignment(self):
+        self._record_submission_by(INTERNAL_EMPLOYEE_ID)
+        deliveries = self._dispatch_one("task.approval_recorded", {"decision": "rejected"})
+        self.assertIn(self.internal_employee_employee_id, self._recipient_ids(deliveries))
+
+    def test_a_submitter_who_is_not_a_project_member_is_not_added(self):
+        # An Admin who submitted (no membership) hears nothing as a participant.
+        self._record_submission_by(ADMIN_ID)
+        deliveries = self._dispatch_one("task.status_changed", {"target_status": "submitted"})
+        self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id, self.supervisor_employee_id})
+
+    def test_removed_or_deactivated_people_receive_nothing(self):
+        self._assign_internal_employee()
+        with self.Session.begin() as session:
+            membership = session.scalar(select(V2ProjectMembership).where(
+                V2ProjectMembership.project_id == self.project_id,
+                V2ProjectMembership.employee_id == self.internal_employee_employee_id,
+            ))
+            membership.ends_at = datetime.now(timezone.utc)
+            session.get(User, PM_ID).active = False
+        deliveries = self._dispatch_one("task.status_changed", {"target_status": "in_progress"})
+        self.assertEqual(self._recipient_ids(deliveries), {self.supervisor_employee_id})
+
+    def test_admin_copy_of_an_approval_is_kept_without_membership(self):
+        deliveries = self._dispatch_one("task.approval_recorded", {"decision": "approved"})
+        self.assertIn(self.admin_employee_id, self._recipient_ids(deliveries))
+
+    def test_telegram_skips_progress_items_and_decision_status_steps_but_whatsapp_does_not(self):
+        self._set_telegram(self.supervisor_employee_id, "555000")
+        for event_type, payload in (
+            ("task.evidence_submitted", {"progress_update_id": str(uuid.uuid4())}),
+            ("task.status_changed", {"target_status": "in_progress", "cause": "decision"}),
+        ):
+            with self.subTest(event_type=event_type):
+                deliveries = self._dispatch_one(event_type, payload)
+                # The Telegram Supervisor gets no row at all; the WhatsApp PM
+                # still gets it exactly as before.
+                self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id})
+
+    def test_telegram_still_gets_a_status_change_that_no_decision_caused(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.config import settings
+
+        self._set_telegram(self.supervisor_employee_id, "555000")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"ok": True, "result": {"message_id": 1}}
+        original_token = settings.telegram_access_token
+        settings.telegram_access_token = "test-token"
+        try:
+            with patch("app.services.telegram_provider.httpx.post", return_value=response) as post:
+                deliveries = self._dispatch_one("task.status_changed", {"target_status": "ready"})
+        finally:
+            settings.telegram_access_token = original_token
+        self.assertIn(self.supervisor_employee_id, self._recipient_ids(deliveries))
+        sent_text = post.call_args.kwargs["json"]["text"]
+        self.assertIn("<b>Task Ready</b>", sent_text)
+        self.assertEqual(post.call_args.kwargs["json"]["parse_mode"], "HTML")
 
 
 if __name__ == "__main__":

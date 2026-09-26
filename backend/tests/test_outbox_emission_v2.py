@@ -832,6 +832,30 @@ class OutboxEmissionApiTests(unittest.TestCase):
         ]
         self.assertEqual(targets.count("submitted"), 2)
 
+    def test_status_events_name_the_actor_and_mark_decision_driven_steps(self):
+        """Telegram task plan U4 (KTD11): the intermediate status steps a
+        decision drives carry `cause: decision` (Telegram skips them - the
+        decision's own event tells everyone); user-driven steps do not."""
+        project = self.activate_project()
+        t001 = self.task_by_code(project["id"], "T001")
+        self.drive_to_submitted(project["id"], t001.id)
+        self.act_as_admin()
+        self.assertEqual(self.verify(project["id"], t001.id, "rejected", remarks="Redo.").status_code, 200)
+
+        rows = self.outbox_rows(aggregate_id=t001.id, event_type="task.status_changed")
+        by_target = {}
+        for row in rows:
+            by_target.setdefault(row.payload["target_status"], []).append(row.payload)
+        for target in ("ready", "submitted"):
+            self.assertNotIn("cause", by_target[target][0])
+            self.assertEqual(by_target[target][0]["actor_user_id"], str(SUPERVISOR_ID))
+        self.assertEqual(by_target["rejected"][0]["cause"], "decision")
+        reopened = [p for p in by_target["in_progress"] if p["before_status"] == "rejected"]
+        self.assertEqual(reopened[0]["cause"], "decision")
+        self.assertEqual(reopened[0]["actor_user_id"], str(ADMIN_ID))
+        first_start = [p for p in by_target["in_progress"] if p["before_status"] == "ready"]
+        self.assertNotIn("cause", first_start[0])
+
     def test_occurrence_keys_name_their_source_row_and_retry_is_a_no_op(self):
         """The key is the specific occurrence (audit row / decision row), so
         re-emitting that same occurrence still collapses to one event."""

@@ -413,7 +413,7 @@ class TelegramGateRenderTests(unittest.TestCase):
                     self.assertTrue(empty.text)
 
     def test_non_gate_events_keep_plain_text(self):
-        message = render_telegram(self.db, "task.blocker_created", {"type": "material"}, None)
+        message = render_telegram(self.db, "task.attendance_recorded", {"type": "material"}, None)
         self.assertIsNone(message.parse_mode)
         self.assertIn("type: material", message.text)
 
