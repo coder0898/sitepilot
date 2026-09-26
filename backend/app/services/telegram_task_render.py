@@ -41,6 +41,7 @@ from app.execution_models import (
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
+from app.services.task_approval import TaskApprovalService
 from app.services.task_lifecycle import latest_submitter_user_id
 from app.services.telegram_message import (
     TelegramAction,
@@ -51,6 +52,10 @@ from app.services.telegram_message import (
 )
 
 _FYI = "For your information. No action required."
+
+_APPROVAL_STEP = "Approve it, or reject it with a reason. You can also decide in the Web App."
+# U10: the one explicit "nobody can approve" state - never a silent dead end.
+NO_ELIGIBLE_APPROVER = "No one else can approve this yet - an Admin or another PM must be added to the project."
 _REWORK_STEP = "Add new progress and submit the task for review again."
 
 _STATUS_LABELS = {
@@ -221,18 +226,30 @@ class _Ctx:
         if self.task is None or _is_approval_gate(self) or self.task.lifecycle_status != "submitted":
             return ()
         token = submission_token(snapshot_ids)
-        current = submission_token(self.db.scalars(
-            select(TaskProgressUpdate.id).where(
-                TaskProgressUpdate.task_id == self.task.id, TaskProgressUpdate.reviewed_at.is_(None),
-            )
-        ).all())
-        if token is None or token != current:
+        if token is None or token != current_submission_token(self.db, self.task):
             return ()
         if not (self.is_admin() or ((self.is_supervisor() or self.is_pm()) and not self.is_submitter())):
             return ()
         return ((
             TelegramAction("Verify", "", task_callback("vf", self.task.id, token)),
             TelegramAction("Reject", "", task_callback("vr", self.task.id, token)),
+        ),)
+
+    def is_ineligible_approver(self) -> bool:
+        excluded = TaskApprovalService(self.db).ineligible_approver_user_id(self.task) if self.task else None
+        return excluded is not None and excluded == self.recipient_user_id
+
+    def approval_actions(self, token: str | None) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Approve] [Reject] (U10) for a PM or Admin who may approve this
+        cycle - never the fallback verifier (KTD20) - and only while `token`
+        is still what is waiting for approval (KTD19)."""
+        if self.task is None or not token or token != current_approval_token(self.db, self.task):
+            return ()
+        if not (self.is_pm() or self.is_admin()) or self.is_ineligible_approver():
+            return ()
+        return ((
+            TelegramAction("Approve", "", task_callback("pa", self.task.id, token)),
+            TelegramAction("Reject", "", task_callback("pr", self.task.id, token)),
         ),)
 
     def progress_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
@@ -260,6 +277,30 @@ class _Ctx:
             return None
         query = urlencode({"tab": "execution", "project": self.project.code})
         return "Open in Web App", f"{settings.frontend_url.rstrip('/')}/?{query}"
+
+
+def current_submission_token(db: Session, task: Task) -> str | None:
+    """The token of the submission waiting for verification (KTD19), or None.
+    While a task is submitted its unreviewed updates are exactly its
+    submission's (KTD24)."""
+    if task.lifecycle_status != "submitted":
+        return None
+    return submission_token(db.scalars(
+        select(TaskProgressUpdate.id).where(
+            TaskProgressUpdate.task_id == task.id, TaskProgressUpdate.reviewed_at.is_(None),
+        )
+    ).all())
+
+
+def current_approval_token(db: Session, task: Task) -> str | None:
+    """What is waiting for PM approval: an approval-gate task's submission,
+    or the verification of class_a work (its id, first 8 hex)."""
+    if task.task_kind == "approval_gate":
+        return current_submission_token(db, task)
+    if task.task_class != "class_a" or task.lifecycle_status != "verified":
+        return None
+    verification = TaskApprovalService(db)._current_verification(task.id)
+    return verification.id.hex[:8] if verification is not None and verification.decision == "verified" else None
 
 
 def _message(
@@ -370,13 +411,14 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
             # Approval-gate tasks skip Supervisor verification entirely (KTD23):
             # only the PM (or Admin) decides, and the Supervisor is never asked
             # to "review" or "verify" it.
-            if ctx.is_submitter():
+            actions = ctx.approval_actions(submission_token(payload.get("progress_update_ids")))
+            if ctx.is_submitter() and not ctx.is_admin():
                 step = "Sent to the PM for approval. You will be told the outcome."
-            elif ctx.is_pm() or ctx.is_admin():
-                step = "Approve or reject it in the Web App."
+            elif actions:
+                step = _APPROVAL_STEP
             else:
                 step = _FYI
-            return _message(ctx, "Submitted - Awaiting PM Approval", rows, step, attachments=files)
+            return _message(ctx, "Submitted - Awaiting PM Approval", rows, step, actions, attachments=files)
         if ctx.is_submitter() and not ctx.is_admin():
             return _message(ctx, "Submitted for Review", rows, "Your work was sent for review. You will be told the outcome.")
         actions = ctx.review_actions(payload.get("progress_update_ids"))
@@ -413,13 +455,31 @@ def _render_verification_recorded(db: Session, payload: dict, recipient_employee
         return _render_rework(ctx, "Rejected by", reviewer, payload.get("remarks"))
     rows = ctx.rows(("Verified by", reviewer))
     if _is_class_a_work(ctx):
-        if ctx.is_pm():
-            step = "Review and approve or reject it in the Web App."
+        # The PM approval request (U10), built from the verified submission.
+        submission = _Submission(db, payload)
+        rows = ctx.rows(
+            ("Verified by", reviewer),
+            ("Submitted by", _user_name(db, payload.get("submitted_by"), fallback="Unknown user")),
+            ("Latest note", submission.latest_note or "No note"),
+            ("Evidence", submission.evidence_summary()),
+        )
+        verification_id = _uuid_or_none(payload.get("verification_id"))
+        actions = ctx.approval_actions(verification_id.hex[:8] if verification_id else None)
+        files = () if ctx.is_executor() else submission.attachments()
+        if actions:
+            step = _APPROVAL_STEP
+        elif ctx.is_ineligible_approver():
+            approvals = TaskApprovalService(db)
+            if approvals.eligible_pm_user_ids(ctx.task) or approvals.has_eligible_admin(ctx.task):
+                step = "You verified this as a fallback, so a different PM or an Admin must approve it."
+            else:
+                step = NO_ELIGIBLE_APPROVER
         elif ctx.is_executor():
             step = "Your work passed verification and is now waiting for PM approval."
         else:
             step = _FYI
-        return _message(ctx, "Verified - Awaiting PM Approval", rows, step)
+        title = "Task Ready for Approval" if actions else "Verified - Awaiting PM Approval"
+        return _message(ctx, title, rows, step, actions, attachments=files)
     step = "Your work was verified. Nothing more to do on this task." if ctx.is_executor() else _FYI
     return _message(ctx, "Task Completed", rows, step)
 

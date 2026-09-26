@@ -41,7 +41,7 @@ from app.execution_models import Task, TaskProgressUpdate, TaskVerification, is_
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.outbox import OutboxService
-from app.services.task_lifecycle import TaskLifecycleService
+from app.services.task_lifecycle import TaskLifecycleService, latest_submitter_user_id
 
 VERIFICATION_DECISIONS = ("verified", "rejected")
 
@@ -177,6 +177,14 @@ class TaskVerificationService:
         )
         self.db.add(verification)
         self.db.flush()
+        # The submission this decision covers, captured before the cycle is
+        # marked reviewed, so the class_a approval request that follows shows
+        # exactly the verified work (Telegram task plan KTD18).
+        reviewed_update_ids = [str(i) for i in self.db.scalars(
+            select(TaskProgressUpdate.id)
+            .where(TaskProgressUpdate.task_id == task.id, TaskProgressUpdate.reviewed_at.is_(None))
+            .order_by(TaskProgressUpdate.created_at, TaskProgressUpdate.id)
+        )]
         self.lifecycle.mark_progress_reviewed(task.id)
 
         # Emitted here - BEFORE the first `self.lifecycle.transition(...)`
@@ -199,6 +207,9 @@ class TaskVerificationService:
                 "remarks": clean_remarks,
                 "verified_by": str(actor.id),
                 "decision_mode": decision_mode,
+                "verification_id": str(verification.id),
+                "submitted_by": str(latest_submitter_user_id(self.db, task.id) or ""),
+                "progress_update_ids": reviewed_update_ids,
             },
             # One event per decision row: a task rejected in two cycles
             # must notify twice (see transition()'s status_changed key).

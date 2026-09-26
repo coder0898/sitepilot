@@ -116,6 +116,7 @@ from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
 from app.services import evidence_storage
 from app.services.message_templates import TemplateSpec, render_components, resolve
+from app.services.task_approval import TaskApprovalService
 from app.services.task_lifecycle import latest_submitter_user_id
 from app.services.telegram_render import render_telegram
 from app.vendor_models import ProjectVendor, TaskVendorAssignment, V2VendorContact
@@ -603,6 +604,29 @@ class MessageDispatchService:
             query = query.where(User.id != uuid.UUID(str(submitter)))
         return self.db.scalar(query.limit(1)) is None
 
+    def _approval_needs_admin(self, task: Task, event: OutboxEvent) -> bool:
+        """Telegram task plan KTD20 (U10): a class_a verification opens the PM
+        approval step. If no PM may approve it - none on the project, or the
+        only one verified as a fallback and so may not also approve - the
+        request goes to Admins. If no Admin may either, the state is logged
+        explicitly (the ineligible PM's own message says so too) rather than
+        the request silently reaching nobody who can act."""
+        payload = event.payload or {}
+        if event.event_type != "task.verification_recorded" or payload.get("decision") != "verified":
+            return False
+        if task.task_kind == "approval_gate" or task.task_class != "class_a":
+            return False
+        approvals = TaskApprovalService(self.db)
+        if approvals.eligible_pm_user_ids(task):
+            return False
+        if not approvals.has_eligible_admin(task):
+            logger.warning(
+                "no_eligible_approver: task %s (project %s) is verified and awaiting approval, "
+                "but no PM or Admin other than the fallback verifier can approve it.",
+                task.original_code, task.project_id,
+            )
+        return True
+
     def _only_active_project_members(self, project_id: uuid.UUID, recipients: list[Recipient]) -> list[Recipient]:
         """Task messages reach only people still on the project: an active
         user with an active membership (Telegram task plan R20). Vendor
@@ -751,7 +775,7 @@ class MessageDispatchService:
                 # Added after the membership filter: Admin has no project
                 # membership, and this copy is visibility, not authority.
                 recipients.extend(self._resolve_admin_recipients())
-            elif self._submission_needs_admin_reviewer(task, event):
+            elif self._submission_needs_admin_reviewer(task, event) or self._approval_needs_admin(task, event):
                 recipients.extend(self._resolve_admin_recipients())
             recipients = _unique_recipients(recipients)
         elif event.aggregate_type == "project":

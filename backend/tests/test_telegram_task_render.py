@@ -19,7 +19,17 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.execution_models import FileObject, Task, TaskBlocker, TaskDelayEvent, TaskEvidence, TaskProgressUpdate, TaskSupportAssignment
+from app.execution_models import (
+    FileObject,
+    Task,
+    TaskApprovalDecision,
+    TaskBlocker,
+    TaskDelayEvent,
+    TaskEvidence,
+    TaskProgressUpdate,
+    TaskSupportAssignment,
+    TaskVerification,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.services.telegram_render import render_telegram
@@ -49,6 +59,7 @@ class TelegramTaskRenderTests(unittest.TestCase):
             User.__table__, EmployeeProfile.__table__, V2Project.__table__, V2ProjectMembership.__table__,
             Task.__table__, TaskSupportAssignment.__table__, V2AuditEvent.__table__, TaskBlocker.__table__,
             TaskDelayEvent.__table__, TaskProgressUpdate.__table__, TaskEvidence.__table__, FileObject.__table__,
+            TaskVerification.__table__, TaskApprovalDecision.__table__,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -219,17 +230,14 @@ class TelegramTaskRenderTests(unittest.TestCase):
 
     def test_verified_class_a_work_awaits_pm_approval(self):
         self._submitted_by(self.class_a, self.employee)
-        executor = self._render(
-            "task.verification_recorded", {"decision": "verified", "verified_by": str(self.supervisor.id)},
-            self.employee_profile, task=self.class_a,
-        )
+        payload = self._class_a_verified_by(self.supervisor)
+        executor = self._render("task.verification_recorded", payload, self.employee_profile, task=self.class_a)
         self.assertIn("<b>Verified - Awaiting PM Approval</b>", executor.text)
         self.assertIn("waiting for PM approval", executor.text)
-        pm = self._render(
-            "task.verification_recorded", {"decision": "verified", "verified_by": str(self.supervisor.id)},
-            self.pm_profile, task=self.class_a,
-        )
-        self.assertIn("approve or reject it in the Web App", pm.text)
+        pm = self._render("task.verification_recorded", payload, self.pm_profile, task=self.class_a)
+        self.assertIn("<b>Task Ready for Approval</b>", pm.text)
+        self.assertIn("Approve it, or reject it with a reason.", pm.text)
+        self.assertEqual([b["text"] for row in pm.button_rows() for b in row], ["Approve", "Reject"])
 
     # ---- submissions (KTD23 routing) -----------------------------------------------
 
@@ -249,14 +257,19 @@ class TelegramTaskRenderTests(unittest.TestCase):
 
     def test_approval_gate_submission_never_asks_the_supervisor_to_verify(self):
         self._submitted_by(self.gate_task, self.employee)
-        payload = {"before_status": "in_progress", "target_status": "submitted", "actor_user_id": str(self.employee.id)}
+        update = self._update("Permit filed", task=self.gate_task)
+        self.gate_task.lifecycle_status = "submitted"
+        self.db.commit()
+        payload = self._submitted(update)
         supervisor = self._render("task.status_changed", payload, self.supervisor_profile, task=self.gate_task)
         self.assertIn("<b>Submitted - Awaiting PM Approval</b>", supervisor.text)
         self.assertNotIn("verif", supervisor.text.lower())
         self.assertNotIn("Review it", supervisor.text)
         self.assertIn("No action required.", supervisor.text)
+        self.assertEqual(supervisor.button_rows(), [])
         pm = self._render("task.status_changed", payload, self.pm_profile, task=self.gate_task)
-        self.assertIn("Approve or reject it in the Web App.", pm.text)
+        self.assertIn("Approve it, or reject it with a reason.", pm.text)
+        self.assertEqual([b["text"] for row in pm.button_rows() for b in row], ["Approve", "Reject"])
 
     # ---- other status messages -------------------------------------------------------
 
@@ -361,9 +374,9 @@ class TelegramTaskRenderTests(unittest.TestCase):
 
     # ---- U8: review message built from the submission snapshot ------------------------------
 
-    def _update(self, note, *, files=(), by=None) -> TaskProgressUpdate:
+    def _update(self, note, *, files=(), by=None, task=None) -> TaskProgressUpdate:
         update = TaskProgressUpdate(
-            task_id=self.task.id, project_id=self.project.id, update_type="evidence" if files else "note",
+            task_id=(task or self.task).id, project_id=self.project.id, update_type="evidence" if files else "note",
             note=note, submitted_by=(by or self.employee).id, source="telegram",
         )
         self.db.add(update)
@@ -453,7 +466,11 @@ class TelegramTaskRenderTests(unittest.TestCase):
 
     def test_no_review_buttons_for_an_older_submission_or_a_decided_task(self):
         payload = self._submitted_task()
-        self._update("A newer, still unreviewed update")  # the waiting submission is no longer this one
+        # A later cycle: this submission was reviewed (rejected) and a new one
+        # is now waiting - the realistic way a review message becomes old.
+        for update in self.db.query(TaskProgressUpdate).all():
+            update.reviewed_at = datetime.now(timezone.utc)
+        self._update("The next cycle's work")
         self.assertEqual(self._buttons("task.status_changed", payload, self.supervisor_profile), [])
 
         self.db.query(TaskProgressUpdate).delete()
@@ -470,6 +487,66 @@ class TelegramTaskRenderTests(unittest.TestCase):
         payload = self._submitted(update)
         for recipient in (self.supervisor_profile, self.pm_profile):
             self.assertNotIn("Verify", self._buttons("task.status_changed", payload, recipient, task=self.gate_task))
+
+    # ---- U10: PM approval request -------------------------------------------------------------
+
+    def _class_a_verified_by(self, verifier: User) -> dict:
+        """class_a work verified by `verifier` and now awaiting approval."""
+        update = self._update("Structural check done", files=[("beam.jpg", "image/jpeg")], task=self.class_a)
+        update.reviewed_at = datetime.now(timezone.utc)
+        verification = TaskVerification(
+            task_id=self.class_a.id, submission_update_id=update.id, decision="verified", verified_by=verifier.id,
+        )
+        self.db.add(verification)
+        self.class_a.lifecycle_status = "verified"
+        self.db.commit()
+        return {
+            "decision": "verified", "verified_by": str(verifier.id), "verification_id": str(verification.id),
+            "submitted_by": str(self.employee.id), "progress_update_ids": [str(update.id)],
+        }
+
+    def _admin_profile(self) -> EmployeeProfile:
+        profile = EmployeeProfile(user_id=self.admin.id, employee_code="E-ADM", designation="Admin", availability="available")
+        self.db.add(profile)
+        self.db.commit()
+        return profile
+
+    def test_approval_request_shows_the_verified_submission_and_its_files(self):
+        payload = self._class_a_verified_by(self.supervisor)
+        pm = self._render("task.verification_recorded", payload, self.pm_profile, task=self.class_a)
+        self.assertIn("Submitted by: Rohan Employee", pm.text)
+        self.assertIn("Latest note: Structural check done", pm.text)
+        self.assertIn("Evidence: 1 photo", pm.text)
+        self.assertEqual([a.caption for a in pm.attachments], ["beam.jpg"])
+        [[approve, _]] = pm.button_rows()
+        self.assertEqual(approve["callback_data"], f"t1:pa:{self.class_a.id.hex}:{payload['verification_id'].replace('-', '')[:8]}")
+
+    def test_a_pm_who_verified_as_fallback_gets_no_approval_buttons(self):
+        payload = self._class_a_verified_by(self.pm)  # the PM is not the Supervisor
+        admin = self._admin_profile()
+        pm = self._render("task.verification_recorded", payload, self.pm_profile, task=self.class_a)
+        self.assertEqual(pm.button_rows(), [])
+        self.assertIn("a different PM or an Admin must approve it", pm.text)
+        # The Admin may approve this cycle.
+        admin_copy = self._render("task.verification_recorded", payload, admin, task=self.class_a)
+        self.assertEqual([b["text"] for row in admin_copy.button_rows() for b in row], ["Approve", "Reject"])
+
+    def test_when_nobody_can_approve_the_fallback_pm_is_told_so(self):
+        # Only PM verified as fallback; the only Admin is deactivated.
+        payload = self._class_a_verified_by(self.pm)
+        self.admin.active = False
+        self.db.commit()
+        pm = self._render("task.verification_recorded", payload, self.pm_profile, task=self.class_a)
+        self.assertEqual(pm.button_rows(), [])
+        self.assertIn(
+            "No one else can approve this yet - an Admin or another PM must be added to the project.", pm.text,
+        )
+
+    def test_approval_buttons_disappear_once_decided(self):
+        payload = self._class_a_verified_by(self.supervisor)
+        self.class_a.lifecycle_status = "completed"
+        self.db.commit()
+        self.assertEqual(self._buttons("task.verification_recorded", payload, self.pm_profile, task=self.class_a), [])
 
     def test_missing_ids_degrade_to_placeholders(self):
         for event_type in TASK_RENDERERS:

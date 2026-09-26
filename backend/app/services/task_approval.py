@@ -138,6 +138,47 @@ class TaskApprovalService:
             )
         ) is not None
 
+    def ineligible_approver_user_id(self, task: Task) -> uuid.UUID | None:
+        """Read-only (Telegram task plan KTD20): the one person who may not
+        approve this task's current cycle - a class_a verification recorded by
+        someone who is not the project's active Supervisor (a PM or Admin
+        fallback). Exactly the actor `_require_not_same_fallback_actor` refuses;
+        None when nobody is excluded."""
+        if task.task_kind == "approval_gate" or task.task_class != "class_a":
+            return None
+        verification = self._current_verification(task.id)
+        if verification is None or verification.decision != "verified":
+            return None
+        if self._is_active_supervisor(task.project_id, verification.verified_by):
+            return None
+        return verification.verified_by
+
+    def eligible_pm_user_ids(self, task: Task) -> list[uuid.UUID]:
+        """Read-only: active PMs of the project who may approve this cycle
+        (the fallback verifier excluded)."""
+        excluded = self.ineligible_approver_user_id(task)
+        rows = self.db.scalars(
+            select(User.id)
+            .join(EmployeeProfile, EmployeeProfile.user_id == User.id)
+            .join(V2ProjectMembership, V2ProjectMembership.employee_id == EmployeeProfile.id)
+            .where(
+                V2ProjectMembership.project_id == task.project_id,
+                V2ProjectMembership.project_role == "project_manager",
+                V2ProjectMembership.ends_at.is_(None),
+                User.active.is_(True),
+            )
+        ).all()
+        return [user_id for user_id in rows if user_id != excluded]
+
+    def has_eligible_admin(self, task: Task) -> bool:
+        """Read-only: an active Admin/Super Admin other than the fallback
+        verifier, who could approve this cycle."""
+        excluded = self.ineligible_approver_user_id(task)
+        query = select(User.id).where(User.role.in_((UserRole.admin, UserRole.super_admin)), User.active.is_(True))
+        if excluded is not None:
+            query = query.where(User.id != excluded)
+        return self.db.scalar(query.limit(1)) is not None
+
     def _require_not_same_fallback_actor(self, project: V2Project, verification: TaskVerification | None, actor: User) -> None:
         """BR-008: if the verification on record was made by a PM acting as
         a fallback verifier (not the project's active Supervisor), that
@@ -160,6 +201,7 @@ class TaskApprovalService:
         decision: str,
         actor: User,
         remarks: str | None = None,
+        source: str = "portal",
     ) -> Task:
         project = self._require_access(project_id, actor)
         task = self._get_task(project.id, task_id)
@@ -232,22 +274,22 @@ class TaskApprovalService:
             if task.lifecycle_status != "approval_pending":
                 task = self.lifecycle.transition(
                     project.id, task.id, "approval_pending", actor,
-                    reason=clean_remarks, _via_decision_service=True,
+                    reason=clean_remarks, _via_decision_service=True, source=source,
                 )
             task = self.lifecycle.transition(
-                project.id, task.id, "rejected", actor, reason=clean_remarks, _via_decision_service=True,
+                project.id, task.id, "rejected", actor, reason=clean_remarks, _via_decision_service=True, source=source,
             )
             return self.lifecycle.transition(
-                project.id, task.id, "in_progress", actor, reason=clean_remarks, _via_decision_service=True,
+                project.id, task.id, "in_progress", actor, reason=clean_remarks, _via_decision_service=True, source=source,
             )
 
         task = self.lifecycle.transition(
             project.id, task.id, "approval_pending", actor,
             reason=clean_remarks or "Awaiting PM approval.",
-            _via_decision_service=True,
+            _via_decision_service=True, source=source,
         )
         return self.lifecycle.transition(
             project.id, task.id, "completed", actor,
             reason=clean_remarks or "Approved by PM.",
-            _via_decision_service=True,
+            _via_decision_service=True, source=source,
         )
