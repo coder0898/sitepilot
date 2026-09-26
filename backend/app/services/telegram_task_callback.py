@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
+from datetime import date
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -35,8 +36,16 @@ from sqlalchemy.orm import Session
 from app.execution_models import InboundMessage, Task, TelegramInboundUpdate
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2ProjectMembership
-from app.services.task_lifecycle import TaskLifecycleService
-from app.services.telegram_message import parse_task_callback
+from app.services.task_lifecycle import EarlyStartReasonRequired, TaskLifecycleService
+from app.services.telegram_message import parse_task_callback, task_callback
+from app.services.telegram_pending_input import (
+    KIND_TASK_EARLY_START_REASON,
+    PENDING_INPUT_TTL,
+    TakenInput,
+    peek_pending,
+    set_pending,
+    take_pending,
+)
 from app.services.telegram_provider import TelegramProviderAdapter
 from app.vendor_models import V2VendorContact
 
@@ -54,14 +63,23 @@ TASK_BUTTONS = {
     "st": _TaskButton("Start Task", "start this task", "Task started", "in_progress"),
 }
 
+# [Cancel] under the early-start question (U6).
+CANCEL_EARLY_START = "ce"
+
 UNLINKED = "This Telegram account isn't linked to SiteOps. Ask your Admin for a new connect link."
 STALE = "This button is no longer available."
 PRIVATE_ONLY = "Use the bot in a private chat to act on tasks."
 NOT_A_MEMBER = "You are no longer a member of this task's project."
+NOT_PENDING = "This question has expired or was already answered."
+_MINUTES = int(PENDING_INPUT_TTL.total_seconds() // 60)
 
 
 def _e(value: object) -> str:
     return html.escape(str(value), quote=False)
+
+
+def _format_date(value: date) -> str:
+    return value.strftime("%d %b %Y").lstrip("0")
 
 
 class TelegramTaskCallbackService:
@@ -83,6 +101,8 @@ class TelegramTaskCallbackService:
         """Handles one task-button press. Returns True when an action ran
         successfully, so the caller can deliver its follow-up promptly."""
         callback = parse_task_callback(data)
+        if callback is not None and callback.code == CANCEL_EARLY_START:
+            return self._cancel_early_start(chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id)
         button = TASK_BUTTONS.get(callback.code) if callback else None
         if button is None:
             self._answer(callback_query_id, STALE)
@@ -119,6 +139,13 @@ class TelegramTaskCallbackService:
             TaskLifecycleService(self.db).transition(
                 task.project_id, task.id, button.target_status, user, source="telegram",
             )
+        except EarlyStartReasonRequired as exc:
+            # The lifecycle's own early-start rule (KTD9): nothing changed; ask
+            # for the reason and start the task only once it is given.
+            self.db.rollback()
+            self._record(update_id, chat_id, button, employee, "rejected", "Asked for an early-start reason.", task)
+            self._ask_early_start_reason(chat_id, callback_query_id, task, exc.planned_start_date)
+            return False
         except HTTPException as exc:
             self.db.rollback()
             reason = str(exc.detail)
@@ -130,6 +157,88 @@ class TelegramTaskCallbackService:
         self._answer(callback_query_id, button.done_toast)
         if message_id is not None:
             self.provider.remove_buttons(chat_id, message_id)
+        return True
+
+    # ---- early-start reason (U6) --------------------------------------------------------
+
+    def _ask_early_start_reason(self, chat_id: str, callback_query_id: str | None, task: Task, planned_start: date) -> None:
+        pending = set_pending(self.db, chat_id=chat_id, kind=KIND_TASK_EARLY_START_REASON, task_id=task.id)
+        self._answer(callback_query_id, "Reason needed")
+        pending.prompt_message_id = self._ask(
+            chat_id,
+            f"<b>Start Early: {_e(task.original_code)} - {_e(task.title)}</b>\n\n"
+            f"This task is planned to start on {_e(_format_date(planned_start))}.\n\n"
+            "Please provide the reason for starting this task early.\n"
+            f"Send it as your next message within {_MINUTES} minutes.",
+            [[{"text": "Cancel", "callback_data": task_callback(CANCEL_EARLY_START, task.id)}]],
+        )
+        self.db.commit()
+
+    def _cancel_early_start(
+        self, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, task_id,
+    ) -> bool:
+        what = "cancel the early start"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        pending = peek_pending(self.db, chat_id)
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        if pending is None or pending.kind != KIND_TASK_EARLY_START_REASON or pending.task_id != task_id:
+            self._fail(chat_id, callback_query_id, what, NOT_PENDING)
+            return False
+        take_pending(self.db, chat_id)
+        self.db.commit()
+        self._answer(callback_query_id, "Cancelled")
+        self._reply(chat_id, "<b>Early start cancelled</b>\n\nThe task was not started.")
+        return False
+
+    def handle_answer(
+        self, *, update_id: int, chat_id: str, chat_type: str | None, text: str, taken: TakenInput,
+    ) -> bool:
+        """The next text message after a task question (the question has
+        already been taken off the chat). Returns True when an action ran."""
+        pending = taken.pending
+        if pending.prompt_message_id is not None:
+            self.provider.remove_buttons(chat_id, pending.prompt_message_id)
+        if chat_type is not None and chat_type != "private":
+            self._reply(chat_id, _e(PRIVATE_ONLY))
+            return False
+        if taken.expired:
+            self._reply(
+                chat_id,
+                "<b>This question has expired</b>\n\nYour message was not used. Tap Start Task again to start over.",
+            )
+            return False
+        # Only the early-start reason exists so far; later units add kinds.
+        return self._start_early(update_id, chat_id, pending.task_id, " ".join(text.split()))
+
+    def _start_early(self, update_id: int, chat_id: str, task_id, reason: str) -> bool:
+        button = TASK_BUTTONS["st"]
+        identity = self._linked_person(chat_id)
+        if identity is None:
+            self._record(update_id, chat_id, button, None, "unmatched", UNLINKED)
+            self._reply(chat_id, f"<b>Couldn't {_e(button.what)}</b>\n\n{_e(UNLINKED)}")
+            return False
+        user, employee = identity
+        task = self.db.get(Task, task_id)
+        if task is None or not self._may_act_on_project(user, employee, task):
+            reason_text = STALE if task is None else NOT_A_MEMBER
+            self._record(update_id, chat_id, button, employee, "rejected", reason_text, task)
+            self._reply(chat_id, f"<b>Couldn't {_e(button.what)}</b>\n\n{_e(reason_text)}")
+            return False
+        body = f"[reply] Early-start reason for {task.original_code}: {reason}"
+        try:
+            TaskLifecycleService(self.db).transition(
+                task.project_id, task.id, "in_progress", user, reason=reason, source="telegram",
+            )
+        except HTTPException as exc:
+            self.db.rollback()
+            self._record(update_id, chat_id, button, employee, "rejected", str(exc.detail), task, body=body)
+            self._reply(chat_id, f"<b>Couldn't {_e(button.what)}</b>\n\n{_e(exc.detail)}")
+            return False
+        self._record(update_id, chat_id, button, employee, "processed", None, task, body=body)
         return True
 
     # ---- guards ---------------------------------------------------------------------
@@ -187,12 +296,12 @@ class TelegramTaskCallbackService:
 
     def _record(
         self, update_id: int, chat_id: str, button: _TaskButton, employee: EmployeeProfile | None,
-        status: str, reason: str | None, task: Task | None = None,
+        status: str, reason: str | None, task: Task | None = None, body: str | None = None,
     ) -> None:
         provider_message_id = str(update_id)
         if self.db.scalar(select(InboundMessage.id).where(InboundMessage.provider_message_id == provider_message_id)):
             return
-        body = f"[button] {button.label}" + (f" {task.original_code}" if task is not None else "")
+        body = body or f"[button] {button.label}" + (f" {task.original_code}" if task is not None else "")
         self.db.add(InboundMessage(
             provider_message_id=provider_message_id, sender_phone=chat_id, raw_body=body,
             matched_identity_type="employee" if employee is not None else None,
@@ -211,3 +320,7 @@ class TelegramTaskCallbackService:
 
     def _reply(self, chat_id: str, html_text: str) -> None:
         self.provider.send_text(chat_id, html_text, parse_mode="HTML")
+
+    def _ask(self, chat_id: str, html_text: str, buttons: list[list[dict]]) -> int | None:
+        result = self.provider.send_with_buttons(chat_id, html_text, buttons, parse_mode="HTML")
+        return int(result.provider_message_id) if result.ok and result.provider_message_id else None

@@ -1134,10 +1134,22 @@ class TelegramPendingInput(Base):
     __tablename__ = "telegram_pending_inputs"
     __table_args__ = (
         UniqueConstraint("chat_id", name="uq_v2_telegram_pending_inputs_chat"),
-        CheckConstraint("kind in ('gate_reject_reason', 'gate_health_note')", name="ck_v2_telegram_pending_inputs_kind"),
+        CheckConstraint(
+            "kind in ('gate_reject_reason', 'gate_health_note', 'task_early_start_reason', "
+            "'task_verify_reject_reason', 'task_approval_reject_reason', 'task_blocker_type', "
+            "'task_blocker_description', 'task_add_progress')",
+            name="ck_v2_telegram_pending_inputs_kind",
+        ),
+        # Telegram task plan U6 (KTD7): a gate question points at its gate, a
+        # task question at its task - exactly one, matching the kind.
+        CheckConstraint(
+            "(kind in ('gate_reject_reason', 'gate_health_note') and approval_id is not null and task_id is null) or "
+            "(kind not in ('gate_reject_reason', 'gate_health_note') and task_id is not null and approval_id is null)",
+            name="ck_v2_telegram_pending_inputs_target",
+        ),
         CheckConstraint(
             "(kind = 'gate_health_note' and health is not null) or "
-            "(kind = 'gate_reject_reason' and health is null)",
+            "(kind <> 'gate_health_note' and health is null)",
             name="ck_v2_telegram_pending_inputs_health",
         ),
         {"schema": V2_SCHEMA},
@@ -1146,9 +1158,16 @@ class TelegramPendingInput(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
-    approval_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="CASCADE"), nullable=False,
+    approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.project_external_approvals.id", ondelete="CASCADE"),
     )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="CASCADE"),
+    )
+    draft_text: Mapped[str | None] = mapped_column(Text)
+    """An earlier answer carried into the next question of the same flow."""
+    review_token: Mapped[str | None] = mapped_column(Text)
+    """Which submission a review question belongs to (KTD19)."""
     health: Mapped[str | None] = mapped_column(Text)
     prompt_message_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

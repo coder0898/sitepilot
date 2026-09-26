@@ -32,9 +32,11 @@ from app.execution_models import (
     TaskSupportAssignment,
     TaskVerification,
     TelegramInboundUpdate,
+    TelegramPendingInput,
 )
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
+from app.services.telegram_callback import TelegramCallbackService
 from app.services.telegram_message import task_callback
 from app.services.telegram_task_callback import TelegramTaskCallbackService
 from app.template_models import V2TemplateVersion  # noqa: F401 - FK target for V2Project
@@ -72,7 +74,7 @@ class TelegramTaskCallbackTests(unittest.TestCase):
             V2ProjectExternalGate.__table__, ProjectExternalApproval.__table__, ProjectExternalApprovalTask.__table__,
             Task.__table__, TaskDependency.__table__, TaskSupportAssignment.__table__, TaskVerification.__table__,
             TaskApprovalDecision.__table__, V2AuditEvent.__table__, OutboxEvent.__table__, InboundMessage.__table__,
-            TelegramInboundUpdate.__table__, V2VendorContact.__table__,
+            TelegramInboundUpdate.__table__, V2VendorContact.__table__, TelegramPendingInput.__table__,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -235,15 +237,130 @@ class TelegramTaskCallbackTests(unittest.TestCase):
         self.assertEqual(self.status(self.task), "planned")
         self.assertIn("predecessor", self.last_reply())
 
-    def test_early_start_is_refused_with_the_planned_date(self):
+    # ---- U6: early start asks for a real reason ---------------------------------------------
+
+    def _make_early(self) -> date:
+        planned = date.today() + timedelta(days=2)
         with self.session.begin():
             task = self.session.get(Task, self.task.id)
             task.lifecycle_status = "ready"
-            task.planned_start_date = date.today() + timedelta(days=2)
+            task.planned_start_date = planned
+        return planned
+
+    def reply(self, chat_id: str, text: str, chat_type: str = "private") -> tuple[bool, bool]:
+        """Simulates the webhook's text path (pending question first)."""
+        self.update_id += 1
+        return TelegramCallbackService(self.session).handle_text(
+            update_id=self.update_id, chat_id=chat_id, text=text, chat_type=chat_type,
+        )
+
+    def pending(self) -> TelegramPendingInput | None:
+        self.session.expire_all()
+        return self.session.scalar(select(TelegramPendingInput))
+
+    def test_early_start_asks_for_a_reason_with_the_planned_date(self):
+        planned = self._make_early()
         self.assertFalse(self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id)))
+
         self.assertEqual(self.status(self.task), "ready")
-        self.assertIn("reason is required", self.last_reply())
+        question = self.calls("sendMessage")[-1]
+        self.assertIn("Start Early: T001 - Task T001", question["text"])
+        self.assertIn(f"planned to start on {planned.strftime('%d %b %Y').lstrip('0')}", question["text"])
+        self.assertIn("Please provide the reason for starting this task early.", question["text"])
+        [[cancel]] = question["reply_markup"]["inline_keyboard"]
+        self.assertEqual(cancel["text"], "Cancel")
+        self.assertEqual(cancel["callback_data"], f"t1:ce:{self.task.id.hex}")
+        self.assertEqual(self.calls("answerCallbackQuery")[-1]["text"], "Reason needed")
+        pending = self.pending()
+        self.assertEqual((pending.kind, pending.task_id, pending.approval_id), ("task_early_start_reason", self.task.id, None))
+
+    def test_the_reply_starts_the_task_with_that_reason(self):
+        self._make_early()
+        self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id))
+
+        handled, acted = self.reply(EMPLOYEE_CHAT, "  Site   handed over a day early  ")
+
+        self.assertEqual((handled, acted), (True, True))
+        self.assertEqual(self.status(self.task), "in_progress")
+        task = self.session.get(Task, self.task.id)
+        self.assertEqual(task.early_start_reason, "Site handed over a day early")
+        audit = self.session.scalar(
+            select(V2AuditEvent).where(V2AuditEvent.entity_id == self.task.id).order_by(V2AuditEvent.occurred_at.desc())
+        )
+        self.assertEqual((audit.source, audit.actor_user_id), ("telegram", self.employee[0].id))
+        self.assertIsNone(self.pending())
+        self.assertEqual(self.last_inbound().processing_status, "processed")
+
+    def test_cancel_leaves_the_task_ready_and_clears_the_question(self):
+        self._make_early()
+        self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id))
+
+        self.assertFalse(self.press(EMPLOYEE_CHAT, task_callback("ce", self.task.id), message_id=43))
+
+        self.assertEqual(self.status(self.task), "ready")
+        self.assertIsNone(self.pending())
+        self.assertIn("Early start cancelled", self.last_reply())
+        # The next text is an ordinary message again, not a reason.
+        self.assertEqual(self.reply(EMPLOYEE_CHAT, "hello"), (False, False))
+
+    def test_an_expired_question_does_not_use_the_reply(self):
+        self._make_early()
+        self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id))
+        with self.session.begin():
+            self.session.scalar(select(TelegramPendingInput)).expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+        self.assertEqual(self.reply(EMPLOYEE_CHAT, "Late reason"), (True, False))
+
+        self.assertEqual(self.status(self.task), "ready")
         self.assertIsNone(self.session.get(Task, self.task.id).early_start_reason)
+        self.assertIn("This question has expired", self.last_reply())
+
+    def test_a_reply_the_lifecycle_refuses_leaves_the_task_unchanged(self):
+        self._make_early()
+        self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id))
+        # The assignment ends before the answer arrives.
+        with self.session.begin():
+            self.session.query(TaskSupportAssignment).delete()
+            self.session.add(TaskSupportAssignment(
+                task_id=self.task.id, project_id=self.project.id, employee_id=self.other[1].id,
+                responsibility="Execution", assigned_by=self.supervisor[0].id,
+            ))
+
+        self.assertEqual(self.reply(EMPLOYEE_CHAT, "Early access"), (True, False))
+
+        self.assertEqual(self.status(self.task), "ready")
+        self.assertIsNone(self.session.get(Task, self.task.id).early_start_reason)
+        self.assertIn("Couldn't start this task", self.last_reply())
+        self.assertIn("only they can start or submit it", self.last_reply())
+
+    def test_an_answer_from_a_group_chat_is_not_used(self):
+        self._make_early()
+        self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id))
+        self.assertEqual(self.reply(EMPLOYEE_CHAT, "Early access", chat_type="group"), (True, False))
+        self.assertEqual(self.status(self.task), "ready")
+
+    def test_task_and_gate_questions_are_stored_by_the_same_rules(self):
+        """KTD7's constraints: a task question saves with no approval and no
+        health; a gate health note without a health value is still refused."""
+        from sqlalchemy.exc import IntegrityError
+
+        self._make_early()
+        self.press(EMPLOYEE_CHAT, task_callback("st", self.task.id))
+        self.assertIsNotNone(self.pending())
+        self.session.add(TelegramPendingInput(
+            chat_id="12345", kind="gate_health_note", approval_id=uuid.uuid4(),
+            expires_at=datetime.now(timezone.utc),
+        ))
+        with self.assertRaises(IntegrityError):
+            self.session.commit()
+        self.session.rollback()
+        self.session.add(TelegramPendingInput(
+            chat_id="12346", kind="task_early_start_reason", approval_id=uuid.uuid4(), task_id=self.task.id,
+            expires_at=datetime.now(timezone.utc),
+        ))
+        with self.assertRaises(IntegrityError):
+            self.session.commit()  # a task question may not also point at a gate
+        self.session.rollback()
 
     # ---- repeat and stale buttons ---------------------------------------------------------
 

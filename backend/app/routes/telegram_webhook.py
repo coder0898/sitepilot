@@ -140,6 +140,7 @@ async def receive_inbound_telegram_update(
     if isinstance(message, dict):
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id")) if chat.get("id") is not None else None
+        chat_type = chat.get("type")
         message_text = message.get("text")
         media = _extract_media(message)
         if media is not None:
@@ -190,7 +191,7 @@ async def receive_inbound_telegram_update(
         # A question the bot asked (rejection reason / health note) takes
         # the next text message first; otherwise it is a normal message.
         handled, acted = TelegramCallbackService(db).handle_text(
-            update_id=int(update_id), chat_id=chat_id, text=message_text,
+            update_id=int(update_id), chat_id=chat_id, text=message_text, chat_type=chat_type,
         )
         if acted:
             background_tasks.add_task(_dispatch_now)

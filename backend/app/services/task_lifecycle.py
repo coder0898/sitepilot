@@ -12,7 +12,7 @@ transition.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
@@ -85,6 +85,21 @@ _EXECUTOR_DRIVEN_TARGETS = {"in_progress", "submitted"}
 _STARTED_STATUSES = {
     "in_progress", "submitted", "verified", "approval_pending", "rejected", "completed",
 }
+
+
+class EarlyStartReasonRequired(HTTPException):
+    """Starting before the planned start date without a reason. The same 422
+    and message the Web App has always shown; a distinct type so the Telegram
+    layer can ask for the reason instead of just refusing (Telegram task plan
+    KTD9) - the rule itself stays here, never duplicated in Telegram."""
+
+    def __init__(self, planned_start_date: date):
+        super().__init__(
+            422,
+            "A reason is required to start a task before its planned start date "
+            f"({planned_start_date.isoformat()}).",
+        )
+        self.planned_start_date = planned_start_date
 
 
 def latest_submitter_user_id(db: Session, task_id: uuid.UUID) -> uuid.UUID | None:
@@ -585,11 +600,7 @@ class TaskLifecycleService:
         ):
             early_start_reason = (reason or "").strip()
             if not early_start_reason:
-                raise HTTPException(
-                    422,
-                    "A reason is required to start a task before its planned start date "
-                    f"({task.planned_start_date.isoformat()}).",
-                )
+                raise EarlyStartReasonRequired(task.planned_start_date)
 
         before_status = current_status
         task.lifecycle_status = target_status

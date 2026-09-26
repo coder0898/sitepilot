@@ -52,11 +52,13 @@ from app.services.telegram_pending_input import (
     KIND_HEALTH_NOTE,
     KIND_REJECT_REASON,
     PENDING_INPUT_TTL,
+    is_task_question,
     peek_pending,
     set_pending,
     take_pending,
 )
 from app.services.telegram_provider import TelegramProviderAdapter
+from app.services.telegram_task_callback import TelegramTaskCallbackService
 
 
 @dataclass(frozen=True)
@@ -161,7 +163,9 @@ class TelegramCallbackService:
 
     # ---- typed answers ----------------------------------------------------------
 
-    def handle_text(self, *, update_id: int, chat_id: str, text: str) -> tuple[bool, bool]:
+    def handle_text(
+        self, *, update_id: int, chat_id: str, text: str, chat_type: str | None = None,
+    ) -> tuple[bool, bool]:
         """Offers a text message to this chat's pending question first.
         Returns (handled, acted): `handled` False means there was no question
         and the message should be processed as a normal command/evidence
@@ -171,6 +175,12 @@ class TelegramCallbackService:
             return False, False
         self.db.commit()
         pending = taken.pending
+        if is_task_question(pending):
+            # A question about an internal task (Telegram task plan U6+).
+            acted = TelegramTaskCallbackService(self.db, self.provider).handle_answer(
+                update_id=update_id, chat_id=chat_id, chat_type=chat_type, text=text, taken=taken,
+            )
+            return True, acted
         if pending.prompt_message_id is not None:
             self.provider.remove_buttons(chat_id, pending.prompt_message_id)
 
@@ -254,7 +264,10 @@ class TelegramCallbackService:
         expected_kind = KIND_HEALTH_NOTE if callback.code == "sk" else KIND_REJECT_REASON
         action = _BUTTON_ACTIONS[callback.code]
         pending = peek_pending(self.db, chat_id)
-        if pending is None or pending.kind != expected_kind or pending.approval_id.hex != callback.approval_hex:
+        if (
+            pending is None or pending.kind != expected_kind or pending.approval_id is None
+            or pending.approval_id.hex != callback.approval_hex
+        ):
             self._fail(chat_id, callback_query_id, action.what, _NOT_PENDING)
             if message_id is not None:
                 self.provider.remove_buttons(chat_id, message_id)

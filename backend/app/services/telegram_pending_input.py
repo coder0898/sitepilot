@@ -1,6 +1,8 @@
 """Storage for a question the Telegram bot is waiting for a typed answer to
 (gate plan chunk 3): the Admin's rejection reason, or an optional note after
-a gate health button. See `TelegramPendingInput`.
+a gate health button - and, from Telegram task plan U6, questions about an
+internal task (e.g. the reason for starting it early). See
+`TelegramPendingInput`.
 
 Rules:
 - One pending question per chat. Asking a new one replaces the old one.
@@ -31,6 +33,22 @@ EXPIRED_NOTICE_WINDOW = timedelta(hours=24)
 KIND_REJECT_REASON = "gate_reject_reason"
 KIND_HEALTH_NOTE = "gate_health_note"
 
+# Telegram task plan U6+: questions about an internal task (`task_id` set,
+# `approval_id` empty). Handled by `telegram_task_callback.py`.
+KIND_TASK_EARLY_START_REASON = "task_early_start_reason"
+TASK_KINDS = frozenset({
+    KIND_TASK_EARLY_START_REASON,
+    "task_verify_reject_reason",
+    "task_approval_reject_reason",
+    "task_blocker_type",
+    "task_blocker_description",
+    "task_add_progress",
+})
+
+
+def is_task_question(pending: TelegramPendingInput) -> bool:
+    return pending.kind in TASK_KINDS
+
 
 @dataclass(frozen=True)
 class TakenInput:
@@ -47,14 +65,19 @@ def set_pending(
     *,
     chat_id: str,
     kind: str,
-    approval_id: uuid.UUID,
+    approval_id: uuid.UUID | None = None,
+    task_id: uuid.UUID | None = None,
     health: str | None = None,
+    draft_text: str | None = None,
+    review_token: str | None = None,
     now: datetime | None = None,
 ) -> TelegramPendingInput:
+    """A gate question passes `approval_id`, a task question `task_id`."""
     now = now or datetime.now(timezone.utc)
     db.execute(delete(TelegramPendingInput).where(TelegramPendingInput.chat_id == chat_id))
     pending = TelegramPendingInput(
-        chat_id=chat_id, kind=kind, approval_id=approval_id, health=health,
+        chat_id=chat_id, kind=kind, approval_id=approval_id, task_id=task_id, health=health,
+        draft_text=draft_text, review_token=review_token,
         created_at=now, expires_at=now + PENDING_INPUT_TTL,
     )
     db.add(pending)
