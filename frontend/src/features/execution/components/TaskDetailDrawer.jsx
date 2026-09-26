@@ -2,6 +2,7 @@ import { AlertTriangle, ClipboardEdit, History, LayoutGrid, Paperclip, SlidersHo
 import { useEffect, useMemo, useState } from "react";
 import { Button, Pill } from "../../../components/ui";
 import { actorProjectRoles, STATUS_TONE, TaskDetailContent } from "./TaskDetailContent";
+import { taskTypeOf } from "./executionViewHelpers";
 import { COMPUTED_READINESS_STATES, readinessLabel, readinessTone } from "./TaskReadinessPanel";
 
 const TABS = [
@@ -49,6 +50,7 @@ export function TaskDetailDrawer({ projectId, project, task, user, candidates, o
   // ANY reason (including the footer state update itself), which is an
   // infinite render loop, not just a wasted recompute.
   const roles = useMemo(() => actorProjectRoles(project, user), [project, user]);
+  const taskType = taskTypeOf(task);
 
   if (!task) return null;
 
@@ -78,6 +80,8 @@ export function TaskDetailDrawer({ projectId, project, task, user, candidates, o
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <Pill tone={STATUS_TONE[task.lifecycle_status] || "gray"}>{task.lifecycle_status.replaceAll("_", " ")}</Pill>
             {COMPUTED_READINESS_STATES.includes(task.readiness?.state) && <Pill tone={readinessTone(task.readiness.state)}>{readinessLabel(task.readiness.state)}</Pill>}
+            {taskType && <Pill tone={taskType.tone}>{taskType.label}</Pill>}
+            {taskType?.flow && <span className="text-xs font-bold text-slate-500">{taskType.flow}</span>}
           </div>
         </div>
         <button type="button" aria-label="Close task detail" onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">

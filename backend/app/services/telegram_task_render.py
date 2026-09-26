@@ -42,6 +42,12 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.task_approval import TaskApprovalService
+from app.services.task_approval_metadata import (
+    APPROVAL_SUMMARY_PM_APPROVAL,
+    APPROVAL_SUMMARY_SUPERVISOR_AND_PM,
+    APPROVAL_SUMMARY_SUPERVISOR_VERIFICATION,
+    build_approval_metadata,
+)
 from app.services.task_lifecycle import latest_submitter_user_id
 from app.services.telegram_message import (
     TelegramAction,
@@ -53,6 +59,17 @@ from app.services.telegram_message import (
 
 _FYI = "For your information. No action required."
 
+# Display labels for the backend's own task classification
+# (task_approval_metadata.approval_summary). Milestones get no label.
+_TASK_TYPE_LABELS = {
+    APPROVAL_SUMMARY_SUPERVISOR_VERIFICATION: "Standard",
+    APPROVAL_SUMMARY_SUPERVISOR_AND_PM: "Class A",
+    APPROVAL_SUMMARY_PM_APPROVAL: "Approval Gate",
+}
+_APPROVAL_FLOW_LABELS = {
+    APPROVAL_SUMMARY_SUPERVISOR_AND_PM: "Supervisor Verification → PM Approval",
+    APPROVAL_SUMMARY_PM_APPROVAL: "Direct PM Approval",
+}
 _APPROVAL_STEP = "Approve it, or reject it with a reason. You can also decide in the Web App."
 # U10: the one explicit "nobody can approve" state - never a silent dead end.
 NO_ELIGIBLE_APPROVER = "No one else can approve this yet - an Admin or another PM must be added to the project."
@@ -266,6 +283,27 @@ class _Ctx:
             return ((TelegramAction("Start Task", f"STATUS {self.task.original_code} in_progress", task_callback("st", self.task.id)),),)
         return ()
 
+    # ---- task type (display only) ------------------------------------------
+
+    def _approval_summary(self) -> str | None:
+        """The backend's own classification of this task (task_kind +
+        task_class, via task_approval_metadata) - never a second rule here."""
+        if self.task is None:
+            return None
+        return build_approval_metadata(self.task.task_kind, self.task.task_class, self.task.lifecycle_status).approval_summary
+
+    def type_rows(self, with_flow: bool = False) -> list[tuple[str, object]]:
+        """ "Task Type" (and, for review/approval messages of Class A and
+        approval-gate tasks, "Approval Flow") rows. Milestones get none."""
+        summary = self._approval_summary()
+        label = _TASK_TYPE_LABELS.get(summary)
+        if label is None:
+            return []
+        rows: list[tuple[str, object]] = [("Task Type", label)]
+        if with_flow and summary in _APPROVAL_FLOW_LABELS:
+            rows.append(("Approval Flow", _APPROVAL_FLOW_LABELS[summary]))
+        return rows
+
     # ---- message parts ----------------------------------------------------
 
     def rows(self, *extra: tuple[str, object]) -> list[tuple[str, object]]:
@@ -400,6 +438,7 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
     if target == "submitted":
         submission = _Submission(db, payload)
         rows = ctx.rows(
+            *ctx.type_rows(with_flow=True),
             ("Submitted by", actor or "Unknown user"),
             ("Latest note", submission.latest_note or "No note"),
             ("Evidence", submission.evidence_summary()),
@@ -443,7 +482,7 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
 
 
 def _render_rework(ctx: _Ctx, reviewer_label: str, reviewer: str, reason: object) -> TelegramMessage:
-    rows = ctx.rows((reviewer_label, reviewer), ("Reason", reason or "Not given"))
+    rows = ctx.rows(*ctx.type_rows(), (reviewer_label, reviewer), ("Reason", reason or "Not given"))
     step = _REWORK_STEP if ctx.is_executor() else "Sent back for rework. " + _FYI
     return _message(ctx, "Rework Required", rows, step)
 
@@ -453,11 +492,12 @@ def _render_verification_recorded(db: Session, payload: dict, recipient_employee
     reviewer = _user_name(db, payload.get("verified_by"))
     if payload.get("decision") == "rejected":
         return _render_rework(ctx, "Rejected by", reviewer, payload.get("remarks"))
-    rows = ctx.rows(("Verified by", reviewer))
+    rows = ctx.rows(*ctx.type_rows(with_flow=True), ("Verified by", reviewer))
     if _is_class_a_work(ctx):
         # The PM approval request (U10), built from the verified submission.
         submission = _Submission(db, payload)
         rows = ctx.rows(
+            *ctx.type_rows(with_flow=True),
             ("Verified by", reviewer),
             ("Submitted by", _user_name(db, payload.get("submitted_by"), fallback="Unknown user")),
             ("Latest note", submission.latest_note or "No note"),
@@ -490,7 +530,9 @@ def _render_approval_recorded(db: Session, payload: dict, recipient_employee_id:
     if payload.get("decision") == "rejected":
         return _render_rework(ctx, "Rejected by", reviewer, payload.get("remarks"))
     step = "Your work was approved. Nothing more to do on this task." if ctx.is_executor() else _FYI
-    return _message(ctx, "Task Approved and Completed", ctx.rows(("Approved by", reviewer)), step)
+    return _message(
+        ctx, "Task Approved and Completed", ctx.rows(*ctx.type_rows(with_flow=True), ("Approved by", reviewer)), step,
+    )
 
 
 # ---- support assignment ------------------------------------------------------
@@ -503,7 +545,7 @@ def _render_support_assigned(db: Session, payload: dict, recipient_employee_id: 
     actions = ctx.start_actions()
     if recipient_employee_id is not None and str(recipient_employee_id) == str(payload.get("employee_id")):
         return _message(
-            ctx, "Task Assigned to You", ctx.rows(*responsibility, *planned),
+            ctx, "Task Assigned to You", ctx.rows(*ctx.type_rows(), *responsibility, *planned),
             "You are responsible for doing this task and logging its progress.", actions,
         )
     rows = ctx.rows(("Employee", _employee_name(db, payload.get("employee_id"))), *responsibility)

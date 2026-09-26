@@ -548,6 +548,59 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.db.commit()
         self.assertEqual(self._buttons("task.verification_recorded", payload, self.pm_profile, task=self.class_a), [])
 
+    # ---- UI clarity patch: Task Type / Approval Flow (display only) ------------------------
+
+    def test_standard_work_review_shows_task_type_without_a_flow_line(self):
+        message = self._render("task.status_changed", self._submitted_task(), self.supervisor_profile)
+        self.assertIn("Task Type: Standard", message.text)
+        self.assertNotIn("Approval Flow", message.text)
+
+    def test_class_a_approval_request_shows_type_and_two_step_flow(self):
+        message = self._render(
+            "task.verification_recorded", self._class_a_verified_by(self.supervisor), self.pm_profile, task=self.class_a,
+        )
+        self.assertIn("Task Type: Class A", message.text)
+        self.assertIn("Approval Flow: Supervisor Verification → PM Approval", message.text)
+
+    def test_approval_gate_shows_direct_pm_approval_even_with_a_class_a_class(self):
+        # Templates seed approval-gate tasks with task_class "class_a"; the
+        # backend classifies by task_kind first, and so does the message.
+        self.gate_task.task_class = "class_a"
+        update = self._update("Permit filed", task=self.gate_task)
+        self.gate_task.lifecycle_status = "submitted"
+        self.db.commit()
+        message = self._render("task.status_changed", self._submitted(update), self.pm_profile, task=self.gate_task)
+        self.assertIn("Task Type: Approval Gate", message.text)
+        self.assertIn("Approval Flow: Direct PM Approval", message.text)
+        self.assertNotIn("Class A", message.text)
+
+    def test_task_type_appears_on_assignment_and_rework_but_not_on_unrelated_messages(self):
+        assigned = self._render(
+            "task.support_assigned", {"employee_id": str(self.employee_profile.id)}, self.employee_profile,
+        )
+        self.assertIn("Task Type: Standard", assigned.text)
+        self.assertNotIn("Approval Flow", assigned.text)
+        rework = self._render(
+            "task.verification_recorded", {"decision": "rejected", "remarks": "Redo", "verified_by": str(self.supervisor.id)},
+            self.employee_profile,
+        )
+        self.assertIn("Task Type: Standard", rework.text)
+        for event_type, payload in (
+            ("task.blocker_created", {"type": "Material", "description": "Late"}),
+            ("task.midday_check", {"lifecycle_status": "in_progress"}),
+            ("task.status_changed", {"before_status": "planned", "target_status": "ready"}),
+        ):
+            with self.subTest(event_type=event_type):
+                self.assertNotIn("Task Type", self._render(event_type, payload, self.employee_profile).text)
+
+    def test_milestones_get_no_task_type(self):
+        milestone = self._task("T099", "Handover milestone", task_class=None, task_kind="milestone")
+        self.db.commit()
+        message = self._render(
+            "task.approval_recorded", {"decision": "approved", "decided_by": str(self.pm.id)}, self.pm_profile, task=milestone,
+        )
+        self.assertNotIn("Task Type", message.text)
+
     def test_missing_ids_degrade_to_placeholders(self):
         for event_type in TASK_RENDERERS:
             with self.subTest(event_type=event_type):
