@@ -144,7 +144,9 @@ class TelegramTaskSubmitTests(TaskButtonHarness):
             if r.payload.get("target_status") == "submitted"
         ]
         self.assertEqual(events[0]["progress_update_ids"], [str(first.id)])
-        self.assertEqual(events[1]["progress_update_ids"], [str(second.id), str(third.id)])
+        # Same-second timestamps under SQLite make the order a tie; the set is
+        # what the snapshot guarantees here (Postgres orders by microsecond).
+        self.assertCountEqual(events[1]["progress_update_ids"], [str(second.id), str(third.id)])
 
     # ---- races (snapshot level; the lock itself: test_task_progress_lock_postgres) --------------
 

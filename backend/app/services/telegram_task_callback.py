@@ -33,17 +33,19 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.execution_models import InboundMessage, Task, TelegramInboundUpdate
+from app.execution_models import InboundMessage, Task, TaskProgressUpdate, TelegramInboundUpdate
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.inbound_message import EMPLOYEE_COMMANDS, VENDOR_COMMANDS
 from app.services.task_lifecycle import EarlyStartReasonRequired, TaskLifecycleService
 from app.services.task_progress import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES, TaskProgressService
-from app.services.telegram_message import parse_task_callback, task_callback
+from app.services.task_verification import TaskVerificationService
+from app.services.telegram_message import parse_task_callback, submission_token, task_callback
 from app.services.telegram_pending_input import (
     ADD_PROGRESS_TTL,
     KIND_TASK_ADD_PROGRESS,
     KIND_TASK_EARLY_START_REASON,
+    KIND_TASK_VERIFY_REJECT_REASON,
     PENDING_INPUT_TTL,
     TakenInput,
     close_add_progress_mode,
@@ -90,6 +92,12 @@ CANCEL_EARLY_START = "ce"
 # [Add Progress] opens the Add Progress mode for a task; [Done] closes it (U7).
 ADD_PROGRESS = "ap"
 DONE_ADDING = "dn"
+# Supervisor review of one submission (U9). Each carries that submission's
+# token (KTD19): `t1:<code>:<task>:<token>`.
+VERIFY = "vf"
+REJECT_VERIFICATION = "vr"
+CANCEL_REJECT_VERIFICATION = "vc"
+OLDER_SUBMISSION = "This review is for an older submission - open the latest review message."
 
 # A text starting with one of these closes Add Progress mode and runs as the
 # command it is, never becoming a progress note (KTD8).
@@ -125,6 +133,9 @@ def _shorten(text: str, limit: int = 60) -> str:
 
 # Audit label for Add Progress presses and items (not a lifecycle transition).
 _ADD_PROGRESS_BUTTON = _TaskButton("Add Progress", "add progress", "Send your progress", "in_progress")
+# Labels for the review decisions (U9); the decision itself is the service's.
+_VERIFY_BUTTON = _TaskButton("Verify", "verify this task", "Verified", "verified")
+_REJECT_BUTTON = _TaskButton("Reject", "reject this task", "Rejected", "rejected")
 
 
 class TelegramTaskCallbackService:
@@ -152,6 +163,8 @@ class TelegramTaskCallbackService:
             return self._open_add_progress(update_id, chat_id, chat_type, from_id, callback_query_id, callback.task_id)
         if callback is not None and callback.code == DONE_ADDING:
             return self._done_adding(chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id)
+        if callback is not None and callback.code in (VERIFY, REJECT_VERIFICATION, CANCEL_REJECT_VERIFICATION):
+            return self._review_button(update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback, data)
         button = TASK_BUTTONS.get(callback.code) if callback else None
         if button is None:
             self._answer(callback_query_id, STALE)
@@ -256,14 +269,22 @@ class TelegramTaskCallbackService:
         if chat_type is not None and chat_type != "private":
             self._reply(chat_id, _e(PRIVATE_ONLY))
             return False
+        again = {
+            KIND_TASK_EARLY_START_REASON: "Tap Start Task again",
+            KIND_TASK_VERIFY_REJECT_REASON: "Tap Reject on the review message again",
+        }.get(pending.kind, "Start again from the task message")
         if taken.expired:
             self._reply(
                 chat_id,
-                "<b>This question has expired</b>\n\nYour message was not used. Tap Start Task again to start over.",
+                f"<b>This question has expired</b>\n\nYour message was not used. {again} to start over.",
             )
             return False
-        # Only the early-start reason exists so far; later units add kinds.
-        return self._start_early(update_id, chat_id, pending.task_id, " ".join(text.split()))
+        answer = " ".join(text.split())
+        if pending.kind == KIND_TASK_VERIFY_REJECT_REASON:
+            return self._decide_verification(
+                update_id, chat_id, None, None, pending.task_id, pending.review_token, "rejected", answer,
+            )
+        return self._start_early(update_id, chat_id, pending.task_id, answer)
 
     def _start_early(self, update_id: int, chat_id: str, task_id, reason: str) -> bool:
         button = TASK_BUTTONS["st"]
@@ -466,6 +487,128 @@ class TelegramTaskCallbackService:
         except HTTPException as exc:
             return str(exc.detail)
         return None
+
+    # ---- Supervisor review (U9) ----------------------------------------------------------
+
+    def current_submission_token(self, task: Task) -> str | None:
+        """The token of the submission currently awaiting review, or None
+        when the task is not awaiting verification. While a task is submitted
+        its unreviewed updates are exactly its submission's (KTD24)."""
+        if task.lifecycle_status != "submitted":
+            return None
+        return submission_token(self.db.scalars(
+            select(TaskProgressUpdate.id).where(
+                TaskProgressUpdate.task_id == task.id, TaskProgressUpdate.reviewed_at.is_(None),
+            )
+        ).all())
+
+    def _review_refusal(self, task: Task, token: str | None) -> str | None:
+        """KTD19: the button (or the reason question it opened) must belong
+        to the submission currently waiting; the verification service still
+        enforces every other rule."""
+        if task.lifecycle_status != "submitted":
+            return f"This task is no longer awaiting verification (current status: {task.lifecycle_status})."
+        if not token or token != self.current_submission_token(task):
+            return OLDER_SUBMISSION
+        return None
+
+    def _review_button(
+        self, update_id: int, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, callback, data: str | None,
+    ) -> bool:
+        code, token = callback.code, callback.arg
+        what = {
+            VERIFY: "verify this task", REJECT_VERIFICATION: "reject this task",
+            CANCEL_REJECT_VERIFICATION: "cancel the rejection",
+        }[code]
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+
+        if code == CANCEL_REJECT_VERIFICATION:
+            pending = peek_pending(self.db, chat_id)
+            if message_id is not None:
+                self.provider.remove_buttons(chat_id, message_id)
+            if (
+                pending is None or pending.kind != KIND_TASK_VERIFY_REJECT_REASON
+                or pending.task_id != callback.task_id or pending.review_token != token
+            ):
+                self._fail(chat_id, callback_query_id, what, NOT_PENDING)
+                return False
+            take_pending(self.db, chat_id)
+            self.db.commit()
+            self._answer(callback_query_id, "Cancelled")
+            self._reply(chat_id, "<b>Rejection cancelled</b>\n\nThe task is still awaiting verification.")
+            return False
+
+        if code == VERIFY and message_id is not None and self._already_done(update_id, chat_id, message_id, data):
+            self._answer(callback_query_id, "Already done")
+            self.provider.remove_buttons(chat_id, message_id)
+            return False
+
+        checked = self._person_and_task(chat_id, callback.task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        _, _, task = checked
+        refusal = self._review_refusal(task, token)
+        if refusal:
+            self._fail(chat_id, callback_query_id, what, refusal)
+            if message_id is not None:
+                self.provider.remove_buttons(chat_id, message_id)
+            return False
+
+        if code == REJECT_VERIFICATION:
+            pending = set_pending(
+                self.db, chat_id=chat_id, kind=KIND_TASK_VERIFY_REJECT_REASON, task_id=task.id, review_token=token,
+            )
+            self._answer(callback_query_id, "Reason needed")
+            pending.prompt_message_id = self._ask(
+                chat_id,
+                f"<b>Reject {_e(task.original_code)} - {_e(task.title)}</b>\n\n"
+                "Please enter the reason for rejecting this work. It is sent to the person who did it.\n"
+                f"Send it as your next message within {_MINUTES} minutes.",
+                [[{"text": "Cancel", "callback_data": task_callback(CANCEL_REJECT_VERIFICATION, task.id, token)}]],
+            )
+            self.db.commit()
+            return False
+
+        return self._decide_verification(update_id, chat_id, message_id, callback_query_id, task.id, token, "verified", None)
+
+    def _decide_verification(
+        self, update_id: int, chat_id: str, message_id: int | None, callback_query_id: str | None,
+        task_id, token: str | None, decision: str, remarks: str | None,
+    ) -> bool:
+        """Records the decision through TaskVerificationService.verify - the
+        same call as the Web App, source "telegram"."""
+        button = _VERIFY_BUTTON if decision == "verified" else _REJECT_BUTTON
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, button.what, checked)
+            return False
+        user, employee, task = checked
+        body = f"[{'button' if decision == 'verified' else 'reply'}] {button.label} {task.original_code}" + (
+            f": {remarks}" if remarks else ""
+        )
+        refusal = self._review_refusal(task, token)
+        if refusal:
+            self._record(update_id, chat_id, button, employee, "rejected", refusal, task, body=body)
+            self._fail(chat_id, callback_query_id, button.what, refusal)
+            return False
+        try:
+            TaskVerificationService(self.db).verify(
+                task.project_id, task.id, decision, user, remarks=remarks, source="telegram",
+            )
+        except HTTPException as exc:
+            self.db.rollback()
+            self._record(update_id, chat_id, button, employee, "rejected", str(exc.detail), task, body=body)
+            self._fail(chat_id, callback_query_id, button.what, str(exc.detail))
+            return False
+        self._record(update_id, chat_id, button, employee, "processed", None, task, body=body)
+        self._answer(callback_query_id, button.done_toast)
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        return True
 
     def _person_and_task(self, chat_id: str, task_id):
         """(user, employee, task) after the KTD22 guards, or the refusal text."""

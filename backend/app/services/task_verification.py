@@ -131,6 +131,7 @@ class TaskVerificationService:
         decision: str,
         actor: User,
         remarks: str | None = None,
+        source: str = "portal",
     ) -> Task:
         project = self._require_access(project_id, actor)
         task = self._get_task(project.id, task_id)
@@ -206,16 +207,16 @@ class TaskVerificationService:
 
         if decision == "rejected":
             task = self.lifecycle.transition(
-                project.id, task.id, "rejected", actor, reason=clean_remarks, _via_decision_service=True,
+                project.id, task.id, "rejected", actor, reason=clean_remarks, _via_decision_service=True, source=source,
             )
             return self.lifecycle.transition(
-                project.id, task.id, "in_progress", actor, reason=clean_remarks, _via_decision_service=True,
+                project.id, task.id, "in_progress", actor, reason=clean_remarks, _via_decision_service=True, source=source,
             )
 
         task = self.lifecycle.transition(
             project.id, task.id, "verified", actor,
             reason=clean_remarks or "Verified by Supervisor.",
-            _via_decision_service=True,
+            _via_decision_service=True, source=source,
         )
         # `task_class` is nullable, same as `task_kind` - only an explicit
         # "class_a" requires the extra PM approval step (BR-008). A task
@@ -229,6 +230,6 @@ class TaskVerificationService:
             task = self.lifecycle.transition(
                 project.id, task.id, "completed", actor,
                 reason="Standard work completes automatically after Supervisor verification (BR-008).",
-                _via_decision_service=True,
+                _via_decision_service=True, source=source,
             )
         return task

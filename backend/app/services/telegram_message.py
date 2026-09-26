@@ -98,6 +98,16 @@ def is_task_callback(data: str | None) -> bool:
     return (data or "").startswith(f"{TASK_CALLBACK_PREFIX}:")
 
 
+def submission_token(progress_update_ids) -> str | None:
+    """Telegram task plan KTD19: a short token naming one submission, carried
+    by its review buttons so a button from an earlier submission is refused.
+    Derived from the submission's progress-update ids (the highest id, first 8
+    hex) - the same set the snapshot lists and, while the task is submitted,
+    exactly its unreviewed updates - so it never depends on timestamp order."""
+    ids = [uuid.UUID(str(value)) for value in progress_update_ids or () if value]
+    return max(ids).hex[:8] if ids else None
+
+
 @dataclass(frozen=True)
 class TelegramAttachment:
     """A stored evidence file to send after the message text."""

@@ -235,11 +235,14 @@ class TelegramTaskRenderTests(unittest.TestCase):
 
     def test_work_submission_reads_as_a_review_request_for_the_supervisor(self):
         self._submitted_by(self.task, self.employee)
-        payload = {"before_status": "in_progress", "target_status": "submitted", "actor_user_id": str(self.employee.id)}
+        update = self._update("Done")
+        self.task.lifecycle_status = "submitted"
+        self.db.commit()
+        payload = self._submitted(update)
         supervisor = self._render("task.status_changed", payload, self.supervisor_profile)
         self.assertIn("<b>Task Submitted for Review</b>", supervisor.text)
         self.assertIn("Submitted by: Rohan Employee", supervisor.text)
-        self.assertIn("Verify or reject it in the Web App.", supervisor.text)
+        self.assertIn("Verify it, or reject it with a reason.", supervisor.text)
         submitter = self._render("task.status_changed", payload, self.employee_profile)
         self.assertIn("<b>Submitted for Review</b>", submitter.text)
         self.assertIn("You will be told the outcome.", submitter.text)
@@ -385,12 +388,14 @@ class TelegramTaskRenderTests(unittest.TestCase):
     def test_review_message_shows_the_submission_and_sends_its_files_to_reviewers(self):
         first = self._update("Framing done", files=[("east.jpg", "image/jpeg")])
         second = self._update("Test report attached", files=[("report.pdf", "application/pdf")])
+        self.task.lifecycle_status = "submitted"
+        self.db.commit()
         payload = self._submitted(first, second)
 
         review = self._render("task.status_changed", payload, self.supervisor_profile)
         self.assertIn("Latest note: Test report attached", review.text)
         self.assertIn("Evidence: 1 photo, 1 PDF", review.text)
-        self.assertIn("Verify or reject it in the Web App.", review.text)
+        self.assertIn("Verify it, or reject it with a reason.", review.text)
         self.assertEqual([a.caption for a in review.attachments], ["east.jpg", "report.pdf"])
 
         own_copy = self._render("task.status_changed", payload, self.employee_profile)
@@ -418,6 +423,53 @@ class TelegramTaskRenderTests(unittest.TestCase):
         review = self._render("task.status_changed", self._submitted(update), self.supervisor_profile)
         self.assertIn("Evidence: No files", review.text)
         self.assertEqual(review.attachments, ())
+
+    # ---- U9: Verify / Reject buttons on the review message --------------------------------------
+
+    def _submitted_task(self, by=None) -> dict:
+        by = by or self.employee
+        update = self._update("Work done", by=by)
+        self.task.lifecycle_status = "submitted"
+        self.db.commit()
+        payload = self._submitted(update)
+        payload["submitted_by"] = payload["actor_user_id"] = str(by.id)
+        return payload
+
+    def test_reviewers_get_verify_and_reject_carrying_the_submission_token(self):
+        payload = self._submitted_task()
+        token = max(uuid.UUID(i) for i in payload["progress_update_ids"]).hex[:8]
+        for reviewer in (self.supervisor_profile, self.pm_profile):
+            message = self._render("task.status_changed", payload, reviewer)
+            [[verify, reject]] = message.button_rows()
+            self.assertEqual((verify["text"], reject["text"]), ("Verify", "Reject"))
+            self.assertEqual(verify["callback_data"], f"t1:vf:{self.task.id.hex}:{token}")
+            self.assertEqual(reject["callback_data"], f"t1:vr:{self.task.id.hex}:{token}")
+
+    def test_a_supervisor_who_did_the_work_gets_no_buttons_but_the_pm_does(self):
+        """AE5: nobody verifies their own submission (Admin excepted)."""
+        payload = self._submitted_task(by=self.supervisor)
+        self.assertEqual(self._buttons("task.status_changed", payload, self.supervisor_profile), [])
+        self.assertEqual(self._buttons("task.status_changed", payload, self.pm_profile), ["Verify", "Reject"])
+
+    def test_no_review_buttons_for_an_older_submission_or_a_decided_task(self):
+        payload = self._submitted_task()
+        self._update("A newer, still unreviewed update")  # the waiting submission is no longer this one
+        self.assertEqual(self._buttons("task.status_changed", payload, self.supervisor_profile), [])
+
+        self.db.query(TaskProgressUpdate).delete()
+        self.db.commit()
+        payload = self._submitted_task()
+        self.task.lifecycle_status = "completed"  # decided in the Web App before the message went out
+        self.db.commit()
+        self.assertEqual(self._buttons("task.status_changed", payload, self.supervisor_profile), [])
+
+    def test_approval_gate_submission_has_no_verify_buttons(self):
+        update = self._update("Permit filed")
+        self.gate_task.lifecycle_status = "submitted"
+        self.db.commit()
+        payload = self._submitted(update)
+        for recipient in (self.supervisor_profile, self.pm_profile):
+            self.assertNotIn("Verify", self._buttons("task.status_changed", payload, recipient, task=self.gate_task))
 
     def test_missing_ids_degrade_to_placeholders(self):
         for event_type in TASK_RENDERERS:

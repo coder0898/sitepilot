@@ -42,7 +42,13 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.task_lifecycle import latest_submitter_user_id
-from app.services.telegram_message import TelegramAction, TelegramAttachment, TelegramMessage, task_callback
+from app.services.telegram_message import (
+    TelegramAction,
+    TelegramAttachment,
+    TelegramMessage,
+    submission_token,
+    task_callback,
+)
 
 _FYI = "For your information. No action required."
 _REWORK_STEP = "Add new progress and submit the task for review again."
@@ -207,6 +213,28 @@ class _Ctx:
             return self.is_assignee()
         return self.is_supervisor() or self.is_pm()
 
+    def review_actions(self, snapshot_ids) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Verify] [Reject] on a work submission (U9): for the Supervisor,
+        PM or Admin - never the person who submitted it, unless Admin (the
+        verification service's self-verification rule) - and only while this
+        exact submission is the one waiting (KTD19)."""
+        if self.task is None or _is_approval_gate(self) or self.task.lifecycle_status != "submitted":
+            return ()
+        token = submission_token(snapshot_ids)
+        current = submission_token(self.db.scalars(
+            select(TaskProgressUpdate.id).where(
+                TaskProgressUpdate.task_id == self.task.id, TaskProgressUpdate.reviewed_at.is_(None),
+            )
+        ).all())
+        if token is None or token != current:
+            return ()
+        if not (self.is_admin() or ((self.is_supervisor() or self.is_pm()) and not self.is_submitter())):
+            return ()
+        return ((
+            TelegramAction("Verify", "", task_callback("vf", self.task.id, token)),
+            TelegramAction("Reject", "", task_callback("vr", self.task.id, token)),
+        ),)
+
     def progress_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
         if not self.can_log_progress():
             return ()
@@ -349,11 +377,11 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
             else:
                 step = _FYI
             return _message(ctx, "Submitted - Awaiting PM Approval", rows, step, attachments=files)
-        if ctx.is_submitter():
+        if ctx.is_submitter() and not ctx.is_admin():
             return _message(ctx, "Submitted for Review", rows, "Your work was sent for review. You will be told the outcome.")
-        if ctx.is_supervisor() or ctx.is_pm() or ctx.is_admin():
-            return _message(ctx, "Task Submitted for Review", rows, "Verify or reject it in the Web App.", attachments=files)
-        return _message(ctx, "Task Submitted for Review", rows, _FYI, attachments=files)
+        actions = ctx.review_actions(payload.get("progress_update_ids"))
+        step = "Verify it, or reject it with a reason. You can also decide in the Web App." if actions else _FYI
+        return _message(ctx, "Task Submitted for Review", rows, step, actions, attachments=files)
 
     if target == "completed":
         if ctx.task is not None and ctx.task.task_kind == "milestone":

@@ -41,9 +41,10 @@ KIND_TASK_EARLY_START_REASON = "task_early_start_reason"
 # taken, its expiry slides forward with each item.
 KIND_TASK_ADD_PROGRESS = "task_add_progress"
 ADD_PROGRESS_TTL = timedelta(minutes=10)
+KIND_TASK_VERIFY_REJECT_REASON = "task_verify_reject_reason"
 TASK_KINDS = frozenset({
     KIND_TASK_EARLY_START_REASON,
-    "task_verify_reject_reason",
+    KIND_TASK_VERIFY_REJECT_REASON,
     "task_approval_reject_reason",
     "task_blocker_type",
     "task_blocker_description",

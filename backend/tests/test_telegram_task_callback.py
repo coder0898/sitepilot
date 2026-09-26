@@ -46,6 +46,7 @@ from app.template_models import V2TemplateVersion  # noqa: F401 - FK target for 
 from app.vendor_models import V2VendorContact
 
 SUPERVISOR_CHAT, EMPLOYEE_CHAT, OTHER_CHAT, ADMIN_CHAT, REMOVED_CHAT, UNLINKED_CHAT = "100", "200", "300", "400", "500", "999"
+PM_CHAT = "600"
 
 
 @compiles(JSONB, "sqlite")
@@ -93,10 +94,12 @@ class TaskButtonHarness(unittest.TestCase):
             self.employee = self._person("Rohan", UserRole.internal_employee, EMPLOYEE_CHAT)
             self.other = self._person("Preeti", UserRole.internal_employee, OTHER_CHAT)
             self.removed = self._person("Chetan", UserRole.internal_employee, REMOVED_CHAT)
+            self.pm = self._person("Prachit", UserRole.project_manager, PM_CHAT)
 
             self.project = self._project("PRJ-A")
             self.other_project = self._project("PRJ-B")
             self._member(self.project, self.supervisor, "site_supervisor")
+            self._member(self.project, self.pm, "project_manager")
             self._member(self.other_project, self.supervisor, "site_supervisor")
             self._member(self.project, self.employee, "internal_employee")
             self._member(self.project, self.other, "internal_employee")
