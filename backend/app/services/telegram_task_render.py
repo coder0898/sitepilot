@@ -30,11 +30,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.execution_models import Task, TaskBlocker, TaskDelayEvent, TaskSupportAssignment
+from app.execution_models import (
+    FileObject,
+    Task,
+    TaskBlocker,
+    TaskDelayEvent,
+    TaskEvidence,
+    TaskProgressUpdate,
+    TaskSupportAssignment,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.task_lifecycle import latest_submitter_user_id
-from app.services.telegram_message import TelegramAction, TelegramMessage, task_callback
+from app.services.telegram_message import TelegramAction, TelegramAttachment, TelegramMessage, task_callback
 
 _FYI = "For your information. No action required."
 _REWORK_STEP = "Add new progress and submit the task for review again."
@@ -140,6 +148,11 @@ class _Ctx:
         ) is not None
 
     def submitter_user_id(self) -> uuid.UUID | None:
+        # The submission snapshot names its submitter (KTD18); older events
+        # fall back to the task's latest submission.
+        snapshot = _uuid_or_none(self.payload.get("submitted_by"))
+        if snapshot is not None:
+            return snapshot
         return latest_submitter_user_id(self.db, self.task.id) if self.task else None
 
     def is_submitter(self) -> bool:
@@ -227,6 +240,7 @@ def _message(
     rows: list[tuple[str, object]],
     paragraph: str | None = None,
     actions: tuple[tuple[TelegramAction, ...], ...] = (),
+    attachments: tuple[TelegramAttachment, ...] = (),
 ) -> TelegramMessage:
     parts = [f"<b>{_e(title)}</b>"]
     if rows:
@@ -236,7 +250,52 @@ def _message(
     link = ctx.link()
     if link:
         parts.append(f'<a href="{_e(link[1])}">{_e(link[0])}</a>')
-    return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML", actions=actions)
+    return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML", actions=actions, attachments=attachments)
+
+
+MAX_REVIEW_FILES = 5
+
+
+class _Submission:
+    """The exact submission a review message is about - the progress updates
+    named in the `submitted` event's snapshot (KTD18), never "whatever is on
+    the task now", so a message sent after a later decision or new progress
+    still shows what was submitted."""
+
+    def __init__(self, db: Session, payload: dict):
+        ids = [_uuid_or_none(value) for value in payload.get("progress_update_ids") or []]
+        ids = [i for i in ids if i is not None]
+        # The snapshot lists the updates in the order they were logged; keep
+        # that order rather than re-sorting by timestamp.
+        position = {update_id: index for index, update_id in enumerate(ids)}
+        self.updates: list[TaskProgressUpdate] = sorted(
+            db.scalars(select(TaskProgressUpdate).where(TaskProgressUpdate.id.in_(ids))),
+            key=lambda u: position[u.id],
+        ) if ids else []
+        rows = db.execute(
+            select(FileObject, TaskEvidence.task_progress_update_id)
+            .join(TaskEvidence, TaskEvidence.file_id == FileObject.id)
+            .where(TaskEvidence.task_progress_update_id.in_(ids))
+        ).all() if ids else []
+        self.files: list[FileObject] = [
+            f for f, _ in sorted(rows, key=lambda row: (position[row[1]], row[0].original_filename))
+        ]
+        notes = [u.note for u in self.updates if u.note]
+        self.latest_note = notes[-1] if notes else None
+
+    def evidence_summary(self) -> str:
+        if not self.files:
+            return "No files"
+        photos = sum(1 for f in self.files if f.mime_type != "application/pdf")
+        pdfs = len(self.files) - photos
+        parts = [f"{photos} photo{'s' if photos != 1 else ''}"] if photos else []
+        if pdfs:
+            parts.append(f"{pdfs} PDF{'s' if pdfs != 1 else ''}")
+        shown = f" (first {MAX_REVIEW_FILES} sent below)" if len(self.files) > MAX_REVIEW_FILES else ""
+        return ", ".join(parts) + shown
+
+    def attachments(self) -> tuple[TelegramAttachment, ...]:
+        return tuple(TelegramAttachment(file_id=f.id, caption=f.original_filename) for f in self.files[:MAX_REVIEW_FILES])
 
 
 def _is_approval_gate(ctx: _Ctx) -> bool:
@@ -270,23 +329,31 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
         return _message(ctx, "Task Started", ctx.rows(*extra), step, actions)
 
     if target == "submitted":
-        rows = ctx.rows(("Submitted by", actor or "Unknown user"))
+        submission = _Submission(db, payload)
+        rows = ctx.rows(
+            ("Submitted by", actor or "Unknown user"),
+            ("Latest note", submission.latest_note or "No note"),
+            ("Evidence", submission.evidence_summary()),
+        )
+        # Reviewers and everyone else receive the submission's files; the
+        # person who submitted them already has them.
+        files = () if ctx.is_submitter() else submission.attachments()
         if _is_approval_gate(ctx):
             # Approval-gate tasks skip Supervisor verification entirely (KTD23):
-            # nobody but the PM/Admin has anything to do, and the Supervisor is
-            # never asked to "review" or "verify" it.
+            # only the PM (or Admin) decides, and the Supervisor is never asked
+            # to "review" or "verify" it.
             if ctx.is_submitter():
                 step = "Sent to the PM for approval. You will be told the outcome."
-            elif ctx.is_pm():
-                step = "Review and approve or reject it in the Web App."
+            elif ctx.is_pm() or ctx.is_admin():
+                step = "Approve or reject it in the Web App."
             else:
                 step = _FYI
-            return _message(ctx, "Submitted - Awaiting PM Approval", rows, step)
+            return _message(ctx, "Submitted - Awaiting PM Approval", rows, step, attachments=files)
         if ctx.is_submitter():
             return _message(ctx, "Submitted for Review", rows, "Your work was sent for review. You will be told the outcome.")
-        if ctx.is_supervisor() or ctx.is_pm():
-            return _message(ctx, "Task Submitted for Review", rows, "Review it in the Web App.")
-        return _message(ctx, "Task Submitted for Review", rows, _FYI)
+        if ctx.is_supervisor() or ctx.is_pm() or ctx.is_admin():
+            return _message(ctx, "Task Submitted for Review", rows, "Verify or reject it in the Web App.", attachments=files)
+        return _message(ctx, "Task Submitted for Review", rows, _FYI, attachments=files)
 
     if target == "completed":
         if ctx.task is not None and ctx.task.task_kind == "milestone":

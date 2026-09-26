@@ -406,6 +406,20 @@ class TaskLifecycleService:
 
     # ---- review cycle ------------------------------------------------------
 
+    def _submission_snapshot(self, task_id: uuid.UUID, actor: User) -> dict:
+        """Telegram task plan KTD18: who submitted and exactly which progress
+        updates this submission rests on - the unreviewed set at submit time,
+        read under the task row lock (KTD24), so nothing can join or leave it
+        before the decision. Review messages, their files and the people told
+        the outcome are built from this, never from a live "current cycle"
+        query that could have moved on by the time a message is sent."""
+        update_ids = self.db.scalars(
+            select(TaskProgressUpdate.id)
+            .where(TaskProgressUpdate.task_id == task_id, TaskProgressUpdate.reviewed_at.is_(None))
+            .order_by(TaskProgressUpdate.created_at, TaskProgressUpdate.id)
+        ).all()
+        return {"submitted_by": str(actor.id), "progress_update_ids": [str(i) for i in update_ids]}
+
     def mark_progress_reviewed(self, task_id: uuid.UUID) -> None:
         """Closes the task's current review cycle: every progress update not
         yet covered by a decision is marked reviewed now. Called by the
@@ -675,6 +689,7 @@ class TaskLifecycleService:
                 # the decision's own event already tells everyone, so Telegram
                 # skips these rows (message_dispatch). WhatsApp is unchanged.
                 **({"cause": "decision"} if _via_decision_service else {}),
+                **(self._submission_snapshot(task.id, actor) if target_status == "submitted" else {}),
             },
             # Keyed by this transition's own audit row, not by target status:
             # a rework loop reaches `submitted`/`in_progress` again and again,

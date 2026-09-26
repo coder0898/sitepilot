@@ -575,6 +575,34 @@ class MessageDispatchService:
             recipients.extend(self._resolve_user_id_recipient(submitter_user_id))
         return recipients
 
+    def _submission_needs_admin_reviewer(self, task: Task, event: OutboxEvent) -> bool:
+        """Telegram task plan KTD20: a submission's review request also goes
+        to Admins when nobody on the project can act on it - for work, no
+        active Supervisor/PM other than the submitter (who may not verify their
+        own work); for an approval-gate task, no active PM. Admin keeps their
+        existing authority either way; this only decides who is asked."""
+        payload = event.payload or {}
+        if event.event_type != "task.status_changed" or payload.get("target_status") != "submitted":
+            return False
+        if payload.get("cause") == "decision":
+            return False
+        roles = ("project_manager",) if task.task_kind == "approval_gate" else _ACCOUNTABLE_ROLES
+        query = (
+            select(V2ProjectMembership.id)
+            .join(EmployeeProfile, EmployeeProfile.id == V2ProjectMembership.employee_id)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .where(
+                V2ProjectMembership.project_id == task.project_id,
+                V2ProjectMembership.project_role.in_(roles),
+                V2ProjectMembership.ends_at.is_(None),
+                User.active.is_(True),
+            )
+        )
+        submitter = payload.get("submitted_by") or payload.get("actor_user_id")
+        if submitter and task.task_kind != "approval_gate":
+            query = query.where(User.id != uuid.UUID(str(submitter)))
+        return self.db.scalar(query.limit(1)) is None
+
     def _only_active_project_members(self, project_id: uuid.UUID, recipients: list[Recipient]) -> list[Recipient]:
         """Task messages reach only people still on the project: an active
         user with an active membership (Telegram task plan R20). Vendor
@@ -722,6 +750,8 @@ class MessageDispatchService:
             if event.event_type in _ADMIN_CC_TASK_EVENTS:
                 # Added after the membership filter: Admin has no project
                 # membership, and this copy is visibility, not authority.
+                recipients.extend(self._resolve_admin_recipients())
+            elif self._submission_needs_admin_reviewer(task, event):
                 recipients.extend(self._resolve_admin_recipients())
             recipients = _unique_recipients(recipients)
         elif event.aggregate_type == "project":

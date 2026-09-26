@@ -19,7 +19,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.execution_models import Task, TaskBlocker, TaskDelayEvent, TaskSupportAssignment
+from app.execution_models import FileObject, Task, TaskBlocker, TaskDelayEvent, TaskEvidence, TaskProgressUpdate, TaskSupportAssignment
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership
 from app.services.telegram_render import render_telegram
@@ -48,7 +48,7 @@ class TelegramTaskRenderTests(unittest.TestCase):
         for table in (
             User.__table__, EmployeeProfile.__table__, V2Project.__table__, V2ProjectMembership.__table__,
             Task.__table__, TaskSupportAssignment.__table__, V2AuditEvent.__table__, TaskBlocker.__table__,
-            TaskDelayEvent.__table__,
+            TaskDelayEvent.__table__, TaskProgressUpdate.__table__, TaskEvidence.__table__, FileObject.__table__,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -239,7 +239,7 @@ class TelegramTaskRenderTests(unittest.TestCase):
         supervisor = self._render("task.status_changed", payload, self.supervisor_profile)
         self.assertIn("<b>Task Submitted for Review</b>", supervisor.text)
         self.assertIn("Submitted by: Rohan Employee", supervisor.text)
-        self.assertIn("Review it in the Web App.", supervisor.text)
+        self.assertIn("Verify or reject it in the Web App.", supervisor.text)
         submitter = self._render("task.status_changed", payload, self.employee_profile)
         self.assertIn("<b>Submitted for Review</b>", submitter.text)
         self.assertIn("You will be told the outcome.", submitter.text)
@@ -253,7 +253,7 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.assertNotIn("Review it", supervisor.text)
         self.assertIn("No action required.", supervisor.text)
         pm = self._render("task.status_changed", payload, self.pm_profile, task=self.gate_task)
-        self.assertIn("approve or reject it in the Web App", pm.text)
+        self.assertIn("Approve or reject it in the Web App.", pm.text)
 
     # ---- other status messages -------------------------------------------------------
 
@@ -355,6 +355,69 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.db.commit()
         check = {"lifecycle_status": "submitted", "planned_start_date": "2026-09-24"}
         self.assertEqual(self._buttons("task.eod_check", check, self.employee_profile), [])
+
+    # ---- U8: review message built from the submission snapshot ------------------------------
+
+    def _update(self, note, *, files=(), by=None) -> TaskProgressUpdate:
+        update = TaskProgressUpdate(
+            task_id=self.task.id, project_id=self.project.id, update_type="evidence" if files else "note",
+            note=note, submitted_by=(by or self.employee).id, source="telegram",
+        )
+        self.db.add(update)
+        self.db.flush()
+        for filename, mime in files:
+            file_object = FileObject(
+                storage_key=f"{uuid.uuid4().hex}", original_filename=filename, mime_type=mime, size_bytes=10,
+                checksum="x", uploaded_by=self.employee.id,
+            )
+            self.db.add(file_object)
+            self.db.flush()
+            self.db.add(TaskEvidence(task_progress_update_id=update.id, file_id=file_object.id, evidence_type="photo"))
+        self.db.commit()
+        return update
+
+    def _submitted(self, *updates) -> dict:
+        return {
+            "before_status": "in_progress", "target_status": "submitted", "actor_user_id": str(self.employee.id),
+            "submitted_by": str(self.employee.id), "progress_update_ids": [str(u.id) for u in updates],
+        }
+
+    def test_review_message_shows_the_submission_and_sends_its_files_to_reviewers(self):
+        first = self._update("Framing done", files=[("east.jpg", "image/jpeg")])
+        second = self._update("Test report attached", files=[("report.pdf", "application/pdf")])
+        payload = self._submitted(first, second)
+
+        review = self._render("task.status_changed", payload, self.supervisor_profile)
+        self.assertIn("Latest note: Test report attached", review.text)
+        self.assertIn("Evidence: 1 photo, 1 PDF", review.text)
+        self.assertIn("Verify or reject it in the Web App.", review.text)
+        self.assertEqual([a.caption for a in review.attachments], ["east.jpg", "report.pdf"])
+
+        own_copy = self._render("task.status_changed", payload, self.employee_profile)
+        self.assertIn("<b>Submitted for Review</b>", own_copy.text)
+        self.assertEqual(own_copy.attachments, ())
+
+    def test_review_message_uses_the_snapshot_not_the_live_task(self):
+        submitted = self._update("What was submitted", files=[("before.jpg", "image/jpeg")])
+        payload = self._submitted(submitted)
+        # Progress logged later (a later cycle) must not leak into this review.
+        self._update("Logged after the submission", files=[("after.jpg", "image/jpeg")])
+
+        review = self._render("task.status_changed", payload, self.pm_profile)
+        self.assertIn("Latest note: What was submitted", review.text)
+        self.assertEqual([a.caption for a in review.attachments], ["before.jpg"])
+
+    def test_at_most_five_files_are_sent(self):
+        update = self._update("Lots of photos", files=[(f"p{i}.jpg", "image/jpeg") for i in range(7)])
+        review = self._render("task.status_changed", self._submitted(update), self.supervisor_profile)
+        self.assertEqual(len(review.attachments), 5)
+        self.assertIn("7 photos (first 5 sent below)", review.text)
+
+    def test_a_submission_without_files_says_so(self):
+        update = self._update("Note only")
+        review = self._render("task.status_changed", self._submitted(update), self.supervisor_profile)
+        self.assertIn("Evidence: No files", review.text)
+        self.assertEqual(review.attachments, ())
 
     def test_missing_ids_degrade_to_placeholders(self):
         for event_type in TASK_RENDERERS:

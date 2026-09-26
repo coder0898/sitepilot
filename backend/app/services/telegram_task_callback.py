@@ -67,7 +67,23 @@ class _TaskButton:
 TASK_BUTTONS = {
     "rd": _TaskButton("Mark Task Ready", "mark this task ready", "Marked ready", "ready"),
     "st": _TaskButton("Start Task", "start this task", "Task started", "in_progress"),
+    "sb": _TaskButton("Submit for Review", "submit this task for review", "Submitted for review", "submitted"),
 }
+
+# The lifecycle's submission refusals, in plain words for Telegram (U8). Any
+# other refusal is shown as the service wrote it.
+_SUBMIT_EXPLANATIONS = {
+    "Log a new progress update": "Add new progress before submitting. Tap Add Progress and send a note, photo or PDF.",
+    "This task requires evidence": "This task needs a photo or PDF. Add one with Add Progress, then submit.",
+}
+
+
+def _explain(button: "_TaskButton", detail: str) -> str:
+    if button.target_status == "submitted":
+        for start, plain in _SUBMIT_EXPLANATIONS.items():
+            if detail.startswith(start):
+                return plain
+    return detail
 
 # [Cancel] under the early-start question (U6).
 CANCEL_EARLY_START = "ce"
@@ -183,9 +199,11 @@ class TelegramTaskCallbackService:
             self.db.rollback()
             reason = str(exc.detail)
             self._record(update_id, chat_id, button, employee, "rejected", reason, task)
-            self._fail(chat_id, callback_query_id, button.what, reason)
+            self._fail(chat_id, callback_query_id, button.what, _explain(button, reason))
             return False
 
+        if button.target_status == "submitted" and close_add_progress_mode(self.db, chat_id):
+            self.db.commit()  # submitting ends Add Progress for this chat (KTD8)
         self._record(update_id, chat_id, button, employee, "processed", None, task)
         self._answer(callback_query_id, button.done_toast)
         if message_id is not None:
@@ -304,7 +322,7 @@ class TelegramTaskCallbackService:
             "Send a note, a photo or a PDF. Each message is saved as one progress update; "
             "a caption is saved as the note of its photo or PDF.\n\n"
             f"This closes after {_ADD_PROGRESS_MINUTES} minutes without a message, or when you tap Done.",
-            self._done_row(task),
+            self._progress_buttons(task),
         )
         return False
 
@@ -422,13 +440,18 @@ class TelegramTaskCallbackService:
         self._ask(
             chat_id,
             f"<b>Progress Added</b>\n\nTask: {_e(task.original_code)} - {_e(task.title)}\n"
-            f"Received: {_e(received)}\n\nSend more, or tap Done.",
-            self._done_row(task),
+            f"Received: {_e(received)}\n\nSend more, tap Submit for Review when the work is complete, or tap Done.",
+            self._progress_buttons(task),
         )
         return True
 
-    def _done_row(self, task: Task) -> list[list[dict]]:
-        return [[{"text": "Done", "callback_data": task_callback(DONE_ADDING, task.id)}]]
+    def _progress_buttons(self, task: Task) -> list[list[dict]]:
+        """[Submit for Review] [Done] under the Add Progress prompt and each
+        Progress Added reply (U8)."""
+        return [[
+            {"text": "Submit for Review", "callback_data": task_callback("sb", task.id)},
+            {"text": "Done", "callback_data": task_callback(DONE_ADDING, task.id)},
+        ]]
 
     def _progress_refusal(self, user: User, task: Task) -> str | None:
         """Why this person can't log progress on this task right now, in the

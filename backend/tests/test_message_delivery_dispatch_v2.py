@@ -1551,6 +1551,39 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
                 # still gets it exactly as before.
                 self.assertEqual(self._recipient_ids(deliveries), {self.pm_employee_id})
 
+    # ---- Telegram task plan U8 (KTD20): Admin only when nobody eligible can review ----
+
+    def _end_membership(self, employee_id) -> None:
+        with self.Session.begin() as session:
+            membership = session.scalar(select(V2ProjectMembership).where(
+                V2ProjectMembership.project_id == self.project_id, V2ProjectMembership.employee_id == employee_id,
+            ))
+            membership.ends_at = datetime.now(timezone.utc)
+
+    def _submitted(self, submitter_id) -> list[MessageDelivery]:
+        return self._dispatch_one("task.status_changed", {
+            "target_status": "submitted", "actor_user_id": str(submitter_id), "submitted_by": str(submitter_id),
+            "progress_update_ids": [],
+        })
+
+    def test_a_submission_with_an_eligible_verifier_does_not_go_to_admin(self):
+        deliveries = self._submitted(INTERNAL_EMPLOYEE_ID)
+        self.assertNotIn(self.admin_employee_id, self._recipient_ids(deliveries))
+
+    def test_admin_is_asked_when_the_only_verifier_submitted_the_work_themselves(self):
+        # No PM on the project, and the Supervisor executed and submitted it:
+        # they may not verify their own work, so nobody on the project can.
+        self._end_membership(self.pm_employee_id)
+        deliveries = self._submitted(SUPERVISOR_ID)
+        self.assertIn(self.admin_employee_id, self._recipient_ids(deliveries))
+
+    def test_an_approval_gate_submission_goes_to_admin_only_without_a_pm(self):
+        with self.Session.begin() as session:
+            session.get(Task, self.task_id).task_kind = "approval_gate"
+        self.assertNotIn(self.admin_employee_id, self._recipient_ids(self._submitted(INTERNAL_EMPLOYEE_ID)))
+        self._end_membership(self.pm_employee_id)
+        self.assertIn(self.admin_employee_id, self._recipient_ids(self._submitted(INTERNAL_EMPLOYEE_ID)))
+
     def test_telegram_still_gets_a_status_change_that_no_decision_caused(self):
         from unittest.mock import MagicMock, patch
 

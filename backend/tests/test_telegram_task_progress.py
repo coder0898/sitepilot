@@ -90,7 +90,7 @@ class TelegramTaskProgressTests(TaskButtonHarness):
         prompt = self.calls("sendMessage")[-1]
         self.assertIn("Add Progress: T001 - Task T001", prompt["text"])
         self.assertIn("Send a note, a photo or a PDF", prompt["text"])
-        self.assertEqual(prompt["reply_markup"]["inline_keyboard"][0][0]["text"], "Done")
+        self.assertEqual([b["text"] for b in prompt["reply_markup"]["inline_keyboard"][0]], ["Submit for Review", "Done"])
 
     def test_task_not_in_progress_is_refused_before_anything_is_sent(self):
         self.set_status(self.task, "ready")
