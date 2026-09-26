@@ -392,6 +392,32 @@ class TaskEvidenceRequiredApiTests(unittest.TestCase):
         allowed = self.transition(project["id"], t001.id, "submitted")
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
+    def test_a_rejected_photo_that_was_not_the_latest_update_cannot_carry_a_resubmission(self):
+        """AE2 (Telegram task plan U2): a verification names only the latest
+        update, so before `reviewed_at` a photo logged earlier in the rejected
+        cycle - followed by a note - still counted as fresh evidence."""
+        project = self.activate_project()
+        t001 = self.tasks_by_code(project["id"])["T001"]
+        self.start(project["id"], t001.id)
+        self.log_progress(project["id"], t001.id, note="Pour photographed.", files=PNG_UPLOAD)
+        self.log_progress(project["id"], t001.id, note="Curing started.")
+        self.assertEqual(self.transition(project["id"], t001.id, "submitted").status_code, 200)
+        self.assertEqual(
+            self.verify(project["id"], t001.id, "rejected", remarks="Honeycombing on the face.").status_code, 200,
+        )
+
+        no_progress = self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(no_progress.status_code, 409, no_progress.text)
+        self.assertIn("Log a new progress update", no_progress.json()["detail"])
+
+        self.log_progress(project["id"], t001.id, note="Patched the face.")
+        note_only = self.transition(project["id"], t001.id, "submitted")
+        self.assertEqual(note_only.status_code, 409, note_only.text)
+        self.assertIn("requires evidence", note_only.json()["detail"])
+
+        self.log_progress(project["id"], t001.id, note="Patch photographed.", files=PNG_UPLOAD)
+        self.assertEqual(self.transition(project["id"], t001.id, "submitted").status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

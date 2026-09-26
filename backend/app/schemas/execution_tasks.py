@@ -331,6 +331,7 @@ class TaskProgressUpdateOut(BaseModel):
     submitted_by: uuid.UUID
     source: str
     created_at: datetime
+    reviewed_at: datetime | None = None
     evidence: list[TaskEvidenceOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)

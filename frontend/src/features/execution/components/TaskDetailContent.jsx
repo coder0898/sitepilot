@@ -112,18 +112,16 @@ export function forwardTargetsFor(detail, user, roles) {
   ));
 }
 
-// Mirrors task_lifecycle.py's own "submitted" precondition exactly: a
-// progress update counts as "spent" once some TaskVerification decision
-// names it as `submission_update_id`. Submission needs at least one progress
-// update that isn't in that consumed set. Comparing the actual id set
-// (rather than counts) matters because the SAME update can be decided on
-// more than once. Returns null when the task can be submitted for review,
-// otherwise which precondition is unmet.
+// Mirrors task_lifecycle.py's own "submitted" precondition exactly: an update
+// is spent once a verification or approval decision has covered it (the
+// backend sets `reviewed_at`, for either outcome). Submission needs at least
+// one unreviewed update, plus a file on one of them when evidence is
+// required. Applies to work tasks and approval-gate tasks alike; only
+// milestones (never submitted by hand) are exempt. Returns null when the task
+// can be submitted for review, otherwise which precondition is unmet.
 export function submitBlocker(detail) {
-  const isWorkKind = detail.task_kind !== "milestone" && detail.task_kind !== "approval_gate";
-  if (!isWorkKind) return null;
-  const consumedIds = new Set((detail.verifications || []).map(v => v.submission_update_id));
-  const unreviewed = (detail.progress_updates || []).filter(update => !consumedIds.has(update.id));
+  if (detail.task_kind === "milestone") return null;
+  const unreviewed = (detail.progress_updates || []).filter(update => update.reviewed_at == null);
   if (!unreviewed.length) return "progress";
   if (detail.evidence_required && !unreviewed.some(update => (update.evidence || []).length > 0)) return "evidence";
   return null;

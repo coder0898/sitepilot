@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -369,6 +369,20 @@ class TaskLifecycleService:
             )
             self._auto_complete_successor_milestones(successor, actor)
 
+    # ---- review cycle ------------------------------------------------------
+
+    def mark_progress_reviewed(self, task_id: uuid.UUID) -> None:
+        """Closes the task's current review cycle: every progress update not
+        yet covered by a decision is marked reviewed now. Called by the
+        verification and approval services for BOTH outcomes, inside the
+        decision's own transaction (before their first transition() commit),
+        so a decision and the cycle it closed can never be split."""
+        self.db.execute(
+            update(TaskProgressUpdate)
+            .where(TaskProgressUpdate.task_id == task_id, TaskProgressUpdate.reviewed_at.is_(None))
+            .values(reviewed_at=datetime.now(timezone.utc))
+        )
+
     # ---- transition entry point ---------------------------------------
 
     def transition(
@@ -470,63 +484,48 @@ class TaskLifecycleService:
                     "One or more blocking predecessor tasks are not yet satisfied.",
                 )
 
-        if target_status == "submitted" and is_work_task_kind(task.task_kind):
-            # U4's TaskVerificationService.verify() requires a
-            # TaskProgressUpdate to record its decision against
-            # (`submission_update_id`), and every verify()/reject() call
-            # names exactly which update it decided on. So "can this task be
-            # submitted" comes down to: does at least one of its progress
-            # updates NOT yet have a TaskVerification decision recorded
-            # against it?
+        if target_status == "submitted" and (is_work_task_kind(task.task_kind) or task.task_kind == "approval_gate"):
+            # A submission must rest on progress logged since the task's last
+            # review decision. Every verification or approval decision (either
+            # outcome) sets `reviewed_at` on all of the task's unreviewed
+            # updates (`mark_progress_reviewed`), so "unreviewed" means exactly
+            # "logged in this cycle".
             #
-            # - No progress update at all -> nothing for Verify/Reject to
-            #   act on -> the task would strand at `submitted` with no valid
-            #   way out (the original bug: a Supervisor self-executing, no
-            #   Internal Employee assigned, clicking straight through the
-            #   forward-transition buttons without ever opening Log
-            #   Progress).
-            # - Every existing progress update already has a
-            #   TaskVerification decision against it (typically: the one
-            #   update that was rejected) -> resubmitting now would silently
-            #   re-send that SAME already-decided evidence for another
-            #   decision, with nothing new logged.
+            # - No progress update at all -> nothing for Verify/Reject to act
+            #   on -> the task would strand at `submitted` (the original bug: a
+            #   Supervisor self-executing, clicking straight through the
+            #   forward-transition buttons without ever opening Log Progress).
+            # - Only already-reviewed updates -> resubmitting would re-send the
+            #   same decided work - every update of a rejected cycle, not just
+            #   the one a verification happened to name, and also after a PM
+            #   rejection, which names no update at all.
+            #
+            # Approval-gate tasks follow the same rule (Telegram task plan
+            # R19): an intentional shared change - before it they could be
+            # submitted with no progress, and resubmitted after a PM rejection
+            # with nothing new.
             #
             # Deliberately an existence check, not "pick the most recent
             # update and check it" - `created_at` timestamps are not
             # guaranteed unique at sub-second resolution (notably under this
-            # codebase's SQLite test harness), so sorting to find "the
-            # latest" and checking only that one can pick the wrong row on a
-            # tie. An existence check has no such ordering dependency: it's
-            # correct the moment ANY unconsumed update exists, regardless of
-            # which one a timestamp sort would call "latest".
-            consumed_update_ids = select(TaskVerification.submission_update_id).where(
-                TaskVerification.task_id == task.id
-            )
-            unconsumed_update_ids = select(TaskProgressUpdate.id).where(
+            # codebase's SQLite test harness).
+            unreviewed_update_ids = select(TaskProgressUpdate.id).where(
                 TaskProgressUpdate.task_id == task.id,
-                TaskProgressUpdate.id.not_in(consumed_update_ids),
+                TaskProgressUpdate.reviewed_at.is_(None),
             )
-            has_unreviewed_progress_update = self.db.scalar(
-                unconsumed_update_ids.limit(1)
-            ) is not None
-            if not has_unreviewed_progress_update:
+            if self.db.scalar(unreviewed_update_ids.limit(1)) is None:
                 raise HTTPException(
                     409,
                     "Log a new progress update (a note and/or evidence) before submitting this task for review.",
                 )
 
-            # U7 (R25): `evidence_required` has travelled template -> baseline
-            # -> execution task -> API since the beginning and has never been
-            # enforced anywhere. Enforce it here, over the SAME unconsumed set
-            # the check above just computed, so "fresh" means one thing on this
-            # path rather than two. Reusing that set is also what makes a
-            # rejected task unable to resubmit on the strength of the very file
-            # that was rejected: the rejection consumed that update, so its
-            # evidence no longer counts.
+            # U7 (R25): `evidence_required` is enforced over the SAME
+            # unreviewed set, so "fresh" means one thing on this path and a
+            # rejected file can never satisfy a resubmission.
             if task.evidence_required:
                 has_unreviewed_evidence = self.db.scalar(
                     select(TaskEvidence.id)
-                    .where(TaskEvidence.task_progress_update_id.in_(unconsumed_update_ids))
+                    .where(TaskEvidence.task_progress_update_id.in_(unreviewed_update_ids))
                     .limit(1)
                 ) is not None
                 if not has_unreviewed_evidence:

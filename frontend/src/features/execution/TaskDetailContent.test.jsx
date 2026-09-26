@@ -152,7 +152,7 @@ describe("TaskDetailContent - Action Forms tab", () => {
 
     it("ignores evidence already spent on a prior decision", async () => {
       taskExecutionApi.detail.mockResolvedValue(readyToSubmit({
-        progress_updates: [fileUpdate, noteOnlyUpdate],
+        progress_updates: [{ ...fileUpdate, reviewed_at: "2026-08-03T00:00:00Z" }, { ...noteOnlyUpdate, id: "pu3" }],
         verifications: [{ id: "v1", submission_update_id: "pu2", decision: "rejected", verified_at: "2026-08-03T00:00:00Z" }],
       }));
       renderDetail();
@@ -167,6 +167,67 @@ describe("TaskDetailContent - Action Forms tab", () => {
       await screen.findByRole("button", { name: "Submit For Review" });
       expect(screen.getByText(/log a new progress update/i)).toBeInTheDocument();
       expect(screen.queryByText(/requires evidence/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // Telegram task plan U2: the backend counts only updates no decision has
+  // covered yet (`reviewed_at` null), for work AND approval-gate tasks. The
+  // board must refuse the same submissions before any request is sent.
+  describe("submission rule parity (reviewed_at)", () => {
+    const reviewed = { id: "pu1", note: "Old cycle.", created_at: "2026-08-02T00:00:00Z", reviewed_at: "2026-08-03T00:00:00Z", evidence: [] };
+    const freshNote = { id: "pu2", note: "Fixed.", created_at: "2026-08-04T00:00:00Z", reviewed_at: null, evidence: [] };
+    const freshFile = { ...freshNote, id: "pu3", evidence: [{ id: "ev1", file_id: "f1", original_filename: "permit.pdf" }] };
+    const assignedEmployeeGate = extra => ({
+      ...detail, task_kind: "approval_gate", task_class: "class_a", lifecycle_status: "in_progress",
+      actor_is_assigned_support: true,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "e-u-emp", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u-pm", created_at: "2026-08-01T00:00:00Z" }],
+      ...extra,
+    });
+
+    it("blocks an approval-gate submit with no progress, and says why", async () => {
+      taskExecutionApi.detail.mockResolvedValue(assignedEmployeeGate({ progress_updates: [] }));
+      renderDetail({ user: employee });
+      expect(await screen.findByRole("button", { name: "Submit For Review" })).toBeDisabled();
+      expect(screen.getByText(/log a new progress update/i)).toBeInTheDocument();
+    });
+
+    it("blocks an approval-gate resubmit when every update was already reviewed (PM rejection)", async () => {
+      taskExecutionApi.detail.mockResolvedValue(assignedEmployeeGate({
+        progress_updates: [reviewed],
+        approvals: [{ id: "a1", decision: "rejected", decided_at: "2026-08-03T00:00:00Z" }],
+      }));
+      renderDetail({ user: employee });
+      expect(await screen.findByRole("button", { name: "Submit For Review" })).toBeDisabled();
+      expect(screen.getByText(/log a new progress update/i)).toBeInTheDocument();
+    });
+
+    it("blocks an evidence-required approval-gate submit with only a fresh note", async () => {
+      taskExecutionApi.detail.mockResolvedValue(assignedEmployeeGate({ evidence_required: true, progress_updates: [freshNote] }));
+      renderDetail({ user: employee });
+      expect(await screen.findByRole("button", { name: "Submit For Review" })).toBeDisabled();
+      expect(screen.getByText(/requires evidence/i)).toBeInTheDocument();
+    });
+
+    it("allows an approval-gate submit with fresh progress and a file", async () => {
+      taskExecutionApi.detail.mockResolvedValue(assignedEmployeeGate({ evidence_required: true, progress_updates: [reviewed, freshFile] }));
+      renderDetail({ user: employee });
+      expect(await screen.findByRole("button", { name: "Submit For Review" })).toBeEnabled();
+      expect(screen.queryByText(/requires evidence/i)).not.toBeInTheDocument();
+    });
+
+    it("blocks a class_a work resubmit after a PM rejection that named no update", async () => {
+      taskExecutionApi.detail.mockResolvedValue({
+        ...detail, task_class: "class_a", lifecycle_status: "in_progress", progress_updates: [reviewed],
+        verifications: [{ id: "v1", submission_update_id: "pu1", decision: "verified", verified_at: "2026-08-03T00:00:00Z" }],
+      });
+      renderDetail();
+      expect(await screen.findByRole("button", { name: "Submit For Review" })).toBeDisabled();
+    });
+
+    it("allows a work resubmit once a new unreviewed update exists", async () => {
+      taskExecutionApi.detail.mockResolvedValue({ ...detail, lifecycle_status: "in_progress", progress_updates: [reviewed, freshNote] });
+      renderDetail();
+      expect(await screen.findByRole("button", { name: "Submit For Review" })).toBeEnabled();
     });
   });
 

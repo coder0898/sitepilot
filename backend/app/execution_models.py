@@ -518,6 +518,10 @@ class TaskProgressUpdate(Base):
     submitted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     source: Mapped[str] = mapped_column(Text, nullable=False, default="portal")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Set when a verification or approval decision (either outcome) covers
+    this update. Null = logged since the task's last decision, i.e. the only
+    progress a new submission may rest on."""
 
 
 class FileObject(Base):

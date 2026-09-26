@@ -176,6 +176,7 @@ class TaskVerificationService:
         )
         self.db.add(verification)
         self.db.flush()
+        self.lifecycle.mark_progress_reviewed(task.id)
 
         # Emitted here - BEFORE the first `self.lifecycle.transition(...)`
         # call below - because `TaskLifecycleService.transition` commits at

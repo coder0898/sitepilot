@@ -204,6 +204,7 @@ class TaskApprovalService:
         )
         self.db.add(approval_decision)
         self.db.flush()
+        self.lifecycle.mark_progress_reviewed(task.id)
 
         # Same transaction-boundary trap as TaskVerificationService.verify:
         # must be emitted BEFORE the first self.lifecycle.transition(...)
