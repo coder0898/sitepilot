@@ -171,6 +171,34 @@ class TelegramWebhookApiTests(unittest.TestCase):
         self.assertEqual(self._telegram_calls("editMessageReplyMarkup"), [])
         self.mock_dispatch_now.assert_not_called()
 
+    def _task_button(self, update_id: int, chat_type: str, from_id: int = 555) -> None:
+        response = self._post({
+            "update_id": update_id,
+            "callback_query": {
+                "id": f"cbq-{update_id}",
+                "from": {"id": from_id},
+                "message": {"chat": {"id": 555, "type": chat_type}, "message_id": 42},
+                "data": f"t1:rd:{'b' * 32}",
+            },
+        })
+        self.assertEqual(response.status_code, 200)
+
+    def test_task_button_reaches_the_task_handler_not_the_gate_handler(self):
+        """Telegram task plan U5: `t1:` buttons are task actions. From an
+        unlinked private chat the task handler answers "not linked" - the gate
+        handler would have answered "no longer available" (not a gate code)."""
+        self._task_button(1020, "private")
+        self.assertIn("isn't linked to SiteOps", self._telegram_calls("sendMessage")[0]["text"])
+        self.mock_dispatch_now.assert_not_called()
+
+    def test_task_button_from_a_group_or_another_presser_is_refused(self):
+        self._task_button(1021, "group")
+        self._task_button(1022, "private", from_id=777)
+        replies = [r["text"] for r in self._telegram_calls("sendMessage")]
+        self.assertEqual(len(replies), 2)
+        self.assertTrue(all("Use the bot in a private chat" in text for text in replies))
+        self.mock_dispatch_now.assert_not_called()
+
     def test_missing_secret_token_header_is_rejected(self):
         response = self._post({"update_id": 1003, "message": {"chat": {"id": 555}, "text": "hi"}}, secret=None)
 

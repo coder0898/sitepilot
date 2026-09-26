@@ -284,6 +284,51 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.assertIn("Employee Assigned to Task", other)
         self.assertIn("Employee: Rohan Employee", other)
 
+    # ---- U5 buttons: shown only to people the lifecycle rules would allow -----------
+
+    def _buttons(self, event_type, payload, recipient, task=None) -> list[str]:
+        message = self._render(event_type, payload, recipient, task=task)
+        return [button["text"] for row in message.button_rows() for button in row]
+
+    def test_start_task_goes_only_to_the_assigned_employee(self):
+        self.task.lifecycle_status = "ready"
+        self.db.commit()
+        payload = {"before_status": "planned", "target_status": "ready"}
+        self.assertEqual(self._buttons("task.status_changed", payload, self.employee_profile), ["Start Task"])
+        # An employee is assigned, so the Supervisor/PM may not start it.
+        self.assertEqual(self._buttons("task.status_changed", payload, self.supervisor_profile), [])
+        self.assertEqual(self._buttons("task.status_changed", payload, self.pm_profile), [])
+
+    def test_mark_ready_for_a_planned_task_on_assignment_and_checks(self):
+        self.task.lifecycle_status = "planned"
+        self.db.commit()
+        assigned = {"employee_id": str(self.employee_profile.id), "responsibility": "Execution"}
+        self.assertEqual(self._buttons("task.support_assigned", assigned, self.employee_profile), ["Mark Task Ready"])
+        self.assertEqual(self._buttons("task.support_assigned", assigned, self.supervisor_profile), ["Mark Task Ready"])
+        check = {"lifecycle_status": "planned", "planned_start_date": "2026-09-24"}
+        self.assertEqual(self._buttons("task.readiness_check", check, self.employee_profile), ["Mark Task Ready"])
+        # The midday check carries no start buttons.
+        self.assertEqual(self._buttons("task.midday_check", check, self.employee_profile), [])
+
+    def test_unassigned_work_can_be_started_by_the_supervisor(self):
+        self.class_a.lifecycle_status = "ready"
+        self.db.commit()
+        check = {"lifecycle_status": "ready", "planned_start_date": "2026-09-24"}
+        self.assertEqual(self._buttons("task.start_check", check, self.supervisor_profile, task=self.class_a), ["Start Task"])
+
+    def test_nobody_can_self_start_an_unassigned_approval_gate_task(self):
+        self.gate_task.lifecycle_status = "ready"
+        self.db.commit()
+        check = {"lifecycle_status": "ready", "planned_start_date": "2026-09-24"}
+        for recipient in (self.supervisor_profile, self.pm_profile):
+            self.assertEqual(self._buttons("task.start_check", check, recipient, task=self.gate_task), [])
+
+    def test_no_buttons_once_the_task_has_moved_on(self):
+        self.task.lifecycle_status = "in_progress"
+        self.db.commit()
+        payload = {"before_status": "planned", "target_status": "ready"}
+        self.assertEqual(self._buttons("task.status_changed", payload, self.employee_profile), [])
+
     def test_missing_ids_degrade_to_placeholders(self):
         for event_type in TASK_RENDERERS:
             with self.subTest(event_type=event_type):

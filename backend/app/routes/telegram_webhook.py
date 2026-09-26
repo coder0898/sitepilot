@@ -59,6 +59,8 @@ from app.services.outbox_scheduler import run_dispatch_pass
 from app.services.telegram_callback import TelegramCallbackService
 from app.services.telegram_connect import TelegramConnectService
 from app.services.telegram_evidence import TelegramEvidenceService
+from app.services.telegram_message import is_task_callback
+from app.services.telegram_task_callback import TelegramTaskCallbackService
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,8 @@ async def receive_inbound_telegram_update(
     callback_data: str | None = None
     callback_query_id: str | None = None
     callback_message_id: int | None = None
+    chat_type: str | None = None
+    callback_from_id: str | None = None
 
     media: dict | None = None
     if isinstance(message, dict):
@@ -147,6 +151,9 @@ async def receive_inbound_telegram_update(
         callback_data = callback_query.get("data")
         callback_query_id = callback_query.get("id")
         callback_message_id = inner_message.get("message_id")
+        chat_type = chat.get("type")
+        presser = callback_query.get("from") or {}
+        callback_from_id = str(presser.get("id")) if presser.get("id") is not None else None
 
     if update_id is None or chat_id is None:
         # Malformed or unrecognized update shape - nothing to store, not an
@@ -193,6 +200,15 @@ async def receive_inbound_telegram_update(
             # shared dispatch, not a separate implementation per command. A
             # note added to an open evidence session is confirmed back.
             TelegramEvidenceService(db).handle_text(update_id=int(update_id), chat_id=chat_id, text=message_text)
+    elif is_task_callback(callback_data):
+        # Task button (Telegram task plan U5+): calls the shared task services
+        # directly, private chat and chat owner only.
+        acted = TelegramTaskCallbackService(db).handle(
+            update_id=int(update_id), chat_id=chat_id, chat_type=chat_type, from_id=callback_from_id,
+            message_id=callback_message_id, callback_query_id=callback_query_id, data=callback_data,
+        )
+        if acted:
+            background_tasks.add_task(_dispatch_now)
     elif callback_data is not None:
         # Inline-button press: runs the same GATE* command a user could type.
         acted = TelegramCallbackService(db).handle(

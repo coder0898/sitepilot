@@ -31,10 +31,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.execution_models import Task, TaskBlocker, TaskDelayEvent, TaskSupportAssignment
-from app.models import EmployeeProfile, User
+from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2Project, V2ProjectMembership
 from app.services.task_lifecycle import latest_submitter_user_id
-from app.services.telegram_message import TelegramMessage
+from app.services.telegram_message import TelegramAction, TelegramMessage, task_callback
 
 _FYI = "For your information. No action required."
 _REWORK_STEP = "Add new progress and submit the task for review again."
@@ -151,6 +151,46 @@ class _Ctx:
         submitted it (e.g. a Supervisor who executed it themselves)."""
         return self.is_assignee() or self.is_submitter()
 
+    def is_admin(self) -> bool:
+        user = self.db.get(User, self.recipient_user_id) if self.recipient_user_id else None
+        return user is not None and user.role in (UserRole.admin, UserRole.super_admin)
+
+    def has_assignee(self) -> bool:
+        return self.task is not None and self.db.scalar(
+            select(TaskSupportAssignment.id).where(
+                TaskSupportAssignment.task_id == self.task.id, TaskSupportAssignment.status == "active",
+            ).limit(1)
+        ) is not None
+
+    # ---- buttons (KTD12: shown to people the lifecycle rules would allow;
+    # the service still enforces every rule when one is pressed) ------------
+
+    def can_mark_ready(self) -> bool:
+        if self.task is None or self.task.lifecycle_status != "planned":
+            return False
+        return self.is_admin() or self.is_supervisor() or self.is_pm() or self.is_assignee()
+
+    def can_start(self) -> bool:
+        """Mirrors task_lifecycle's executor rule: the assigned Internal
+        Employee once one is assigned, otherwise the Supervisor/PM - never
+        for an approval-gate task, which must be delegated first."""
+        if self.task is None or self.task.lifecycle_status != "ready":
+            return False
+        if self.is_admin():
+            return True
+        if self.has_assignee():
+            return self.is_assignee()
+        return not _is_approval_gate(self) and (self.is_supervisor() or self.is_pm())
+
+    def start_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Mark Task Ready] or [Start Task], whichever the task's current
+        status allows this recipient to press - or none."""
+        if self.can_mark_ready():
+            return ((TelegramAction("Mark Task Ready", f"STATUS {self.task.original_code} ready", task_callback("rd", self.task.id)),),)
+        if self.can_start():
+            return ((TelegramAction("Start Task", f"STATUS {self.task.original_code} in_progress", task_callback("st", self.task.id)),),)
+        return ()
+
     # ---- message parts ----------------------------------------------------
 
     def rows(self, *extra: tuple[str, object]) -> list[tuple[str, object]]:
@@ -164,7 +204,13 @@ class _Ctx:
         return "Open in Web App", f"{settings.frontend_url.rstrip('/')}/?{query}"
 
 
-def _message(ctx: _Ctx, title: str, rows: list[tuple[str, object]], paragraph: str | None = None) -> TelegramMessage:
+def _message(
+    ctx: _Ctx,
+    title: str,
+    rows: list[tuple[str, object]],
+    paragraph: str | None = None,
+    actions: tuple[tuple[TelegramAction, ...], ...] = (),
+) -> TelegramMessage:
     parts = [f"<b>{_e(title)}</b>"]
     if rows:
         parts.append("\n".join(f"{_e(label)}: {_e(value)}" for label, value in rows))
@@ -173,7 +219,7 @@ def _message(ctx: _Ctx, title: str, rows: list[tuple[str, object]], paragraph: s
     link = ctx.link()
     if link:
         parts.append(f'<a href="{_e(link[1])}">{_e(link[0])}</a>')
-    return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML")
+    return TelegramMessage(text="\n\n".join(parts), parse_mode="HTML", actions=actions)
 
 
 def _is_approval_gate(ctx: _Ctx) -> bool:
@@ -194,8 +240,9 @@ def _render_status_changed(db: Session, payload: dict, recipient_employee_id: uu
 
     if target == "ready":
         rows = ctx.rows(*([("Marked ready by", actor)] if actor else []))
-        step = "This task is ready to start." if ctx.is_executor() else _FYI
-        return _message(ctx, "Task Ready", rows, step)
+        actions = ctx.start_actions()
+        step = "This task is ready to start." if actions or ctx.is_executor() else _FYI
+        return _message(ctx, "Task Ready", rows, step, actions)
 
     if target == "in_progress":
         extra = [("Started by", actor)] if actor else []
@@ -280,13 +327,14 @@ def _render_support_assigned(db: Session, payload: dict, recipient_employee_id: 
     ctx = _Ctx(db, payload, recipient_employee_id)
     responsibility = [("Responsibility", payload["responsibility"])] if payload.get("responsibility") else []
     planned = [("Planned start", _date(ctx.task.planned_start_date))] if ctx.task is not None else []
+    actions = ctx.start_actions()
     if recipient_employee_id is not None and str(recipient_employee_id) == str(payload.get("employee_id")):
         return _message(
             ctx, "Task Assigned to You", ctx.rows(*responsibility, *planned),
-            "You are responsible for doing this task and logging its progress.",
+            "You are responsible for doing this task and logging its progress.", actions,
         )
     rows = ctx.rows(("Employee", _employee_name(db, payload.get("employee_id"))), *responsibility)
-    return _message(ctx, "Employee Assigned to Task", rows, _FYI)
+    return _message(ctx, "Employee Assigned to Task", rows, None if actions else _FYI, actions)
 
 
 def _render_support_ended(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
@@ -299,7 +347,7 @@ def _render_support_ended(db: Session, payload: dict, recipient_employee_id: uui
     if replacement and recipient_employee_id is not None and str(recipient_employee_id) == str(replacement):
         return _message(
             ctx, "Task Assigned to You", ctx.rows(("Previously", _employee_name(db, payload.get("previous_employee_id")))),
-            "You are responsible for doing this task and logging its progress.",
+            "You are responsible for doing this task and logging its progress.", ctx.start_actions(),
         )
     rows = ctx.rows(("Employee", _employee_name(db, payload.get("previous_employee_id"))), *replaced, *reason)
     return _message(ctx, "Task Assignment Ended", rows, _FYI)
@@ -348,12 +396,15 @@ def _render_rescheduled(db: Session, payload: dict, recipient_employee_id: uuid.
 # ---- daily prompts and follow-ups ----------------------------------------------
 
 
-def _render_daily_check(title: str, executor_step: str) -> Callable[[Session, dict, uuid.UUID | None], TelegramMessage]:
+def _render_daily_check(
+    title: str, executor_step: str, with_start_buttons: bool = False,
+) -> Callable[[Session, dict, uuid.UUID | None], TelegramMessage]:
     def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
         ctx = _Ctx(db, payload, recipient_employee_id)
         status = _STATUS_LABELS.get(payload.get("lifecycle_status"), _label(payload.get("lifecycle_status")))
         rows = ctx.rows(("Status", status), ("Planned start", _date(payload.get("planned_start_date"))))
-        return _message(ctx, title, rows, executor_step if ctx.is_executor() else _FYI)
+        actions = ctx.start_actions() if with_start_buttons else ()
+        return _message(ctx, title, rows, executor_step if actions or ctx.is_executor() else _FYI, actions)
 
     return _render
 
@@ -380,8 +431,12 @@ TASK_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], TelegramMe
     "task.blocker_resolved": _render_blocker_resolved,
     "task.delay_recorded": _render_delay_recorded,
     "task.rescheduled": _render_rescheduled,
-    "task.readiness_check": _render_daily_check("Readiness Check", "Is the site ready for this task? Mark it ready when it is."),
-    "task.start_check": _render_daily_check("Start Check", "This task is due to start. Start it when work begins."),
+    "task.readiness_check": _render_daily_check(
+        "Readiness Check", "Is the site ready for this task? Mark it ready when it is.", with_start_buttons=True,
+    ),
+    "task.start_check": _render_daily_check(
+        "Start Check", "This task is due to start. Start it when work begins.", with_start_buttons=True,
+    ),
     "task.midday_check": _render_daily_check("Midday Check", "Please log today's progress so far."),
     "task.eod_check": _render_daily_check("End-of-Day Check", "Please log what was completed today."),
     "task.eod_followup_required": _render_no_update("Progress Update Overdue"),

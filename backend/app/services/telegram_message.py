@@ -63,6 +63,41 @@ def parse_gate_callback(data: str | None) -> GateCallback | None:
     return GateCallback(code=match["code"], approval_hex=match["hex"], arg=match["arg"])
 
 
+# Task buttons (Telegram task plan KTD6): "t1:<code>:<32-hex task id>[:<arg>]".
+# They carry the task's real id and call the task services directly - never a
+# typed STATUS command, since task codes repeat across projects.
+TASK_CALLBACK_PREFIX = "t1"
+_TASK_CALLBACK = re.compile(r"^t1:(?P<code>[a-z]{2}):(?P<hex>[0-9a-f]{32})(?::(?P<arg>[a-z0-9_]{1,20}))?$")
+
+
+@dataclass(frozen=True)
+class TaskCallback:
+    code: str
+    task_id: uuid.UUID
+    arg: str | None
+
+
+def task_callback(code: str, task_id: object, arg: str | None = None) -> str:
+    parts = [TASK_CALLBACK_PREFIX, code, uuid.UUID(str(task_id)).hex]
+    if arg:
+        parts.append(arg)
+    data = ":".join(parts)
+    if len(data.encode()) > 64:
+        raise ValueError(f"Telegram callback data too long: {data}")
+    return data
+
+
+def parse_task_callback(data: str | None) -> TaskCallback | None:
+    match = _TASK_CALLBACK.match(data or "")
+    if not match:
+        return None
+    return TaskCallback(code=match["code"], task_id=uuid.UUID(hex=match["hex"]), arg=match["arg"])
+
+
+def is_task_callback(data: str | None) -> bool:
+    return (data or "").startswith(f"{TASK_CALLBACK_PREFIX}:")
+
+
 @dataclass(frozen=True)
 class TelegramAttachment:
     """A stored evidence file to send after the message text."""

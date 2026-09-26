@@ -174,14 +174,20 @@ class TelegramRenderTests(unittest.TestCase):
     def test_support_assigned_to_recipient_says_it_is_theirs(self):
         self.task.lifecycle_status = "ready"
         self.db.commit()
-        text = render_telegram_message(
+        message = render_telegram(
             self.db, "task.support_assigned", self._support_payload(self.supervisor_profile.id), self.supervisor_profile.id,
         )
+        text = message.text_for_buttons()
         self.assertIn("Task Assigned to You", text)
         self.assertIn("T-014 - Electrical Conduiting", text)
         self.assertIn("Site assist", text)
         self.assertIn("You are responsible for doing this task", text)
+        # Telegram task plan U5: a real button carrying the task id, never a
+        # typed STATUS command (task codes repeat across projects).
         self.assertNotIn("STATUS", text)
+        [[button]] = message.button_rows()
+        self.assertEqual(button["text"], "Start Task")
+        self.assertEqual(button["callback_data"], f"t1:st:{self.task.id.hex}")
 
     def test_support_assigned_to_someone_else_names_them_with_no_action(self):
         text = render_telegram_message(
