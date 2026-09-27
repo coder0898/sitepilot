@@ -35,6 +35,7 @@ from app.project_models import V2Project
 from app.services.telegram_assignment_render import ASSIGNMENT_RENDERERS, VENDOR_RENDERERS
 from app.services.telegram_gate_render import GATE_RENDERERS
 from app.services.telegram_message import TelegramMessage
+from app.services.telegram_project_render import PROJECT_RENDERERS
 from app.services.telegram_task_render import TASK_RENDERERS
 from app.vendor_models import V2Vendor
 
@@ -95,6 +96,8 @@ _RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], str | Telegram
     # Internal task execution (status, review decisions, support, blockers,
     # delays, schedule, daily prompts, follow-ups) - readable HTML.
     **TASK_RENDERERS,
+    # Project role changes and the weekly summary - readable HTML.
+    **PROJECT_RENDERERS,
     # Every external-approval gate event and gate command confirmation.
     **GATE_RENDERERS,
 }
