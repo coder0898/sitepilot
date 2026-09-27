@@ -43,8 +43,6 @@ from app.schemas.execution_tasks import (
     TaskApprovalIn,
     TaskApprovalOut,
     TaskApprovalSummaryOut,
-    TaskAttendanceIn,
-    TaskAttendanceOut,
     TaskAuditEventOut,
     TaskBlockerCreateIn,
     TaskBlockerOut,
@@ -85,7 +83,6 @@ from app.services.project_gate_status_check import ProjectGateStatusCheckService
 from app.services.project_gate_submission import ProjectGateSubmissionService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
-from app.services.task_attendance import TaskAttendanceService
 from app.services.task_blocker import TaskBlockerService
 from app.services.task_delay import TaskDelayService
 from app.services.task_delay_variance import variance_for_task
@@ -711,23 +708,6 @@ def create_task_readiness_declaration(
     projection."""
     return TaskReadinessDeclarationService(db).declare(
         project_id, task_id, actor,
-        status=payload.status,
-        note=payload.note,
-    )
-
-
-@router.post("/{project_id}/tasks/{task_id}/attendance", response_model=TaskAttendanceOut)
-def create_task_attendance(
-    project_id: uuid.UUID,
-    task_id: uuid.UUID,
-    payload: TaskAttendanceIn,
-    actor: User = Depends(current_user),
-    db: Session = Depends(get_db),
-):
-    """Phase 3 (3b): self-report or Supervisor/PM/Admin recording on
-    behalf of another Internal Employee."""
-    return TaskAttendanceService(db).record(
-        project_id, task_id, payload.employee_id, actor,
         status=payload.status,
         note=payload.note,
     )

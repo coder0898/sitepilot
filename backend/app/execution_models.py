@@ -713,34 +713,6 @@ class TaskReadinessDeclaration(Base):
     declared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-class TaskAttendanceEvent(Base):
-    """Phase 3 (3b): an advisory, append-only record of an internal
-    employee's presence ('present'/'absent') against a task, recorded
-    either by the employee themselves or by a Supervisor/PM/Admin on their
-    behalf (`task_attendance.py`). Point-in-time like `TaskDelayEvent`;
-    never touches `Task.lifecycle_status`.
-    """
-
-    __tablename__ = "task_attendance_events"
-    __table_args__ = (
-        CheckConstraint(
-            "status in ('present', 'absent')",
-            name="ck_v2_task_attendance_events_status",
-        ),
-        Index("ix_v2_task_attendance_events_task_recorded", "task_id", "recorded_at"),
-        {"schema": V2_SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="RESTRICT"), nullable=False)
-    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.projects.id", ondelete="RESTRICT"), nullable=False)
-    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employee_profiles.id", ondelete="RESTRICT"), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    note: Mapped[str | None] = mapped_column(Text)
-    recorded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
 class TaskReminderLog(Base):
     """Telegram T3-T5: one row per scheduled task reminder that was sent.
 

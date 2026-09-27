@@ -205,35 +205,6 @@ class TaskReadinessDeclarationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-AttendanceStatus = Literal["present", "absent"]
-
-
-class TaskAttendanceIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    employee_id: uuid.UUID
-    status: AttendanceStatus
-    note: str | None = Field(default=None, max_length=2000)
-
-    @field_validator("note")
-    @classmethod
-    def normalize_note(cls, value: str | None) -> str | None:
-        cleaned = (value or "").strip()
-        return cleaned or None
-
-
-class TaskAttendanceOut(BaseModel):
-    id: uuid.UUID
-    task_id: uuid.UUID
-    project_id: uuid.UUID
-    employee_id: uuid.UUID
-    status: str
-    note: str | None
-    recorded_by: uuid.UUID
-    recorded_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class TaskRescheduleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     new_planned_start_date: date

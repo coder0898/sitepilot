@@ -2,7 +2,7 @@
 
 Pins `TaskRescheduleService`/`POST /{project_id}/tasks/{task_id}/reschedule`,
 against a real execution task produced by the baseline-lock activation flow
-(same harness pattern as `test_task_readiness_attendance_v2.py`).
+(same harness pattern as `test_task_readiness_declarations_v2.py`).
 
 - Happy path: `planned_start_date`/`planned_end_date` change on the `Task`
   row, a `TASK_RESCHEDULED` `V2AuditEvent` is written with the exact
