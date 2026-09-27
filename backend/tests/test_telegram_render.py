@@ -274,7 +274,7 @@ class TelegramRenderTests(unittest.TestCase):
     # ---- fallback / robustness ---------------------------------------------
 
     def test_unmapped_event_type_keeps_raw_dump(self):
-        text = render_telegram_message(self.db, "task.attendance_recorded", {"task_id": "abc", "type": "material"}, None)
+        text = render_telegram_message(self.db, "task.some_unmapped_event", {"task_id": "abc", "type": "material"}, None)
         self.assertIn("task_id: abc", text)
         self.assertIn("type: material", text)
 

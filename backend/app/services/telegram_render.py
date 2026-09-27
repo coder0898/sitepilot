@@ -35,6 +35,7 @@ from app.project_models import V2Project
 from app.services.telegram_assignment_render import ASSIGNMENT_RENDERERS, VENDOR_RENDERERS
 from app.services.telegram_gate_render import GATE_RENDERERS
 from app.services.telegram_message import TelegramMessage
+from app.services.telegram_project_render import PROJECT_RENDERERS
 from app.services.telegram_task_render import TASK_RENDERERS
 from app.vendor_models import V2Vendor
 
@@ -77,18 +78,6 @@ def _footer(action_required: str | None) -> str:
     return f"\n\nReply:\n{action_required}" if action_required else "\n\nNo action required."
 
 
-def _render_task_vendor_unassigned(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
-    lines = [
-        "*Vendor Unassigned From Task*",
-        f"Project: {_project_name(db, payload.get('project_id'))}",
-        f"Task: {_task_label(db, payload.get('task_id'))}",
-        f"Vendor: {_vendor_name(db, payload.get('vendor_id'))}",
-    ]
-    if payload.get("reason"):
-        lines.append(f"Reason: {payload['reason']}")
-    return "\n".join(lines) + _footer(None)
-
-
 def _render_project_vendor_removed(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> str:
     lines = [
         "*Removed From Project*",
@@ -103,11 +92,12 @@ def _render_project_vendor_removed(db: Session, payload: dict, recipient_employe
 _RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], str | TelegramMessage]] = {
     # Onboarding and assignments with Acknowledge buttons (T2).
     **ASSIGNMENT_RENDERERS,
-    "task.vendor_unassigned": _render_task_vendor_unassigned,
     "project.vendor_removed": _render_project_vendor_removed,
     # Internal task execution (status, review decisions, support, blockers,
     # delays, schedule, daily prompts, follow-ups) - readable HTML.
     **TASK_RENDERERS,
+    # Project role changes and the weekly summary - readable HTML.
+    **PROJECT_RENDERERS,
     # Every external-approval gate event and gate command confirmation.
     **GATE_RENDERERS,
 }

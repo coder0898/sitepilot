@@ -1,21 +1,16 @@
-"""Plan Phase 3 (3a/3b): readiness declarations and attendance events.
+"""Plan Phase 3 (3a): readiness declarations.
 
-Pins `TaskReadinessDeclarationService` and `TaskAttendanceService`, against
+Pins `TaskReadinessDeclarationService` against
 real execution tasks produced by U1's baseline-lock activation flow.
 Follows the same SQLite-ATTACHed-schema harness pattern as
 `test_task_blockers_delays_v2.py` / `test_task_support_assignment_v2.py`.
 
-- Both tables are append-only advisory overlays: they never touch
+- Declarations are an append-only advisory overlay: they never touch
   `Task.lifecycle_status`, and `task_readiness.py`'s derived projection is
   never read by/for a declaration.
 - Readiness declarations: any active project member may declare; an
   unknown `status` is rejected (422); a non-member is rejected (403); two
   declarations for the same task both persist.
-- Attendance: the employee may self-report, or a Supervisor/PM/Admin may
-  record on someone else's behalf; a bare active member may not record for
-  someone else; an unknown `status` is rejected (422); the target employee
-  must be an active Internal Employee project member; two records for the
-  same task/employee both persist.
 """
 
 from __future__ import annotations
@@ -42,7 +37,6 @@ from app.execution_models import (
     OutboxEvent,
     ProjectBaseline,
     Task,
-    TaskAttendanceEvent,
     TaskBlocker,
     TaskDelayEvent,
     TaskDependency,
@@ -80,7 +74,7 @@ INTERNAL_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
 SECOND_INTERNAL_ID = uuid.UUID("ffffffff-ffff-4fff-8fff-fffffffffff6")
 
 
-class TaskReadinessAttendanceApiTests(unittest.TestCase):
+class TaskReadinessDeclarationApiTests(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -119,7 +113,6 @@ class TaskReadinessAttendanceApiTests(unittest.TestCase):
             TaskBlocker.__table__,
             TaskDelayEvent.__table__,
             TaskReadinessDeclaration.__table__,
-            TaskAttendanceEvent.__table__,
             OutboxEvent.__table__,
             TaskSupportAssignment.__table__,
             V2TemplateExternalGate.__table__,
@@ -299,14 +292,6 @@ class TaskReadinessAttendanceApiTests(unittest.TestCase):
             f"/api/v2/projects/{project_id}/tasks/{task_id}/readiness-declarations", json=payload,
         )
 
-    def record_attendance(self, project_id, task_id, employee_id, status="present", note=None):
-        payload = {"employee_id": str(employee_id), "status": status}
-        if note is not None:
-            payload["note"] = note
-        return self.client.post(
-            f"/api/v2/projects/{project_id}/tasks/{task_id}/attendance", json=payload,
-        )
-
     # ---- readiness declarations: happy path --------------------------------
 
     def test_active_member_declares_readiness(self):
@@ -378,150 +363,6 @@ class TaskReadinessAttendanceApiTests(unittest.TestCase):
 
         self.act_as_supervisor()
         response = self.declare_readiness(project["id"], task.id, status="need_help")
-        self.assertEqual(response.status_code, 200, response.text)
-
-        with self.Session() as session:
-            refreshed = session.get(Task, task.id)
-            self.assertEqual(refreshed.lifecycle_status, "planned")
-
-    # ---- attendance: happy path --------------------------------------------
-
-    def test_internal_employee_self_reports_attendance(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_internal()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
-        self.assertEqual(response.status_code, 200, response.text)
-        body = response.json()
-        self.assertEqual(body["status"], "present")
-        self.assertEqual(body["recorded_by"], str(INTERNAL_ID))
-
-        with self.Session() as session:
-            rows = session.scalars(select(TaskAttendanceEvent).where(TaskAttendanceEvent.task_id == task.id)).all()
-            self.assertEqual(len(rows), 1)
-
-            events = session.scalars(
-                select(OutboxEvent).where(OutboxEvent.aggregate_id == task.id, OutboxEvent.event_type == "task.attendance_recorded")
-            ).all()
-            self.assertEqual(len(events), 1)
-
-    def test_supervisor_records_attendance_on_behalf_of_employee(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_supervisor()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="absent", note="Called in sick.")
-        self.assertEqual(response.status_code, 200, response.text)
-        body = response.json()
-        self.assertEqual(body["status"], "absent")
-        self.assertEqual(body["recorded_by"], str(SUPERVISOR_ID))
-
-    def test_pm_records_attendance_on_behalf_of_employee(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_pm()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
-        self.assertEqual(response.status_code, 200, response.text)
-
-    def test_admin_records_attendance_on_behalf_of_employee(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_admin()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
-        self.assertEqual(response.status_code, 200, response.text)
-
-    # ---- attendance: access control ----------------------------------------
-
-    def test_attendance_rejects_unknown_status(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_supervisor()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="on_leave")
-        self.assertEqual(response.status_code, 422, response.text)
-
-    def test_bare_internal_employee_cannot_record_attendance_for_someone_else(self):
-        """A bare active-project-member check is not enough - only the
-        employee themselves (self-report) or a Supervisor/PM/Admin
-        (on-behalf-of) may record attendance."""
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        self.add_internal_member(project["id"], SECOND_INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        second_internal_employee_id = self.employee_id_for(SECOND_INTERNAL_ID)
-
-        self.act_as_internal()
-        response = self.record_attendance(project["id"], task.id, second_internal_employee_id, status="present")
-        self.assertEqual(response.status_code, 403, response.text)
-
-        with self.Session() as session:
-            self.assertEqual(session.scalar(select(TaskAttendanceEvent).limit(1)), None)
-
-    def test_non_member_cannot_record_attendance(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_outsider()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
-        self.assertEqual(response.status_code, 403, response.text)
-
-    def test_attendance_target_must_be_active_internal_employee_member(self):
-        project = self.activate_project()
-        task = self.task_t001(project["id"])
-        # INTERNAL_ID has an EmployeeProfile but is not a project member yet.
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_supervisor()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
-        self.assertEqual(response.status_code, 422, response.text)
-
-    def test_attendance_records_are_append_only(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_internal()
-        first = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
-        self.assertEqual(first.status_code, 200, first.text)
-
-        self.act_as_supervisor()
-        second = self.record_attendance(project["id"], task.id, internal_employee_id, status="absent", note="Left early.")
-        self.assertEqual(second.status_code, 200, second.text)
-
-        self.assertNotEqual(first.json()["id"], second.json()["id"])
-
-        with self.Session() as session:
-            rows = session.scalars(
-                select(TaskAttendanceEvent).where(TaskAttendanceEvent.task_id == task.id)
-            ).all()
-            self.assertEqual(len(rows), 2)
-            statuses = sorted(row.status for row in rows)
-            self.assertEqual(statuses, ["absent", "present"])
-
-    def test_attendance_never_touches_lifecycle_status(self):
-        project = self.activate_project()
-        self.add_internal_member(project["id"], INTERNAL_ID)
-        task = self.task_t001(project["id"])
-        internal_employee_id = self.employee_id_for(INTERNAL_ID)
-
-        self.act_as_internal()
-        response = self.record_attendance(project["id"], task.id, internal_employee_id, status="present")
         self.assertEqual(response.status_code, 200, response.text)
 
         with self.Session() as session:

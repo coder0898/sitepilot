@@ -13,8 +13,7 @@ this codebase may.
 Deliberately does NOT call `TaskLifecycleService.transition` and NEVER
 writes `Task.lifecycle_status` - moving a task's planned dates is orthogonal
 to its lifecycle state (BR-009), the same boundary Phase 3's advisory
-overlays (`task_readiness_declaration.py`, `task_attendance.py`,
-`project_gate_status_check.py`) keep against their own tables. It reuses the
+overlays (`task_readiness_declaration.py`, `project_gate_status_check.py`) keep against their own tables. It reuses the
 existing generic `V2AuditEvent` table exactly as `task_lifecycle.py`'s own
 `TASK_STATUS_CHANGED` writes do - no new table.
 
