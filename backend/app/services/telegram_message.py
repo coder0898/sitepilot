@@ -98,6 +98,34 @@ def is_task_callback(data: str | None) -> bool:
     return (data or "").startswith(f"{TASK_CALLBACK_PREFIX}:")
 
 
+# Acknowledge buttons (Telegram T2): "a1:<code>:<32-hex row id>". The id is
+# the assignment row being acknowledged - a project membership, a vendor's
+# project mapping, a task support assignment or a vendor task assignment.
+ACK_CALLBACK_PREFIX = "a1"
+_ACK_CALLBACK = re.compile(r"^a1:(?P<code>[a-z]{2}):(?P<hex>[0-9a-f]{32})$")
+
+
+@dataclass(frozen=True)
+class AckCallback:
+    code: str
+    row_id: uuid.UUID
+
+
+def ack_callback(code: str, row_id: object) -> str:
+    return f"{ACK_CALLBACK_PREFIX}:{code}:{uuid.UUID(str(row_id)).hex}"
+
+
+def parse_ack_callback(data: str | None) -> AckCallback | None:
+    match = _ACK_CALLBACK.match(data or "")
+    if not match:
+        return None
+    return AckCallback(code=match["code"], row_id=uuid.UUID(hex=match["hex"]))
+
+
+def is_ack_callback(data: str | None) -> bool:
+    return (data or "").startswith(f"{ACK_CALLBACK_PREFIX}:")
+
+
 def submission_token(progress_update_ids) -> str | None:
     """Telegram task plan KTD19: a short token naming one submission, carried
     by its review buttons so a button from an earlier submission is refused.

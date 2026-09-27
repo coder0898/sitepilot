@@ -159,6 +159,9 @@ class ProjectVendor(Base):
     mapped_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Telegram T2: when the vendor pressed [Acknowledge / स्वीकार करें] on the
+    # project assignment. Receipt only.
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskVendorAssignment(Base):

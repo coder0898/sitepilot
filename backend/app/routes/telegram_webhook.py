@@ -59,7 +59,8 @@ from app.services.outbox_scheduler import run_dispatch_pass
 from app.services.telegram_callback import TelegramCallbackService
 from app.services.telegram_connect import TelegramConnectService
 from app.services.telegram_evidence import TelegramEvidenceService
-from app.services.telegram_message import is_task_callback
+from app.services.telegram_message import is_ack_callback, is_task_callback
+from app.services.telegram_ack_callback import TelegramAckCallbackService
 from app.services.telegram_task_callback import TelegramTaskCallbackService
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,14 @@ async def receive_inbound_telegram_update(
             # shared dispatch, not a separate implementation per command. A
             # note added to an open evidence session is confirmed back.
             TelegramEvidenceService(db).handle_text(update_id=int(update_id), chat_id=chat_id, text=message_text)
+    elif is_ack_callback(callback_data):
+        # Acknowledge button on an onboarding / assignment message (T2):
+        # a receipt only (no outbox event to deliver), private chat and chat
+        # owner only.
+        TelegramAckCallbackService(db).handle(
+            update_id=int(update_id), chat_id=chat_id, chat_type=chat_type, from_id=callback_from_id,
+            message_id=callback_message_id, callback_query_id=callback_query_id, data=callback_data,
+        )
     elif is_task_callback(callback_data):
         # Task button (Telegram task plan U5+): calls the shared task services
         # directly, private chat and chat owner only.

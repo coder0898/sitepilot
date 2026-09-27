@@ -240,6 +240,7 @@ def list_project_vendors(
             mapped_by=mapping.mapped_by,
             created_at=mapping.created_at,
             ends_at=mapping.ends_at,
+            acknowledged_at=mapping.acknowledged_at,
         )
         for mapping, vendor in rows
     ]

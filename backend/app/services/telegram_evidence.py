@@ -7,8 +7,9 @@ happened, so evidence is never silently dropped:
 
 - added: "Evidence Added" with what was received, plus [Add More Evidence]
   [Submit for Review] [Cancel Evidence Session];
-- a photo/document with no open session: "No evidence submission is
-  currently open" - the file is not attached to any other gate;
+- a photo/document with no open session: "Nothing is open to receive this
+  file", pointing to Add Progress (tasks) and Submit Evidence (gates) - the
+  file is not attached to anything;
 - unsupported type, too large, or not downloadable: "Couldn't add this
   evidence" with the reason.
 
@@ -36,7 +37,11 @@ from app.services.telegram_inbound import TelegramEvidenceOutcome, TelegramInbou
 from app.services.telegram_provider import TelegramProviderAdapter
 
 _UNLINKED = "This Telegram account isn't linked to SiteOps. Ask your Admin for a new connect link."
-_NO_SESSION = "<b>No evidence submission is currently open</b>\n\nOpen the approval and tap Submit Evidence first."
+_NO_SESSION = (
+    "<b>Nothing is open to receive this file</b>\n\nThe file was not saved.\n"
+    "- Task progress: tap Add Progress on the task message, then send it.\n"
+    "- Approval evidence: open the approval and tap Submit Evidence first."
+)
 _TYPE_OR_SIZE = (
     "This file type or size isn't supported. Please send a supported photo (JPG, PNG, WebP) "
     "or PDF of up to 10 MB, or use the Web App."

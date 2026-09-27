@@ -114,17 +114,22 @@ class TelegramRenderTests(unittest.TestCase):
 
     # ---- project.activated ------------------------------------------------
 
-    def test_project_activated_shows_name_role_and_no_action(self):
-        text = render_telegram_message(
+    def test_project_activated_shows_name_role_and_acknowledge_button(self):
+        message = render_telegram(
             self.db, "project.activated",
             {"project_id": str(self.project.id), "project_name": self.project.name},
             self.supervisor_profile.id,
         )
-        self.assertIn("Test Project 1", text)
-        self.assertIn("Site Supervisor", text)
+        text = message.text_for_buttons()
+        self.assertIn("Welcome to Test Project 1", text)
+        self.assertIn("Your role: Site Supervisor", text)
         self.assertIn("Status: Active", text)
-        self.assertIn("No action required.", text)
+        self.assertIn("Please acknowledge", text)
         self.assertNotIn(str(self.project.id), text)  # no raw UUID leaked
+        # Telegram T2: the member's own [Acknowledge Assignment] button.
+        [[button]] = message.button_rows()
+        self.assertEqual(button["text"], "Acknowledge Assignment")
+        self.assertTrue(button["callback_data"].startswith("a1:pm:"))
 
     def test_project_activated_falls_back_to_payload_name_when_project_missing(self):
         text = render_telegram_message(
@@ -158,7 +163,7 @@ class TelegramRenderTests(unittest.TestCase):
             self.supervisor_profile.id,
         )
         self.assertEqual(message.parse_mode, "HTML")
-        self.assertIn("<b>Start Check</b>", message.text)
+        self.assertIn("<b>Task Starts Today</b>", message.text)
         self.assertIn("T-014 - Electrical Conduiting", message.text)
         self.assertIn("Planned start: 21 Sep 2026", message.text)
         self.assertNotIn("STATUS", message.text)
@@ -223,19 +228,20 @@ class TelegramRenderTests(unittest.TestCase):
 
     # ---- task.vendor_assigned ----------------------------------------------
 
-    def test_task_vendor_assigned_shows_accept_decline_ref(self):
-        assignment_id = uuid.uuid4()
+    def test_task_vendor_assigned_tells_the_team_which_vendor_with_no_action(self):
+        # The vendor's own bilingual copy (with Acknowledge) is covered in
+        # test_telegram_ack.py; everyone else is told for information only.
         text = render_telegram_message(
             self.db, "task.vendor_assigned",
             {
                 "task_id": str(self.task.id), "project_id": str(self.project.id),
-                "assignment_id": str(assignment_id), "vendor_id": str(self.vendor.id),
+                "assignment_id": str(uuid.uuid4()), "vendor_id": str(self.vendor.id),
             },
-            None,
+            self.supervisor_profile.id,
         )
-        ref = str(assignment_id).replace("-", "")[:8]
+        self.assertIn("Vendor Assigned to Task", text)
         self.assertIn("Acme Electricals", text)
-        self.assertIn(f"`ACCEPT {ref}` or `DECLINE {ref}`", text)
+        self.assertNotIn("ACCEPT", text)
 
     # ---- gate assignment / acknowledgement ---------------------------------
 

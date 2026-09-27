@@ -79,6 +79,7 @@ class ProjectVendorMappingOut(BaseModel):
     mapped_by: uuid.UUID
     created_at: datetime
     ends_at: datetime | None = None
+    acknowledged_at: datetime | None = None
 
 
 class TaskVendorAssignmentIn(BaseModel):

@@ -1,10 +1,10 @@
-"""Plan Phase 6 (second half): runs the daily task-prompt sweep and the
-task-side escalation sweep in one pass, mirroring `outbox_scheduler.py`'s
-shape exactly - see that module's docstring for the shape's own rationale.
+"""Plan Phase 6 (second half): runs the task reminders and the task-side
+escalation sweep in one pass, mirroring `outbox_scheduler.py`'s shape
+exactly - see that module's docstring for the shape's own rationale.
 
 Merged on purpose, not split into two files: the plan's own framing is that
-the prompt sweep (`DailyTaskPromptsService`'s four `emit_*_checks` methods)
-and the task-side escalation sweep
+the reminders (`TaskReminderService.send_due_reminders`, Asia/Kolkata times -
+Telegram T3-T5) and the task-side escalation sweep
 (`EscalationService.sweep_task_followups`/`sweep_task_escalations`) are the
 same "what does this task need right now" pass over the same task set, so
 one scheduler captures `now` once and threads that single instant through
@@ -19,8 +19,8 @@ from datetime import datetime, timezone
 
 from app.config import settings
 from app.database import SessionLocal
-from app.services.daily_task_prompts import DailyTaskPromptsService
 from app.services.escalation import EscalationService
+from app.services.task_reminders import TaskReminderService
 
 logger = logging.getLogger(__name__)
 
@@ -36,25 +36,22 @@ def run_daily_task_prompts_pass() -> int:
     pass, so a readiness check and the task-escalation sweep that follows
     it in the same pass reason about the exact same instant rather than two
     clock reads that could straddle a day boundary. Returns the total
-    number of tasks that had an event emitted across all six calls.
+    number of tasks that had an event emitted across all three calls.
 
-    Each of the six calls is isolated from the others: one call raising
-    (a bug, a transient DB error) is logged and skipped rather than
-    aborting the rest of the pass - without this, a failure in, say,
-    `emit_readiness_checks` would silently also skip `emit_start_checks`,
-    both midday/EOD checks, and both escalation sweeps for that entire
-    tick.
+    Each call is isolated from the others: one call raising (a bug, a
+    transient DB error) is logged and skipped rather than aborting the rest
+    of the pass - without this, a failure in the reminders would silently
+    also skip both escalation sweeps for that entire tick.
     """
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
-        prompts = DailyTaskPromptsService(db)
+        reminders = TaskReminderService(db)
         escalation = EscalationService(db)
         processed = 0
         for label, call in (
-            ("emit_readiness_checks", lambda: prompts.emit_readiness_checks(now)),
-            ("emit_start_checks", lambda: prompts.emit_start_checks(now)),
-            ("emit_midday_checks", lambda: prompts.emit_midday_checks(now)),
-            ("emit_eod_checks", lambda: prompts.emit_eod_checks(now)),
+            # Telegram T3-T5: every IST task reminder (pre-start, readiness,
+            # start, midday, EOD, overdue, escalation).
+            ("send_due_reminders", lambda: reminders.send_due_reminders(now)),
             ("sweep_task_followups", lambda: escalation.sweep_task_followups(now)),
             ("sweep_task_escalations", lambda: escalation.sweep_task_escalations(now)),
         ):

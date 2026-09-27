@@ -741,6 +741,30 @@ class TaskAttendanceEvent(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class TaskReminderLog(Base):
+    """Telegram T3-T5: one row per scheduled task reminder that was sent.
+
+    The unique (task_id, reminder_type, scheduled_for_date) key is the
+    at-most-once guarantee: the reminder service inserts this row in the same
+    transaction as the reminder's outbox event, so a second scheduler pass (or
+    a second server) hits the unique key and sends nothing.
+    `scheduled_for_date` is an Asia/Kolkata calendar date - the day the
+    reminder belongs to (the task's start or due date, or the day of a daily
+    check)."""
+
+    __tablename__ = "task_reminders_log"
+    __table_args__ = (
+        UniqueConstraint("task_id", "reminder_type", "scheduled_for_date", name="uq_v2_task_reminders_log_once"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{V2_SCHEMA}.tasks.id", ondelete="CASCADE"), nullable=False)
+    reminder_type: Mapped[str] = mapped_column(Text, nullable=False)
+    scheduled_for_date: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class EscalationTracking(Base):
     """Phase 6 (first half): sweep-idempotency tracking for the escalation
     engine (`services/escalation.py`). One row per (entity_type, entity_id,
@@ -868,6 +892,9 @@ class TaskSupportAssignment(Base):
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assigned_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Telegram T2: when the employee pressed [Acknowledge] on "Task Assigned
+    # to You". Receipt only - it never touches the task's lifecycle.
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SupportAssignmentChange(Base):
@@ -1140,7 +1167,8 @@ class TelegramPendingInput(Base):
         CheckConstraint(
             "kind in ('gate_reject_reason', 'gate_health_note', 'task_early_start_reason', "
             "'task_verify_reject_reason', 'task_approval_reject_reason', 'task_blocker_type', "
-            "'task_blocker_description', 'task_add_progress')",
+            "'task_blocker_description', 'task_add_progress', 'task_readiness_note', "
+            "'task_delay_days', 'task_delay_reason')",
             name="ck_v2_telegram_pending_inputs_kind",
         ),
         # Telegram task plan U6 (KTD7): a gate question points at its gate, a

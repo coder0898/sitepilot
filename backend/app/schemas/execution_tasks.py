@@ -317,6 +317,7 @@ class TaskSupportAssignmentOut(BaseModel):
     ends_at: datetime | None
     assigned_by: uuid.UUID
     created_at: datetime
+    acknowledged_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

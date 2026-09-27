@@ -206,6 +206,16 @@ _EXECUTION_OUTCOME_EVENTS = frozenset({
     "task.approval_recorded",
 })
 
+# Telegram T3/T5 reminders that go to their own audience instead of the
+# default PM/Supervisor set: the pre-start warning to the assignee and the
+# Supervisor, the overdue warning to the assignee (the Supervisor when nobody
+# is assigned), the overdue escalation to the PM and Admins.
+_REMINDER_AUDIENCES: dict[str, frozenset[str]] = {
+    "task.prestart_warning": frozenset({"assignee", "supervisor"}),
+    "task.sla_overdue": frozenset({"assignee", "supervisor_if_unassigned"}),
+    "task.sla_escalated": frozenset({"pm", "admin"}),
+}
+
 # Gate events whose payload names a previous assignee who must also be told
 # they are no longer responsible - by dispatch time the gate's current
 # assignee is already someone else (reassign) or nobody (unassign).
@@ -549,6 +559,37 @@ class MessageDispatchService:
             return []
         return [Recipient(employee_id=employee.id, vendor_contact_id=None, phone=user.phone or "")]
 
+    def _resolve_role_recipients(self, project_id: uuid.UUID, roles: tuple[str, ...]) -> list[Recipient]:
+        rows = self.db.execute(
+            select(V2ProjectMembership.employee_id, User.phone)
+            .join(EmployeeProfile, EmployeeProfile.id == V2ProjectMembership.employee_id)
+            .join(User, User.id == EmployeeProfile.user_id)
+            .where(
+                V2ProjectMembership.project_id == project_id,
+                V2ProjectMembership.project_role.in_(roles),
+                V2ProjectMembership.ends_at.is_(None),
+            )
+        ).all()
+        return [Recipient(employee_id=employee_id, vendor_contact_id=None, phone=phone or "") for employee_id, phone in rows]
+
+    def _resolve_reminder_audience(self, task: Task, event_type: str) -> list[Recipient]:
+        """Telegram T3/T5 reminders with their own audience (see
+        `_REMINDER_AUDIENCES`), still limited to active project members; the
+        escalation's Admin copy is added after that filter, as for every other
+        Admin copy (visibility, not membership)."""
+        audience = _REMINDER_AUDIENCES[event_type]
+        recipients: list[Recipient] = []
+        if "assignee" in audience:
+            recipients.extend(self._resolve_internal_employee_recipient(task))
+        if "supervisor" in audience or ("supervisor_if_unassigned" in audience and not recipients):
+            recipients.extend(self._resolve_role_recipients(task.project_id, ("site_supervisor",)))
+        if "pm" in audience:
+            recipients.extend(self._resolve_role_recipients(task.project_id, ("project_manager",)))
+        recipients = self._only_active_project_members(task.project_id, recipients)
+        if "admin" in audience:
+            recipients.extend(self._resolve_admin_recipients())
+        return _unique_recipients(recipients)
+
     def _resolve_internal_employee_recipient(self, task: Task) -> list[Recipient]:
         """Resolves every active `TaskSupportAssignment` on `task` to its
         employee's `Recipient`. Scaffolded in Phase 1, wired up in Phase 7 -
@@ -737,6 +778,8 @@ class MessageDispatchService:
             task = self.db.get(Task, event.aggregate_id)
             if task is None:
                 return []
+            if event.event_type in _REMINDER_AUDIENCES:
+                return self._resolve_reminder_audience(task, event.event_type)
             recipients.extend(self._resolve_pm_supervisor_recipients(task.project_id))
             if event.event_type in ("task.vendor_assigned", "task.vendor_unassigned"):
                 vendor_recipient = self._resolve_vendor_recipient(event)
@@ -942,7 +985,9 @@ class MessageDispatchService:
             # instead (event/data -> shared backend -> Telegram renderer ->
             # message; no Telegram-specific business logic here).
             send_target = self._resolve_telegram_chat_id(recipient)
-            message = render_telegram(self.db, event.event_type, event.payload or {}, recipient.employee_id)
+            message = render_telegram(
+                self.db, event.event_type, event.payload or {}, recipient.employee_id, recipient.vendor_contact_id,
+            )
             # Actions with a callback become inline buttons (pressing one runs
             # the same typed command - telegram_callback.py); any action
             # without one stays listed as a typed command in the text.

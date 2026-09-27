@@ -163,18 +163,76 @@ class TelegramTaskProgressTests(TaskButtonHarness):
         remaining = self.mode().expires_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
         self.assertGreater(remaining, timedelta(minutes=9))
 
-    def test_an_item_after_the_mode_expired_is_not_stored_and_no_notice_is_sent(self):
-        self.open_mode()
-        with self.session.begin():
-            self.session.scalar(select(TelegramPendingInput)).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-        sent_before = len(self.calls("sendMessage"))
+    # ---- after the mode timed out (T6) -------------------------------------------------
 
-        self.assertEqual(self.text("Late note"), (False, False))  # goes on to normal processing
-        self.assertEqual(self.media(), (False, False))  # goes on to the gate evidence path
+    def expire_mode(self, ago=timedelta(seconds=1)) -> None:
+        with self.session.begin():
+            self.session.scalar(select(TelegramPendingInput)).expires_at = datetime.now(timezone.utc) - ago
+
+    def test_a_note_after_the_mode_expired_is_told_it_closed_with_a_reopen_button(self):
+        self.open_mode()
+        self.expire_mode()
+
+        self.assertEqual(self.text("Late note"), (True, False))
 
         self.assertEqual(self.updates(), [])
         self.assertIsNone(self.mode())
-        self.assertEqual(len(self.calls("sendMessage")), sent_before)
+        reply = self.calls("sendMessage")[-1]
+        self.assertIn("Add Progress has closed", reply["text"])
+        self.assertIn("Your message was not saved", reply["text"])
+        self.assertEqual(
+            reply["reply_markup"]["inline_keyboard"],
+            [[{"text": "Add Progress", "callback_data": task_callback("ap", self.task.id)}]],
+        )
+
+    def test_a_photo_after_the_mode_expired_is_told_it_closed_and_not_downloaded(self):
+        self.open_mode()
+        self.expire_mode()
+
+        self.assertEqual(self.media(), (True, False))  # never reaches the gate evidence path
+
+        self.assertEqual(self.updates(), [])
+        self.assertEqual(self.downloads, [])
+        self.assertIn("Add Progress has closed", self.last_reply())
+
+    def test_the_closed_notice_is_sent_once(self):
+        self.open_mode()
+        self.expire_mode()
+        self.text("Late note")
+        sent = len(self.calls("sendMessage"))
+
+        self.assertEqual(self.text("Another note"), (False, False))  # back to normal processing
+        self.assertEqual(len(self.calls("sendMessage")), sent)
+
+    def test_no_reopen_button_once_the_task_no_longer_takes_progress(self):
+        self.open_mode()
+        self.expire_mode()
+        self.set_status(self.task, "submitted")
+
+        self.text("Late note")
+
+        reply = self.calls("sendMessage")[-1]
+        self.assertIn("Add Progress has closed", reply["text"])
+        self.assertIn("only be logged while the task is in progress", reply["text"])
+        self.assertNotIn("reply_markup", reply)
+
+    def test_a_command_after_the_mode_expired_still_runs_as_a_command(self):
+        self.open_mode()
+        self.expire_mode()
+        sent = len(self.calls("sendMessage"))
+
+        self.assertEqual(self.text("STATUS T001 submitted"), (False, False))
+        self.assertIsNone(self.mode())
+        self.assertEqual(len(self.calls("sendMessage")), sent)
+
+    def test_a_mode_that_expired_long_ago_is_dropped_silently(self):
+        self.open_mode()
+        self.expire_mode(ago=timedelta(days=2))
+        sent = len(self.calls("sendMessage"))
+
+        self.assertEqual(self.text("Very late note"), (False, False))
+        self.assertIsNone(self.mode())
+        self.assertEqual(len(self.calls("sendMessage")), sent)
 
     def test_the_same_telegram_update_is_never_stored_twice(self):
         self.open_mode()

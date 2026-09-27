@@ -305,15 +305,16 @@ class TelegramGateEvidenceTests(unittest.TestCase):
     def test_media_with_no_open_session_is_not_attached_anywhere(self):
         self.send_media(ASSIGNEE_CHAT, self.photo())
 
-        self.assert_not_added("<b>No evidence submission is currently open</b>")
-        self.assertIn("Open the approval and tap Submit Evidence first.", self.last_reply()["text"])
+        self.assert_not_added("<b>Nothing is open to receive this file</b>")
+        self.assertIn("open the approval and tap Submit Evidence first.", self.last_reply()["text"])
+        self.assertIn("tap Add Progress on the task message", self.last_reply()["text"])
         self.assertEqual(self.telegram.of("getFile"), [])
 
     def test_another_employees_media_never_lands_in_the_assignees_session(self):
         self.open_session()
         self.send_media(OTHER_CHAT, self.photo())
 
-        self.assert_not_added("No evidence submission is currently open")
+        self.assert_not_added("Nothing is open to receive this file")
         self.assertEqual(self.session_files(), [])
 
     def test_media_after_the_gate_is_reassigned_away_is_rejected(self):

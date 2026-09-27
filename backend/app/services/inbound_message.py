@@ -237,6 +237,25 @@ _GATE_RESPONSE_BY_COMMAND = {
 EmployeeIdentity = tuple[User, EmployeeProfile]
 
 
+def active_pm_user(db: Session, project_id: uuid.UUID) -> User | None:
+    """The project's active PM, who records a vendor's acknowledgement on the
+    vendor's behalf (see the actor-substitution note above). Shared with the
+    Telegram vendor Acknowledge button (telegram_ack_callback.py)."""
+    membership = db.scalar(
+        select(V2ProjectMembership).where(
+            V2ProjectMembership.project_id == project_id,
+            V2ProjectMembership.project_role == "project_manager",
+            V2ProjectMembership.ends_at.is_(None),
+        )
+    )
+    if membership is None:
+        return None
+    employee = db.get(EmployeeProfile, membership.employee_id)
+    if employee is None:
+        return None
+    return db.get(User, employee.user_id)
+
+
 class InboundMessageService:
     def __init__(self, db: Session):
         self.db = db
@@ -1007,19 +1026,7 @@ class InboundMessageService:
         return matched[0]
 
     def _active_pm_user(self, project_id: uuid.UUID) -> User | None:
-        membership = self.db.scalar(
-            select(V2ProjectMembership).where(
-                V2ProjectMembership.project_id == project_id,
-                V2ProjectMembership.project_role == "project_manager",
-                V2ProjectMembership.ends_at.is_(None),
-            )
-        )
-        if membership is None:
-            return None
-        employee = self.db.get(EmployeeProfile, membership.employee_id)
-        if employee is None:
-            return None
-        return self.db.get(User, employee.user_id)
+        return active_pm_user(self.db, project_id)
 
     # ---- persistence --------------------------------------------------
 

@@ -166,6 +166,10 @@ class TelegramTaskRenderTests(unittest.TestCase):
             "task.eod_check": {"lifecycle_status": "in_progress", "planned_start_date": "2026-09-24"},
             "task.eod_followup_required": {"lifecycle_status": "in_progress", "update_sla_hours": 24},
             "task.escalated_to_admin": {"lifecycle_status": "in_progress", "update_sla_hours": 24},
+            "task.prestart_warning": {"lifecycle_status": "planned", "planned_start_date": "2026-09-24"},
+            "task.sla_overdue": {"lifecycle_status": "in_progress", "planned_end_date": "2026-09-24"},
+            "task.sla_escalated": {"lifecycle_status": "in_progress", "planned_end_date": "2026-09-24"},
+            "task.readiness_declared": {"status": "issue", "note": "No power on site"},
         }
         self.assertEqual(set(payloads), set(TASK_RENDERERS))
         for event_type, payload in payloads.items():
@@ -322,7 +326,8 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.assertEqual(self._buttons("task.support_assigned", assigned, self.employee_profile), ["Mark Task Ready"])
         self.assertEqual(self._buttons("task.support_assigned", assigned, self.supervisor_profile), ["Mark Task Ready"])
         check = {"lifecycle_status": "planned", "planned_start_date": "2026-09-24"}
-        self.assertEqual(self._buttons("task.readiness_check", check, self.employee_profile), ["Mark Task Ready"])
+        # T3: the readiness check records a readiness declaration instead.
+        self.assertEqual(self._buttons("task.readiness_check", check, self.employee_profile), ["Ready", "Need Help", "Issue"])
         # The midday check carries no start buttons - only Report Blocker (U12).
         self.assertEqual(self._buttons("task.midday_check", check, self.employee_profile), ["Report Blocker"])
 
@@ -330,14 +335,17 @@ class TelegramTaskRenderTests(unittest.TestCase):
         self.class_a.lifecycle_status = "ready"
         self.db.commit()
         check = {"lifecycle_status": "ready", "planned_start_date": "2026-09-24"}
-        self.assertEqual(self._buttons("task.start_check", check, self.supervisor_profile, task=self.class_a), ["Start Task"])
+        self.assertEqual(
+            self._buttons("task.start_check", check, self.supervisor_profile, task=self.class_a), ["Start Task", "Report Blocker"],
+        )
 
     def test_nobody_can_self_start_an_unassigned_approval_gate_task(self):
         self.gate_task.lifecycle_status = "ready"
         self.db.commit()
         check = {"lifecycle_status": "ready", "planned_start_date": "2026-09-24"}
         for recipient in (self.supervisor_profile, self.pm_profile):
-            self.assertEqual(self._buttons("task.start_check", check, recipient, task=self.gate_task), [])
+            # No Start Task; Report Blocker only (T4 adds it to "Task Starts Today").
+            self.assertEqual(self._buttons("task.start_check", check, recipient, task=self.gate_task), ["Report Blocker"])
 
     def test_no_buttons_once_the_task_has_moved_on(self):
         self.task.lifecycle_status = "in_progress"
@@ -355,23 +363,31 @@ class TelegramTaskRenderTests(unittest.TestCase):
         # An employee is assigned, so only they log progress; any member may report a blocker.
         self.assertEqual(self._buttons("task.status_changed", started, self.supervisor_profile), ["Report Blocker"])
         check = {"lifecycle_status": "in_progress", "planned_start_date": "2026-09-24"}
-        for event_type in ("task.midday_check", "task.eod_check"):
-            self.assertEqual(self._buttons(event_type, check, self.employee_profile), ["Add Progress", "Report Blocker"])
+        # T4: the executor can also submit from the checks; EOD offers Report Delay (T7).
+        self.assertEqual(
+            self._buttons("task.midday_check", check, self.employee_profile),
+            ["Add Progress", "Submit for Review", "Report Blocker"],
+        )
+        self.assertEqual(
+            self._buttons("task.eod_check", check, self.employee_profile),
+            ["Add Progress", "Submit for Review", "Report Delay", "Report Blocker"],
+        )
 
     def test_add_progress_uses_a_task_button_not_a_typed_command(self):
         self.task.lifecycle_status = "in_progress"
         self.db.commit()
         message = self._render("task.midday_check", {"lifecycle_status": "in_progress"}, self.employee_profile)
-        [[button], [report]] = message.button_rows()
+        [[button, submit], [report]] = message.button_rows()
         self.assertEqual(button["callback_data"], f"t1:ap:{self.task.id.hex}")
+        self.assertEqual(submit["callback_data"], f"t1:sb:{self.task.id.hex}")
         self.assertNotIn("Reply with", message.text_for_buttons())
 
     def test_no_add_progress_once_submitted(self):
         self.task.lifecycle_status = "submitted"
         self.db.commit()
         check = {"lifecycle_status": "submitted", "planned_start_date": "2026-09-24"}
-        # No Add Progress once submitted; Report Blocker stays (U12).
-        self.assertEqual(self._buttons("task.eod_check", check, self.employee_profile), ["Report Blocker"])
+        # No Add Progress or Submit once submitted; Report Delay and Report Blocker stay.
+        self.assertEqual(self._buttons("task.eod_check", check, self.employee_profile), ["Report Delay", "Report Blocker"])
 
     # ---- U8: review message built from the submission snapshot ------------------------------
 
