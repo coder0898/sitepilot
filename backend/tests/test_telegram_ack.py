@@ -127,8 +127,11 @@ class AssignmentRenderTests(TelegramAckHarness):
 
     def test_vendor_gets_bilingual_project_assignment_with_acknowledge(self):
         message = render_telegram(self.session, "project.activated", self._project_payload(), None, self.vendor_contact.id)
-        self.assertIn("Project Assignment / प्रोजेक्ट असाइनमेंट", message.text)
-        self.assertIn("कृपया पुष्टि करें", message.text)
+        self.assertIn("<b>New Project Assignment</b>\n<b>नया प्रोजेक्ट असाइनमेंट</b>", message.text)
+        self.assertIn("Hello Ramesh, <b>Acme Electricals</b> has been assigned to a new project.", message.text)
+        self.assertIn("Site Supervisor: <b>Deepak</b>", message.text)
+        self.assertIn("Project Manager: <b>Prachit</b>", message.text)
+        self.assertIn("कृपया <b>स्वीकार करें</b> दबाएँ", message.text)
         [[button]] = message.button_rows()
         self.assertEqual(button, {"text": "Acknowledge / स्वीकार करें", "callback_data": ack_callback("pv", self.mapping.id)})
 
@@ -145,10 +148,31 @@ class AssignmentRenderTests(TelegramAckHarness):
     def test_vendor_day_before_reminder_is_bilingual_without_buttons(self):
         payload = {"task_id": str(self.task.id), "project_id": str(self.project.id), "lifecycle_status": "planned"}
         message = render_telegram(self.session, "task.prestart_warning", payload, None, self.vendor_contact.id)
-        self.assertIn("Task Starts Tomorrow / कार्य कल शुरू होगा", message.text)
+        self.assertIn("<b>Reminder: Work Starts Tomorrow</b>\n<b>याद दिलाना: काम कल से शुरू</b>", message.text)
+        self.assertIn("your work starts <b>tomorrow,", message.text)
         self.assertIn("T001 - Task T001", message.text)
-        self.assertIn("कृपया अपनी टीम और सामग्री के साथ तैयार रहें", message.text)
+        self.assertIn("आपकी टीम, सामग्री और औज़ार समय पर साइट पर पहुँचें", message.text)
         self.assertEqual(message.button_rows(), [])
+
+    def test_vendor_removal_notices_are_plain_bilingual_html(self):
+        task_payload = {
+            "task_id": str(self.task.id), "project_id": str(self.project.id),
+            "vendor_id": str(self.vendor.id), "reason": "Scope changed",
+        }
+        withdrawn = render_telegram(self.session, "task.vendor_unassigned", task_payload, None, self.vendor_contact.id)
+        self.assertIn("<b>Task Withdrawn</b>\n<b>कार्य वापस लिया गया</b>", withdrawn.text)
+        self.assertIn("Reason: <b>Scope changed</b>", withdrawn.text)
+        self.assertNotIn("*", withdrawn.text)
+
+        removed = render_telegram(
+            self.session, "project.vendor_removed",
+            {"project_id": str(self.project.id), "vendor_id": str(self.vendor.id)}, None, self.vendor_contact.id,
+        )
+        self.assertIn("<b>Removed from Project</b>\n<b>प्रोजेक्ट से हटाया गया</b>", removed.text)
+
+        staff = render_telegram(self.session, "task.vendor_unassigned", task_payload, self.supervisor[1].id)
+        self.assertIn("<b>Vendor Removed from Task</b>", staff.text)
+        self.assertIn("Vendor: Acme Electricals", staff.text)
 
     def test_vendor_task_assignment_is_bilingual_with_acknowledge_and_typed_decline(self):
         payload = {
@@ -156,7 +180,8 @@ class AssignmentRenderTests(TelegramAckHarness):
             "assignment_id": str(self.vendor_assignment.id), "vendor_id": str(self.vendor.id),
         }
         message = render_telegram(self.session, "task.vendor_assigned", payload, None, self.vendor_contact.id)
-        self.assertIn("New Task Assigned / नया कार्य सौंपा गया", message.text)
+        self.assertIn("<b>New Task for You</b>\n<b>आपके लिए नया कार्य</b>", message.text)
+        self.assertIn("Hello Ramesh, you have a new task.", message.text)
         self.assertIn("T001 - Task T001", message.text)
         [[button]] = message.button_rows()
         self.assertEqual(button, {"text": "Acknowledge / स्वीकार करें", "callback_data": ack_callback("va", self.vendor_assignment.id)})
