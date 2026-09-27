@@ -82,6 +82,10 @@ class TelegramWebhookApiTests(unittest.TestCase):
 
         self._original_secret = settings.telegram_webhook_secret
         settings.telegram_webhook_secret = WEBHOOK_SECRET
+        # Replies are only sent when a bot token is configured; don't depend
+        # on the environment having one (httpx is patched below anyway).
+        self._original_token = settings.telegram_access_token
+        settings.telegram_access_token = "test-token"
 
         self.app = FastAPI()
         self.app.include_router(telegram_webhook_router)
@@ -107,6 +111,7 @@ class TelegramWebhookApiTests(unittest.TestCase):
         self._dispatch_patch.stop()
         self.client.close()
         settings.telegram_webhook_secret = self._original_secret
+        settings.telegram_access_token = self._original_token
 
     def _telegram_calls(self, method: str) -> list[dict]:
         return [c.kwargs["json"] for c in self.mock_post.call_args_list if c.args[0].endswith(f"/{method}")]
