@@ -195,13 +195,23 @@ def _vendor_project_activated(db: Session, payload: dict, vendor_contact_id: uui
 
 
 def _vendor_project_vendor_mapped(db: Session, payload: dict, vendor_contact_id: uuid.UUID) -> TelegramMessage:
-    contact = _contact(db, vendor_contact_id)
-    if contact is not None and str(contact.vendor_id) == str(payload.get("vendor_id")):
-        return _vendor_project_assignment(db, payload, contact)
+    # Dispatch sends this only to the vendor just mapped.
+    return _vendor_project_assignment(db, payload, _contact(db, vendor_contact_id))
+
+
+def _vendor_task_starts_tomorrow(db: Session, payload: dict, vendor_contact_id: uuid.UUID) -> TelegramMessage:
+    """The vendor's one reminder: the day before their task starts."""
     project = _get(db, V2Project, payload.get("project_id"))
-    vendor = _get(db, V2Vendor, payload.get("vendor_id"))
-    rows = _project_rows(project, payload, hindi=True)[:1] + [("Vendor / वेंडर", vendor.name if vendor else "Unknown vendor")]
-    return _message("Vendor Added to Project / प्रोजेक्ट में नया वेंडर जोड़ा गया", rows, _VENDOR_FYI)
+    task = _get(db, Task, payload.get("task_id"))
+    rows = _project_rows(project, payload, hindi=True)[:1] + [
+        ("Task / कार्य", f"{task.original_code} - {task.title}" if task else "Unknown task"),
+        ("Start date / शुरू होने की तारीख", _date(task.planned_start_date) if task else "Not set"),
+    ]
+    return _message(
+        "Task Starts Tomorrow / कार्य कल शुरू होगा", rows,
+        "Please be ready with your team and materials. Contact the site supervisor if anything is missing.\n"
+        "कृपया अपनी टीम और सामग्री के साथ तैयार रहें। कुछ कमी हो तो साइट सुपरवाइज़र से संपर्क करें।",
+    )
 
 
 def _vendor_task_assigned(db: Session, payload: dict, vendor_contact_id: uuid.UUID) -> TelegramMessage:
@@ -238,4 +248,5 @@ VENDOR_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID], TelegramMessage
     "project.activated": _vendor_project_activated,
     "project.vendor_mapped": _vendor_project_vendor_mapped,
     "task.vendor_assigned": _vendor_task_assigned,
+    "task.prestart_warning": _vendor_task_starts_tomorrow,
 }

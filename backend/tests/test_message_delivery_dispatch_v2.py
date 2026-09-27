@@ -978,14 +978,13 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             "planned_start_date": None,
         }
 
-    def test_vendor_eligible_daily_prompts_resolve_vendor_when_assignment_active(self):
-        # Covers all three vendor-eligible daily-prompt event types on a
-        # task WITH an active (non-declined) TaskVendorAssignment - each
-        # must resolve the vendor's primary contact alongside PM/Supervisor.
+    def test_vendor_gets_only_the_day_before_reminder(self):
+        # Vendors get one task reminder - the day before the task
+        # (`task.prestart_warning`) - and none of the daily checks.
         self._make_vendor_assignment(status="pending_ack")
 
         for idx, event_type in enumerate(
-            ("task.readiness_check", "task.start_check", "task.midday_check")
+            ("task.readiness_check", "task.start_check", "task.midday_check", "task.prestart_warning")
         ):
             with self.subTest(event_type=event_type):
                 with self.Session() as session:
@@ -1002,19 +1001,15 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
 
                 deliveries = self._deliveries_for(event_id)
                 vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
-                self.assertEqual(len(vendor_rows), 1, f"{event_type} should resolve exactly one vendor contact")
-                self.assertEqual(vendor_rows[0].recipient_vendor_contact_id, self.vendor_contact_id)
+                if event_type == "task.prestart_warning":
+                    self.assertEqual([d.recipient_vendor_contact_id for d in vendor_rows], [self.vendor_contact_id])
+                else:
+                    self.assertEqual(vendor_rows, [], f"{event_type} must not reach the vendor")
 
-                employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
-                self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
-                                  {self.pm_employee_id, self.supervisor_employee_id})
-
-    def test_vendor_eligible_daily_prompts_resolve_no_vendor_when_no_assignment(self):
-        # Same three event types, no TaskVendorAssignment at all - PM/
-        # Supervisor still resolve, but no vendor recipient.
-        for idx, event_type in enumerate(
-            ("task.readiness_check", "task.start_check", "task.midday_check")
-        ):
+    def test_day_before_reminder_resolves_no_vendor_when_no_assignment(self):
+        # No TaskVendorAssignment at all - the Supervisor still resolves, but
+        # no vendor recipient.
+        for idx, event_type in enumerate(("task.prestart_warning",)):
             with self.subTest(event_type=event_type):
                 with self.Session() as session:
                     event_id = self._create_event(
@@ -1033,17 +1028,16 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
                 self.assertEqual(vendor_rows, [])
 
                 employee_ids = {d.recipient_employee_id for d in deliveries if d.recipient_employee_id is not None}
-                self.assertEqual({self.pm_employee_id, self.supervisor_employee_id} & employee_ids,
-                                  {self.pm_employee_id, self.supervisor_employee_id})
+                self.assertIn(self.supervisor_employee_id, employee_ids)
 
-    def test_vendor_eligible_daily_prompts_ignore_declined_assignment(self):
+    def test_day_before_reminder_ignores_declined_vendor_assignment(self):
         # A declined assignment means the vendor is no longer involved -
         # must resolve to no vendor recipient, same as "no assignment".
         self._make_vendor_assignment(status="declined")
 
         with self.Session() as session:
             event_id = self._create_event(
-                session, event_type="task.readiness_check", aggregate_type="task",
+                session, event_type="task.prestart_warning", aggregate_type="task",
                 aggregate_id=self.task_id, payload=self._daily_prompt_payload(), key="test:9-declined",
             )
             session.commit()
@@ -1190,10 +1184,11 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
         employee_ids = [d.recipient_employee_id for d in self._deliveries_for(event_id) if d.recipient_employee_id]
         self.assertEqual(employee_ids.count(self.supervisor_employee_id), 1)
 
-    def test_delay_recorded_reaches_pm_supervisor_support_employee_and_vendor(self):
-        # A delay must reach everyone actually concerned with the task, not
-        # just PM/Supervisor: the support-assigned Internal Employee and any
-        # vendor currently delegated to the task too.
+    def test_delay_recorded_reaches_pm_supervisor_support_employee_not_vendor(self):
+        # A delay reaches the people doing the work, not only PM/Supervisor:
+        # the support-assigned Internal Employee too. A vendor delegated to
+        # the task is not told - vendors get only their assignment messages
+        # and the day-before reminder.
         self._make_support_assignment(status="active")
         self._make_vendor_assignment(status="pending_ack")
 
@@ -1216,9 +1211,7 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id} & employee_ids,
             {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
         )
-        vendor_rows = [d for d in deliveries if d.recipient_vendor_contact_id is not None]
-        self.assertEqual(len(vendor_rows), 1)
-        self.assertEqual(vendor_rows[0].recipient_vendor_contact_id, self.vendor_contact_id)
+        self.assertEqual([d for d in deliveries if d.recipient_vendor_contact_id is not None], [])
 
     def test_delay_recorded_with_no_support_or_vendor_still_reaches_pm_supervisor(self):
         with self.Session() as session:
@@ -1337,6 +1330,32 @@ class MessageDeliveryDispatchTests(unittest.TestCase):
             set(employee_ids),
             {self.pm_employee_id, self.supervisor_employee_id, self.internal_employee_employee_id},
         )
+
+    def test_vendors_hear_only_about_their_own_project_assignment(self):
+        # Activation: every mapped vendor. A new team member: no vendor. A
+        # vendor mapping: only that vendor, never the other vendors.
+        with self.Session() as session:
+            session.add(ProjectVendor(project_id=self.project_id, vendor_id=self.vendor_id, mapped_by=PM_ID))
+            session.commit()
+        cases = (
+            ("project.activated", {}, 1),
+            ("project.member_added", {"employee_id": str(self.internal_employee_employee_id)}, 0),
+            ("project.vendor_mapped", {"vendor_id": str(self.vendor_id)}, 1),
+            ("project.vendor_mapped", {"vendor_id": str(uuid.uuid4())}, 0),
+        )
+        for idx, (event_type, payload, expected) in enumerate(cases):
+            with self.subTest(event_type=event_type, expected=expected):
+                with self.Session() as session:
+                    event_id = self._create_event(
+                        session, event_type=event_type, aggregate_type="project",
+                        aggregate_id=self.project_id, payload={"project_id": str(self.project_id), **payload},
+                        key=f"test:10-vendor-scope-{idx}",
+                    )
+                    session.commit()
+                with self.Session() as session:
+                    MessageDispatchService(session).process_pending()
+                vendor_rows = [d for d in self._deliveries_for(event_id) if d.recipient_vendor_contact_id is not None]
+                self.assertEqual(len(vendor_rows), expected)
 
     # ---- 11. U13: `user`-aggregate recipient resolution (R13) --------------
 

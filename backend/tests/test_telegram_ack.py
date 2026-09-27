@@ -132,18 +132,23 @@ class AssignmentRenderTests(TelegramAckHarness):
         [[button]] = message.button_rows()
         self.assertEqual(button, {"text": "Acknowledge / स्वीकार करें", "callback_data": ack_callback("pv", self.mapping.id)})
 
-    def test_vendor_mapped_welcomes_that_vendor_and_informs_other_vendors(self):
+    def test_vendor_mapped_welcomes_that_vendor(self):
+        # Dispatch sends it only to the vendor just mapped (vendor message rule).
         payload = {"project_id": str(self.project.id), "vendor_id": str(self.vendor.id)}
         own = render_telegram(self.session, "project.vendor_mapped", payload, None, self.vendor_contact.id)
         self.assertEqual(own.button_rows()[0][0]["callback_data"], ack_callback("pv", self.mapping.id))
 
-        other = render_telegram(self.session, "project.vendor_mapped", payload, None, self.other_vendor_contact.id)
-        self.assertIn("प्रोजेक्ट में नया वेंडर जोड़ा गया", other.text)
-        self.assertEqual(other.button_rows(), [])
-
         internal = render_telegram(self.session, "project.vendor_mapped", payload, self.supervisor[1].id)
         self.assertIn("Vendor Added to Project", internal.text)
         self.assertIn("Acme Electricals", internal.text)
+
+    def test_vendor_day_before_reminder_is_bilingual_without_buttons(self):
+        payload = {"task_id": str(self.task.id), "project_id": str(self.project.id), "lifecycle_status": "planned"}
+        message = render_telegram(self.session, "task.prestart_warning", payload, None, self.vendor_contact.id)
+        self.assertIn("Task Starts Tomorrow / कार्य कल शुरू होगा", message.text)
+        self.assertIn("T001 - Task T001", message.text)
+        self.assertIn("कृपया अपनी टीम और सामग्री के साथ तैयार रहें", message.text)
+        self.assertEqual(message.button_rows(), [])
 
     def test_vendor_task_assignment_is_bilingual_with_acknowledge_and_typed_decline(self):
         payload = {

@@ -207,11 +207,11 @@ _EXECUTION_OUTCOME_EVENTS = frozenset({
 })
 
 # Telegram T3/T5 reminders that go to their own audience instead of the
-# default PM/Supervisor set: the pre-start warning to the assignee and the
-# Supervisor, the overdue warning to the assignee (the Supervisor when nobody
+# default PM/Supervisor set: the pre-start warning to the assignee, the
+# Supervisor and the vendor delegated to the task, the overdue warning to the assignee (the Supervisor when nobody
 # is assigned), the overdue escalation to the PM and Admins.
 _REMINDER_AUDIENCES: dict[str, frozenset[str]] = {
-    "task.prestart_warning": frozenset({"assignee", "supervisor"}),
+    "task.prestart_warning": frozenset({"assignee", "supervisor", "vendor"}),
     "task.sla_overdue": frozenset({"assignee", "supervisor_if_unassigned"}),
     "task.sla_escalated": frozenset({"pm", "admin"}),
 }
@@ -231,15 +231,11 @@ _SUPPORT_ASSIGNMENT_EMPLOYEE_KEYS: dict[str, tuple[str, ...]] = {
     "task.support_ended": ("previous_employee_id", "replacement_employee_id"),
 }
 
-# Phase 7: three of the four daily-prompt event types - the doc's own tables
-# mark readiness/start/midday as "Vendor if involved" but the EOD check's
-# receiver list is PM/Supervisor/Internal Employee only, no vendor -
-# `task.eod_check` is deliberately excluded here.
-_VENDOR_ELIGIBLE_TASK_EVENTS: set[str] = {
-    "task.readiness_check",
-    "task.start_check",
-    "task.midday_check",
-}
+# Vendors get exactly three kinds of message: their project assignment
+# (`project.activated` / their own `project.vendor_mapped`), their task
+# assignment (`task.vendor_assigned`), and one reminder the day before the
+# task (`task.prestart_warning`, see `_REMINDER_AUDIENCES`) - plus the notice
+# when they are removed. No daily checks, delays or team news.
 
 # U1: the three `project`-aggregate event types (not emitted until later
 # units - see this unit's own plan note) whose audience is "every active
@@ -479,13 +475,11 @@ class MessageDispatchService:
         return self._primary_vendor_contact_recipient(uuid.UUID(vendor_id_raw))
 
     def _resolve_vendor_recipient_for_task(self, task: Task) -> Recipient | None:
-        """Phase 7: lookup-driven vendor resolution for the readiness/start/
-        midday daily-prompt events (`_VENDOR_ELIGIBLE_TASK_EVENTS`). Unlike
-        `_resolve_vendor_recipient`, these events' payloads (written by
-        `DailyTaskPromptsService._emit_for_tasks` - `task_id`, `project_id`,
-        `lifecycle_status`, `planned_start_date`) carry no vendor info at
-        all, since a prompt sweep doesn't know per-task vendor assignment
-        without querying for it.
+        """Lookup-driven vendor resolution for the vendor's day-before
+        reminder (`task.prestart_warning`). Unlike `_resolve_vendor_recipient`,
+        a reminder's payload (written by `TaskReminderService`) carries no
+        vendor info at all, since the reminder sweep doesn't know per-task
+        vendor assignment without querying for it.
 
         "Active" here mirrors `vendor_acknowledgement.py`'s
         `RESOLVED_ASSIGNMENT_STATUSES` framing in reverse: a
@@ -586,6 +580,10 @@ class MessageDispatchService:
         if "pm" in audience:
             recipients.extend(self._resolve_role_recipients(task.project_id, ("project_manager",)))
         recipients = self._only_active_project_members(task.project_id, recipients)
+        if "vendor" in audience:
+            vendor_recipient = self._resolve_vendor_recipient_for_task(task)
+            if vendor_recipient is not None:
+                recipients.append(vendor_recipient)
         if "admin" in audience:
             recipients.extend(self._resolve_admin_recipients())
         return _unique_recipients(recipients)
@@ -796,10 +794,6 @@ class MessageDispatchService:
                     for recipient in self._resolve_payload_employee_recipient(event, key):
                         if all(r.employee_id != recipient.employee_id for r in recipients):
                             recipients.append(recipient)
-            if event.event_type in _VENDOR_ELIGIBLE_TASK_EVENTS:
-                vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
-                if vendor_task_recipient is not None:
-                    recipients.append(vendor_task_recipient)
             if event.event_type == "task.blocker_resolved":
                 # Telegram task plan U12: whoever reported the blocker is told
                 # it was resolved (still subject to the active-member filter).
@@ -807,14 +801,8 @@ class MessageDispatchService:
             if event.event_type == "task.delay_recorded":
                 # A delay must reach everyone actually working this task, not
                 # just its PM/Supervisor: any Internal Employee support-
-                # assigned to it, and any vendor currently delegated to it
-                # (regardless of who the delay's own responsibility_type
-                # names - a vendor on the task is "concerned" by a delay on
-                # it either way).
+                # assigned to it. Vendors are not told (vendor message rule).
                 recipients.extend(self._resolve_internal_employee_recipient(task))
-                vendor_task_recipient = self._resolve_vendor_recipient_for_task(task)
-                if vendor_task_recipient is not None:
-                    recipients.append(vendor_task_recipient)
             if event.event_type in _EXECUTION_OUTCOME_EVENTS:
                 recipients.extend(self._resolve_execution_participants(task))
             recipients = self._only_active_project_members(task.project_id, recipients)
@@ -845,7 +833,15 @@ class MessageDispatchService:
                 # a first attempt that failed (see `_ALL_MEMBERS_PROJECT_EVENTS`'s
                 # comment).
                 recipients.extend(self._resolve_all_project_members(event.aggregate_id))
-                recipients.extend(self._resolve_all_project_vendors(event.aggregate_id))
+                # Vendors hear only about their own project assignment: every
+                # mapped vendor on activation, and only the vendor just
+                # mapped on `project.vendor_mapped` - never team news.
+                if event.event_type == "project.activated":
+                    recipients.extend(self._resolve_all_project_vendors(event.aggregate_id))
+                elif event.event_type == "project.vendor_mapped":
+                    vendor_recipient = self._resolve_vendor_recipient(event)
+                    if vendor_recipient is not None:
+                        recipients.append(vendor_recipient)
             else:
                 recipients.extend(self._resolve_pm_supervisor_recipients(event.aggregate_id))
             if event.event_type in _ADMIN_CC_PROJECT_EVENTS:
