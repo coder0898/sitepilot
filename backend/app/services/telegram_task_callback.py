@@ -41,6 +41,8 @@ from app.services.task_lifecycle import EarlyStartReasonRequired, TaskLifecycleS
 from app.services.task_progress import ALLOWED_EVIDENCE_MIME_TYPES, MAX_EVIDENCE_SIZE_BYTES, TaskProgressService
 from app.services.task_approval import TaskApprovalService
 from app.services.task_blocker import TaskBlockerService
+from app.services.task_delay import TaskDelayService
+from app.services.task_readiness_declaration import TaskReadinessDeclarationService
 from app.services.task_verification import TaskVerificationService
 from app.services.telegram_message import parse_task_callback, task_callback
 from app.services.telegram_pending_input import (
@@ -50,6 +52,9 @@ from app.services.telegram_pending_input import (
     KIND_TASK_APPROVAL_REJECT_REASON,
     KIND_TASK_BLOCKER_DESCRIPTION,
     KIND_TASK_BLOCKER_TYPE,
+    KIND_TASK_DELAY_DAYS,
+    KIND_TASK_DELAY_REASON,
+    KIND_TASK_READINESS_NOTE,
     KIND_TASK_VERIFY_REJECT_REASON,
     PENDING_INPUT_TTL,
     TakenInput,
@@ -57,6 +62,7 @@ from app.services.telegram_pending_input import (
     open_add_progress_mode,
     peek_pending,
     set_pending,
+    take_expired_add_progress_mode,
     take_pending,
 )
 from app.services.telegram_provider import TelegramProviderAdapter
@@ -114,6 +120,23 @@ REPORT_BLOCKER = "rb"
 CANCEL_BLOCKER = "bc"
 RESOLVE_BLOCKER = "bs"
 OLDER_SUBMISSION = "This review is for an older submission - open the latest review message."
+# Readiness check (T3): [Ready] [Need Help] [Issue] record a readiness
+# declaration; the latter two ask for a note first, with [Cancel].
+READINESS_BUTTONS = {"yr": "ready", "yh": "need_help", "yi": "issue"}
+CANCEL_READINESS_NOTE = "yc"
+_READINESS_LABELS = {"ready": "Ready", "need_help": "Need Help", "issue": "Issue"}
+# Report Delay (T7): [Report Delay] offers the delay causes
+# (`t1:dt:<task>:<type>`), then asks the impact in days and the reason, each
+# with [Cancel]. `vendor` is never offered - it needs a vendor, and vendors
+# are out of Telegram scope.
+REPORT_DELAY = "dl"
+DELAY_TYPE = "dt"
+CANCEL_DELAY = "dc"
+DELAY_TYPES = {
+    "client": "Client", "approval": "Approval", "design": "Design",
+    "site_readiness": "Site Readiness", "internal": "Internal", "other": "Other",
+}
+MAX_DELAY_DAYS = 365
 
 # A text starting with one of these closes Add Progress mode and runs as the
 # command it is, never becoming a progress note (KTD8).
@@ -142,6 +165,10 @@ def _format_date(value: date) -> str:
     return value.strftime("%d %b %Y").lstrip("0")
 
 
+def _days(days: int) -> str:
+    return f"{days} day" if days == 1 else f"{days} days"
+
+
 def _shorten(text: str, limit: int = 60) -> str:
     one_line = " ".join(text.split())
     return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
@@ -156,6 +183,9 @@ _APPROVE_BUTTON = _TaskButton("Approve", "approve this task", "Approved", "compl
 # Audit label for blocker reports and resolutions (U12) - not a transition.
 _BLOCKER_BUTTON = _TaskButton("Blocker", "report a blocker", "Reported", "in_progress")
 _REJECT_APPROVAL_BUTTON = _TaskButton("PM Reject", "reject this task", "Rejected", "rejected")
+# Audit labels for readiness declarations (T3) and delays (T7) - not transitions.
+_READINESS_BUTTON = _TaskButton("Readiness", "record readiness", "Recorded", "ready")
+_DELAY_BUTTON = _TaskButton("Delay", "report a delay", "Recorded", "in_progress")
 
 
 class TelegramTaskCallbackService:
@@ -187,6 +217,17 @@ class TelegramTaskCallbackService:
             return self._review_button(update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback, data)
         if callback is not None and callback.code in (APPROVE, REJECT_APPROVAL, CANCEL_REJECT_APPROVAL):
             return self._approval_button(update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback, data)
+        if callback is not None and callback.code in READINESS_BUTTONS:
+            return self._readiness_button(
+                update_id, chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id,
+                READINESS_BUTTONS[callback.code],
+            )
+        if callback is not None and callback.code in (CANCEL_READINESS_NOTE, CANCEL_DELAY):
+            return self._cancel_question(chat_id, chat_type, from_id, message_id, callback_query_id, callback)
+        if callback is not None and callback.code == REPORT_DELAY:
+            return self._report_delay(chat_id, chat_type, from_id, callback_query_id, callback.task_id)
+        if callback is not None and callback.code == DELAY_TYPE:
+            return self._delay_type(chat_id, chat_type, from_id, message_id, callback_query_id, callback.task_id, callback.arg)
         if callback is not None and callback.code == REPORT_BLOCKER:
             return self._report_blocker(chat_id, chat_type, from_id, callback_query_id, callback.task_id)
         if callback is not None and callback.code == CANCEL_BLOCKER:
@@ -306,6 +347,9 @@ class TelegramTaskCallbackService:
             KIND_TASK_APPROVAL_REJECT_REASON: "Tap Reject on the approval message again",
             KIND_TASK_BLOCKER_TYPE: "Tap Report Blocker again",
             KIND_TASK_BLOCKER_DESCRIPTION: "Tap Report Blocker again",
+            KIND_TASK_READINESS_NOTE: "Tap the readiness button again",
+            KIND_TASK_DELAY_DAYS: "Tap Report Delay again",
+            KIND_TASK_DELAY_REASON: "Tap Report Delay again",
         }.get(pending.kind, "Start again from the task message")
         if taken.expired:
             self._reply(
@@ -324,6 +368,10 @@ class TelegramTaskCallbackService:
             )
         if pending.kind in (KIND_TASK_BLOCKER_TYPE, KIND_TASK_BLOCKER_DESCRIPTION):
             return self._blocker_answer(update_id, chat_id, pending, answer)
+        if pending.kind == KIND_TASK_READINESS_NOTE:
+            return self._declare_readiness(update_id, chat_id, pending.task_id, pending.draft_text, answer)
+        if pending.kind in (KIND_TASK_DELAY_DAYS, KIND_TASK_DELAY_REASON):
+            return self._delay_answer(update_id, chat_id, pending, answer)
         return self._start_early(update_id, chat_id, pending.task_id, answer)
 
     def _start_early(self, update_id: int, chat_id: str, task_id, reason: str) -> bool:
@@ -413,13 +461,15 @@ class TelegramTaskCallbackService:
         """A text message while Add Progress mode may be open. Returns
         (handled, acted): not handled means it is not a progress note (no open
         mode, or a command) and goes on to normal processing."""
+        keyword = text.split()[0].upper() if text.split() else ""
+        if self._told_add_progress_closed(chat_id, chat_type, passes_through=keyword in _COMMAND_KEYWORDS):
+            return True, False
         pending = open_add_progress_mode(self.db, chat_id)
         if pending is None:
             self.db.commit()  # an expired mode was dropped
             return False, False
         if chat_type is not None and chat_type != "private":
             return False, False
-        keyword = text.split()[0].upper() if text.split() else ""
         if keyword in _COMMAND_KEYWORDS:
             close_add_progress_mode(self.db, chat_id)
             self.db.commit()
@@ -430,6 +480,8 @@ class TelegramTaskCallbackService:
     def handle_progress_media(self, *, update_id: int, chat_id: str, chat_type: str | None, media: dict) -> tuple[bool, bool]:
         """A photo or document while Add Progress mode may be open. Returns
         (handled, acted); not handled goes on to the gate evidence path."""
+        if self._told_add_progress_closed(chat_id, chat_type):
+            return True, False
         pending = open_add_progress_mode(self.db, chat_id)
         if pending is None:
             self.db.commit()
@@ -457,6 +509,36 @@ class TelegramTaskCallbackService:
             evidence=(download.bytes, filename, mime_type),
         )
         return True, acted
+
+    def _told_add_progress_closed(self, chat_id: str, chat_type: str | None, passes_through: bool = False) -> bool:
+        """T6: the first message after Add Progress timed out (within a day)
+        is answered "Add Progress has closed" instead of being silently lost
+        or treated as gate evidence - with [Add Progress] to reopen it while
+        the task still takes progress. Nothing is saved. A command, or a
+        message outside a private chat, still goes on to normal processing.
+        Returns True when the message was answered here."""
+        expired = take_expired_add_progress_mode(self.db, chat_id)
+        self.db.commit()
+        if expired is None or passes_through or (chat_type is not None and chat_type != "private"):
+            return False
+        checked = self._person_and_task(chat_id, expired.task_id)
+        if isinstance(checked, str):
+            return False
+        user, _employee, task = checked
+        text = (
+            f"<b>Add Progress has closed</b>\n\nTask: {_e(task.original_code)} - {_e(task.title)}\n\n"
+            f"Your message was not saved. Add Progress closes after {_ADD_PROGRESS_MINUTES} minutes "
+            "without a message."
+        )
+        refusal = self._progress_refusal(user, task)
+        if refusal:
+            self._reply(chat_id, f"{text}\n\n{_e(refusal)}")
+        else:
+            self._ask(
+                chat_id, f"{text}\n\nTap Add Progress to open it again, then send your message.",
+                [[{"text": "Add Progress", "callback_data": task_callback(ADD_PROGRESS, task.id)}]],
+            )
+        return True
 
     def _store_progress(
         self, update_id: int, chat_id: str, pending, *, note: str | None, received: str,
@@ -774,6 +856,201 @@ class TelegramTaskCallbackService:
 
     def _cancel_blocker_row(self, task: Task) -> list[list[dict]]:
         return [[{"text": "Cancel", "callback_data": task_callback(CANCEL_BLOCKER, task.id)}]]
+
+    # ---- Readiness check (T3) ----------------------------------------------------------------
+
+    def _readiness_button(
+        self, update_id: int, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, task_id, status: str,
+    ) -> bool:
+        what = "record readiness"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        _, _, task = checked
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        if status == "ready":
+            acted = self._declare_readiness(update_id, chat_id, task.id, status, None)
+            self._answer(callback_query_id, "Recorded" if acted else "Couldn't record")
+            return acted
+        pending = set_pending(self.db, chat_id=chat_id, kind=KIND_TASK_READINESS_NOTE, task_id=task.id, draft_text=status)
+        self._answer(callback_query_id, "Note needed")
+        pending.prompt_message_id = self._ask(
+            chat_id,
+            f"<b>{_e(_READINESS_LABELS[status])}: {_e(task.original_code)} - {_e(task.title)}</b>\n\n"
+            "What is missing or needed before this task can start?\n"
+            f"Send it as your next message within {_MINUTES} minutes.",
+            [[{"text": "Cancel", "callback_data": task_callback(CANCEL_READINESS_NOTE, task.id)}]],
+        )
+        self.db.commit()
+        return False
+
+    def _declare_readiness(self, update_id: int, chat_id: str, task_id, status: str, note: str | None) -> bool:
+        """Records the declaration through TaskReadinessDeclarationService -
+        the same call as the Web App. Never changes the task's status."""
+        what = "record readiness"
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(checked)}")
+            return False
+        user, employee, task = checked
+        label = _READINESS_LABELS.get(status, status)
+        body = f"[readiness] {task.original_code}: {label}" + (f": {note}" if note else "")
+        try:
+            TaskReadinessDeclarationService(self.db).declare(task.project_id, task.id, user, status, note)
+        except HTTPException as exc:
+            self.db.rollback()
+            self._record(update_id, chat_id, _READINESS_BUTTON, employee, "rejected", str(exc.detail), task, body=body)
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(exc.detail)}")
+            return False
+        self._record(update_id, chat_id, _READINESS_BUTTON, employee, "processed", None, task, body=body)
+        told = "" if status == "ready" else "\n\nYour Supervisor and PM have been told."
+        self._reply(
+            chat_id,
+            f"<b>Readiness Recorded: {_e(label)}</b>\n\nTask: {_e(task.original_code)} - {_e(task.title)}"
+            + (f"\nNote: {_e(note)}" if note else "") + told,
+        )
+        return True
+
+    # ---- Report Delay (T7) ----------------------------------------------------------------------
+
+    def _report_delay(self, chat_id: str, chat_type: str | None, from_id: str | None, callback_query_id: str | None, task_id) -> bool:
+        what = "report a delay"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        _, _, task = checked
+        self._answer(callback_query_id, "Choose the cause")
+        causes = list(DELAY_TYPES.items())
+        rows = [
+            [{"text": label, "callback_data": task_callback(DELAY_TYPE, task.id, code)} for code, label in causes[i:i + 3]]
+            for i in range(0, len(causes), 3)
+        ]
+        self._ask(
+            chat_id,
+            f"<b>Report Delay: {_e(task.original_code)} - {_e(task.title)}</b>\n\nWhat is causing the delay?",
+            rows + self._cancel_delay_row(task),
+        )
+        return False
+
+    def _delay_type(
+        self, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, task_id, delay_type: str | None,
+    ) -> bool:
+        what = "report a delay"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        if delay_type not in DELAY_TYPES:
+            self._fail(chat_id, callback_query_id, what, STALE)
+            return False
+        checked = self._person_and_task(chat_id, task_id)
+        if isinstance(checked, str):
+            self._fail(chat_id, callback_query_id, what, checked)
+            return False
+        _, _, task = checked
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        self._answer(callback_query_id, DELAY_TYPES[delay_type])
+        self._ask_delay_days(chat_id, task, delay_type)
+        return False
+
+    def _ask_delay_days(self, chat_id: str, task: Task, delay_type: str, retry: bool = False) -> None:
+        pending = set_pending(self.db, chat_id=chat_id, kind=KIND_TASK_DELAY_DAYS, task_id=task.id, draft_text=delay_type)
+        first = "That wasn't a number of days. " if retry else ""
+        pending.prompt_message_id = self._ask(
+            chat_id,
+            f"<b>Delay cause: {_e(DELAY_TYPES[delay_type])}</b>\n\n{first}"
+            "By how many days will this delay the task? Send a whole number, like 2.\n"
+            f"Send it as your next message within {_MINUTES} minutes.",
+            self._cancel_delay_row(task),
+        )
+        self.db.commit()
+
+    def _delay_answer(self, update_id: int, chat_id: str, pending, answer: str) -> bool:
+        """The days answer asks for the reason next (cause and days kept in
+        draft_text); the reason answer records the delay through
+        TaskDelayService - the same call as the Web App."""
+        what = "report a delay"
+        checked = self._person_and_task(chat_id, pending.task_id)
+        if isinstance(checked, str):
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(checked)}")
+            return False
+        user, employee, task = checked
+        if pending.kind == KIND_TASK_DELAY_DAYS:
+            delay_type = pending.draft_text
+            days = int(answer) if answer.isdigit() else 0
+            if not 0 < days <= MAX_DELAY_DAYS:
+                self._ask_delay_days(chat_id, task, delay_type, retry=True)
+                return False
+            question = set_pending(
+                self.db, chat_id=chat_id, kind=KIND_TASK_DELAY_REASON, task_id=task.id, draft_text=f"{delay_type}|{days}",
+            )
+            question.prompt_message_id = self._ask(
+                chat_id,
+                f"<b>Delay: {_e(DELAY_TYPES[delay_type])}, {_days(days)}</b>\n\n"
+                "What is the reason? For example: client has not approved the drawings.\n"
+                f"Send it as your next message within {_MINUTES} minutes.",
+                self._cancel_delay_row(task),
+            )
+            self.db.commit()
+            return False
+        delay_type, days_text = pending.draft_text.split("|", 1)
+        days = int(days_text)
+        body = f"[reply] Delay on {task.original_code}: {delay_type}, {days} days: {answer}"
+        try:
+            TaskDelayService(self.db).create_delay(task.project_id, task.id, user, delay_type, answer, days)
+        except HTTPException as exc:
+            self.db.rollback()
+            self._record(update_id, chat_id, _DELAY_BUTTON, employee, "rejected", str(exc.detail), task, body=body)
+            self._reply(chat_id, f"<b>Couldn't {what}</b>\n\n{_e(exc.detail)}")
+            return False
+        self._record(update_id, chat_id, _DELAY_BUTTON, employee, "processed", None, task, body=body)
+        self._reply(
+            chat_id,
+            f"<b>Delay Recorded</b>\n\nTask: {_e(task.original_code)} - {_e(task.title)}\n"
+            f"Cause: {_e(DELAY_TYPES.get(delay_type, delay_type))}\nImpact: {_days(days)}\n"
+            f"Reason: {_e(answer)}\n\nYour Supervisor and PM have been told.",
+        )
+        return True
+
+    def _cancel_delay_row(self, task: Task) -> list[list[dict]]:
+        return [[{"text": "Cancel", "callback_data": task_callback(CANCEL_DELAY, task.id)}]]
+
+    def _cancel_question(
+        self, chat_id: str, chat_type: str | None, from_id: str | None, message_id: int | None,
+        callback_query_id: str | None, callback,
+    ) -> bool:
+        """[Cancel] under a readiness note or a delay question (T3/T7). The
+        delay-cause choice has no question yet, so Cancel there just closes."""
+        delay = callback.code == CANCEL_DELAY
+        what = "cancel the delay report" if delay else "cancel the readiness note"
+        if chat_type != "private" or from_id != chat_id:
+            self._fail(chat_id, callback_query_id, what, PRIVATE_ONLY)
+            return False
+        if message_id is not None:
+            self.provider.remove_buttons(chat_id, message_id)
+        kinds = (KIND_TASK_DELAY_DAYS, KIND_TASK_DELAY_REASON) if delay else (KIND_TASK_READINESS_NOTE,)
+        pending = peek_pending(self.db, chat_id)
+        if pending is not None and pending.kind in kinds and pending.task_id == callback.task_id:
+            take_pending(self.db, chat_id)
+            self.db.commit()
+        self._answer(callback_query_id, "Cancelled")
+        self._reply(
+            chat_id,
+            "<b>Delay report cancelled</b>\n\nNo delay was recorded." if delay
+            else "<b>Readiness not recorded</b>\n\nNothing was saved.",
+        )
+        return False
 
     # ---- PM approval (U10) -----------------------------------------------------------------
 

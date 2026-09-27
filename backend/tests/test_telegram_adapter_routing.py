@@ -200,8 +200,17 @@ class TelegramAdapterRoutingTests(unittest.TestCase):
     def test_non_gate_telegram_message_is_sent_without_parse_mode(self, mock_post):
         mock_post.return_value = _FakeResponse(200, {"ok": True, "result": {"message_id": 8}})
         recipient = Recipient(employee_id=self.telegram_profile_id, vendor_contact_id=None, phone="", channel="telegram")
+        # Vendor removal is still a plain-text message (project.activated is
+        # HTML since Telegram T2).
+        plain_event = OutboxEvent(
+            event_type="project.vendor_removed", aggregate_type="project", aggregate_id=uuid.uuid4(),
+            payload={"reason": "Contract ended"},
+            idempotency_key=str(uuid.uuid4()), status="pending",
+        )
+        self.session.add(plain_event)
+        self.session.flush()
 
-        self.service._dispatch_to_recipient(self.event, recipient, DEFAULT_TEMPLATE)
+        self.service._dispatch_to_recipient(plain_event, recipient, DEFAULT_TEMPLATE)
 
         self.assertNotIn("parse_mode", mock_post.call_args.kwargs["json"])
         self.assertNotIn("reply_markup", mock_post.call_args.kwargs["json"])

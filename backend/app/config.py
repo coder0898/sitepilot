@@ -90,20 +90,11 @@ class Settings(BaseSettings):
     # cadence nobody runs is not a cadence. The switch exists for an
     # operator who needs to pause it without redeploying.
     daily_task_prompts_enabled: bool = True
-    # Hourly: frequent enough to catch a "morning of start" or "midday"
-    # window without needing precise wall-clock scheduling. Per-calendar-day
-    # idempotency (see `DailyTaskPromptsService`) makes ticking more often
-    # than once a day harmless - it just means a task's prompt fires closer
-    # to whichever hour it first becomes eligible.
-    daily_task_prompts_interval_seconds: float = 3600.0
-    # UTC hour bounds for `DailyTaskPromptsService.emit_midday_checks`/
-    # `emit_eod_checks` - without these, both checks queried the identical
-    # "in progress" condition with no time-of-day gating, so an hourly tick
-    # could fire the "midday" and "end-of-day" prompts back-to-back at any
-    # hour. Midday must be strictly before EOD; the checks below use
-    # `[midday, eod)` for the midday window and `[eod, 24)` for EOD.
-    daily_task_prompts_midday_hour_utc: int = 12
-    daily_task_prompts_eod_hour_utc: int = 18
+    # Every 5 minutes, so each Asia/Kolkata reminder (09:00, 13:30, 18:30,
+    # ...; see `task_reminders.py`) goes out within 5 minutes of its time.
+    # The reminder log makes extra passes harmless: each reminder is sent
+    # at most once per task per IST day.
+    daily_task_prompts_interval_seconds: float = 300.0
     # Plan Phase 6 (second half): the gate due-date reminder + approval-side
     # escalation sweep (`gate_reminder_scheduler.py`). Same enabled-by-
     # default rationale as above.

@@ -47,7 +47,16 @@ KIND_TASK_APPROVAL_REJECT_REASON = "task_approval_reject_reason"
 # while the description is asked.
 KIND_TASK_BLOCKER_TYPE = "task_blocker_type"
 KIND_TASK_BLOCKER_DESCRIPTION = "task_blocker_description"
+# T3: the note after a readiness [Need Help] / [Issue] (status in draft_text).
+KIND_TASK_READINESS_NOTE = "task_readiness_note"
+# T7: Report Delay asks the impact in days (type in draft_text), then the
+# reason (draft_text "<type>|<days>").
+KIND_TASK_DELAY_DAYS = "task_delay_days"
+KIND_TASK_DELAY_REASON = "task_delay_reason"
 TASK_KINDS = frozenset({
+    KIND_TASK_READINESS_NOTE,
+    KIND_TASK_DELAY_DAYS,
+    KIND_TASK_DELAY_REASON,
     KIND_TASK_EARLY_START_REASON,
     KIND_TASK_VERIFY_REJECT_REASON,
     KIND_TASK_APPROVAL_REJECT_REASON,
@@ -120,8 +129,9 @@ def peek_pending(db: Session, chat_id: str) -> TelegramPendingInput | None:
 
 def open_add_progress_mode(db: Session, chat_id: str, now: datetime | None = None) -> TelegramPendingInput | None:
     """This chat's Add Progress mode while it is still open. An expired mode
-    is dropped silently - unlike a question, it never captures a message
-    just to say it expired (KTD8). Callers commit."""
+    is dropped here; the text and media handlers first offer it to
+    `take_expired_add_progress_mode`, which tells the person it closed (T6).
+    Callers commit."""
     now = now or datetime.now(timezone.utc)
     pending = peek_pending(db, chat_id)
     if pending is None or pending.kind != KIND_TASK_ADD_PROGRESS:
@@ -131,6 +141,26 @@ def open_add_progress_mode(db: Session, chat_id: str, now: datetime | None = Non
         db.flush()
         return None
     return pending
+
+
+def take_expired_add_progress_mode(
+    db: Session, chat_id: str, now: datetime | None = None,
+) -> TelegramPendingInput | None:
+    """This chat's Add Progress mode if it timed out within
+    `EXPIRED_NOTICE_WINDOW` - removed, so the person is told once that it
+    closed (T6) and their next message isn't silently lost. A mode that is
+    still open, or expired longer ago, returns None (the latter is dropped).
+    Callers commit."""
+    now = now or datetime.now(timezone.utc)
+    pending = peek_pending(db, chat_id)
+    if pending is None or pending.kind != KIND_TASK_ADD_PROGRESS:
+        return None
+    expires_at = _aware(pending.expires_at)
+    if now < expires_at:
+        return None
+    db.delete(pending)
+    db.flush()
+    return pending if now - expires_at <= EXPIRED_NOTICE_WINDOW else None
 
 
 def close_add_progress_mode(db: Session, chat_id: str) -> bool:

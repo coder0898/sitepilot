@@ -41,6 +41,12 @@ describe("MyAssignedWorkList", () => {
     expect(screen.getByText("Install ceiling")).toBeInTheDocument();
   });
 
+  it("labels the next action for a planned task as marking it ready", async () => {
+    taskExecutionApi.list.mockResolvedValue([task({ lifecycle_status: "planned" })]);
+    render(<MyAssignedWorkList projectId="p1" onOpenTask={vi.fn()}/>);
+    expect(await screen.findByText("Mark ready")).toBeInTheDocument();
+  });
+
   it("labels the next action for a ready task as starting work", async () => {
     taskExecutionApi.list.mockResolvedValue([task({ lifecycle_status: "ready" })]);
     render(<MyAssignedWorkList projectId="p1" onOpenTask={vi.fn()}/>);

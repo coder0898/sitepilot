@@ -151,6 +151,7 @@ def membership_json(db: Session, item: V2ProjectMembership) -> dict:
         "starts_at": item.starts_at.isoformat(),
         "ends_at": item.ends_at.isoformat() if item.ends_at else None,
         "assignment_reason": item.assignment_reason,
+        "acknowledged_at": item.acknowledged_at.isoformat() if item.acknowledged_at else None,
     }
 
 

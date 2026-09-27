@@ -30,7 +30,7 @@ function nextActionFor(task) {
   if (task.lifecycle_status === "in_progress") return "Update progress";
   if (task.lifecycle_status === "rejected") return "Resume work";
   if (["submitted", "verified", "approval_pending"].includes(task.lifecycle_status)) return "Awaiting review";
-  if (task.lifecycle_status === "planned") return "Not yet ready";
+  if (task.lifecycle_status === "planned") return "Mark ready";
   return "View details";
 }
 

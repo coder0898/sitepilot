@@ -89,6 +89,25 @@ describe("TaskDetailContent - Action Forms tab", () => {
     expect(screen.queryByRole("button", { name: "Mark Ready" })).not.toBeInTheDocument();
   });
 
+  it("lets the assigned Internal Employee mark their planned task ready", async () => {
+    taskExecutionApi.detail.mockResolvedValue({
+      ...detail, lifecycle_status: "planned", actor_is_assigned_support: true,
+      support_assignments: [{ id: "sa1", task_id: "t1", project_id: "p1", employee_id: "e1", responsibility: "Execution", status: "active", starts_at: "2026-08-01T00:00:00Z", ends_at: null, assigned_by: "u1", created_at: "2026-08-01T00:00:00Z" }],
+    });
+    taskExecutionApi.transitionStatus.mockResolvedValue({ ...detail, lifecycle_status: "ready" });
+    renderDetail({ user: employee });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark Ready" }));
+    await waitFor(() => expect(taskExecutionApi.transitionStatus).toHaveBeenCalledWith("p1", "t1", { target_status: "ready" }));
+    expect(screen.queryByRole("button", { name: "Cancel task" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer Mark Ready to an employee member who is not assigned to the task", async () => {
+    taskExecutionApi.detail.mockResolvedValue({ ...detail, lifecycle_status: "planned", actor_is_assigned_support: false });
+    renderDetail({ user: employee });
+    await screen.findByText("Support Assignment", { exact: false });
+    expect(screen.queryByRole("button", { name: "Mark Ready" })).not.toBeInTheDocument();
+  });
+
   it("lets the assigned Internal Employee start and submit their task", async () => {
     taskExecutionApi.detail.mockResolvedValue({
       ...detail, lifecycle_status: "ready", actor_is_assigned_support: true,

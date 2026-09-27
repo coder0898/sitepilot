@@ -14,8 +14,8 @@ business rules, and degrades to placeholders rather than raising. Every
 dynamic value is HTML-escaped (sent with `parse_mode="HTML"`), and no UUID,
 event name or payload key is ever shown.
 
-Vendor events (`task.vendor_*`) are deliberately not here - vendor messages
-stay exactly as they are.
+Vendor events (`task.vendor_*`) are deliberately not here: vendor removal is
+in `telegram_render.py`, vendor assignment in `telegram_assignment_render.py`.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from app.execution_models import (
     TaskDelayEvent,
     TaskEvidence,
     TaskProgressUpdate,
+    TaskReadinessDeclaration,
     TaskSupportAssignment,
 )
 from app.models import EmployeeProfile, User, UserRole
@@ -53,9 +54,15 @@ from app.services.telegram_message import (
     TelegramAction,
     TelegramAttachment,
     TelegramMessage,
+    ack_callback,
     submission_token,
     task_callback,
 )
+
+# [Acknowledge] on "Task Assigned to You" (T2) - same code as
+# telegram_assignment_render.ACK_SUPPORT_ASSIGNMENT, handled by
+# telegram_ack_callback.py.
+_ACK_SUPPORT_ASSIGNMENT = "sa"
 
 _FYI = "For your information. No action required."
 
@@ -299,6 +306,38 @@ class _Ctx:
         if not self.can_log_progress():
             return ()
         return ((TelegramAction("Add Progress", "", task_callback("ap", self.task.id)),),)
+
+    def progress_and_submit_actions(self, submit_label: str = "Submit for Review") -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Add Progress] [Submit for Review] (T4) for whoever may log progress;
+        the submit rules themselves stay with the lifecycle service."""
+        if not self.can_log_progress():
+            return ()
+        return ((
+            TelegramAction("Add Progress", "", task_callback("ap", self.task.id)),
+            TelegramAction(submit_label, "", task_callback("sb", self.task.id)),
+        ),)
+
+    def _is_member_or_admin(self) -> bool:
+        return self.is_admin() or bool(self.project_roles())
+
+    def readiness_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Ready] [Need Help] [Issue] on the readiness check (T3) - a
+        readiness declaration, which any project member or Admin may make, on
+        a task that has not started. It does not change the task's status."""
+        if self.task is None or self.task.lifecycle_status not in ("planned", "ready") or not self._is_member_or_admin():
+            return ()
+        return ((
+            TelegramAction("Ready", "", task_callback("yr", self.task.id)),
+            TelegramAction("Need Help", "", task_callback("yh", self.task.id)),
+            TelegramAction("Issue", "", task_callback("yi", self.task.id)),
+        ),)
+
+    def report_delay_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
+        """[Report Delay] (T7) - the delay service's own rule: any project
+        member or Admin, on a task that is not finished."""
+        if self.task is None or self.task.lifecycle_status in ("completed", "cancelled") or not self._is_member_or_admin():
+            return ()
+        return ((TelegramAction("Report Delay", "", task_callback("dl", self.task.id)),),)
 
     def start_actions(self) -> tuple[tuple[TelegramAction, ...], ...]:
         """[Mark Task Ready] or [Start Task], whichever the task's current
@@ -570,6 +609,11 @@ def _render_support_assigned(db: Session, payload: dict, recipient_employee_id: 
     planned = [("Planned start", _date(ctx.task.planned_start_date))] if ctx.task is not None else []
     actions = ctx.start_actions()
     if recipient_employee_id is not None and str(recipient_employee_id) == str(payload.get("employee_id")):
+        assignment_id = _uuid_or_none(payload.get("assignment_id"))
+        assignment = db.get(TaskSupportAssignment, assignment_id) if assignment_id else None
+        if assignment is not None and assignment.status == "active" and assignment.ends_at is None and assignment.acknowledged_at is None:
+            # T2: the assignee confirms they received it, before any start button.
+            actions = ((TelegramAction("Acknowledge", "", ack_callback(_ACK_SUPPORT_ASSIGNMENT, assignment.id)),),) + actions
         return _message(
             ctx, "Task Assigned to You", ctx.rows(*ctx.type_rows(), *responsibility, *planned),
             "You are responsible for doing this task and logging its progress.", actions,
@@ -653,22 +697,119 @@ def _render_rescheduled(db: Session, payload: dict, recipient_employee_id: uuid.
 # ---- daily prompts and follow-ups ----------------------------------------------
 
 
-def _render_daily_check(
-    title: str, executor_step: str, with_start_buttons: bool = False, with_progress_button: bool = False,
-) -> Callable[[Session, dict, uuid.UUID | None], TelegramMessage]:
-    def _render(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
-        ctx = _Ctx(db, payload, recipient_employee_id)
-        status = _STATUS_LABELS.get(payload.get("lifecycle_status"), _label(payload.get("lifecycle_status")))
-        rows = ctx.rows(("Status", status), ("Planned start", _date(payload.get("planned_start_date"))))
-        actions = ctx.start_actions() if with_start_buttons else ()
-        if with_progress_button:
-            actions = actions + ctx.progress_actions()
-        step = executor_step if actions or ctx.is_executor() else _FYI
-        if with_progress_button:
-            actions = actions + ctx.report_blocker_actions()
-        return _message(ctx, title, rows, step, actions)
+def _status_row(payload: dict) -> tuple[str, str]:
+    status = payload.get("lifecycle_status")
+    return "Status", _STATUS_LABELS.get(status, _label(status))
 
-    return _render
+
+# T3-T5: every reminder below is sent by `task_reminders.py` at a fixed
+# Asia/Kolkata time; the buttons are whatever the recipient may do now.
+
+
+def _render_prestart_warning(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    rows = ctx.rows(_status_row(payload), ("Planned start", _date(payload.get("planned_start_date"))))
+    actions = ctx.report_blocker_actions()
+    step = (
+        "This task starts tomorrow. Check that materials, people and access are in place, "
+        "and report a blocker now if anything will stop it starting."
+    ) if actions else _FYI
+    return _message(ctx, "Task Starts Tomorrow", rows, step, actions)
+
+
+def _render_readiness_check(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    rows = ctx.rows(_status_row(payload), ("Planned start", _date(payload.get("planned_start_date"))))
+    actions = ctx.readiness_actions()
+    step = (
+        "Can this task start tomorrow? Tap Ready, or Need Help / Issue and tell us what is missing."
+    ) if actions else _FYI
+    return _message(ctx, "Can This Task Start Tomorrow?", rows, step, actions)
+
+
+def _render_start_check(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    rows = ctx.rows(_status_row(payload), ("Planned start", _date(payload.get("planned_start_date"))))
+    actions = ctx.start_actions()
+    step = "This task starts today. Start it when work begins." if actions or ctx.is_executor() else _FYI
+    return _message(ctx, "Task Starts Today", rows, step, actions + ctx.report_blocker_actions())
+
+
+def _render_midday_check(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    actions = ctx.progress_and_submit_actions()
+    step = "How is it going? Add today's progress so far, or submit it if the work is complete." if actions else _FYI
+    return _message(ctx, "Midday Check", ctx.rows(_status_row(payload)), step, actions + ctx.report_blocker_actions())
+
+
+def _render_eod_check(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    rows = ctx.rows(_status_row(payload), ("Planned finish", _date(payload.get("planned_end_date"))))
+    actions = ctx.progress_and_submit_actions()
+    step = (
+        "End of day: add what was completed today, submit the task if it is finished, "
+        "or report a delay if it will not finish on time."
+    ) if actions else _FYI
+    return _message(ctx, "End-of-Day Check", rows, step, actions + ctx.report_delay_actions() + ctx.report_blocker_actions())
+
+
+def _render_sla_overdue(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    rows = ctx.rows(_status_row(payload), ("Was due", _date(payload.get("planned_end_date"))))
+    actions = ctx.progress_and_submit_actions(submit_label="Submit Now") + ctx.report_delay_actions()
+    step = (
+        "This task was due yesterday and has not been submitted. Submit it now if it is finished, "
+        "or report a delay with the reason. Your PM will be alerted at 9:30 AM."
+    ) if actions else "This task was due yesterday and has not been submitted. " + _FYI
+    return _message(ctx, "Task Overdue", rows, step, actions)
+
+
+def _render_sla_escalated(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    assignees = []
+    last_update = None
+    if ctx.task is not None:
+        assignees = [
+            _employee_name(db, employee_id) for employee_id in db.scalars(
+                select(TaskSupportAssignment.employee_id).where(
+                    TaskSupportAssignment.task_id == ctx.task.id, TaskSupportAssignment.status == "active",
+                )
+            )
+        ]
+        last_update = db.scalar(
+            select(TaskProgressUpdate.created_at).where(TaskProgressUpdate.task_id == ctx.task.id)
+            .order_by(TaskProgressUpdate.created_at.desc()).limit(1)
+        )
+    rows = ctx.rows(
+        _status_row(payload),
+        ("Was due", _date(payload.get("planned_end_date"))),
+        ("Assigned to", ", ".join(assignees) or "Nobody"),
+        ("Last progress", _date(last_update) if last_update else "None logged"),
+    )
+    return _message(
+        ctx, "Escalation: Task Overdue", rows,
+        "This task is past its due date, has not been submitted, and the assignee was reminded at 6:30 AM. "
+        "Please follow up.",
+    )
+
+
+_READINESS_LABELS = {"ready": "Ready", "issue": "Issue", "need_help": "Need Help"}
+
+
+def _render_readiness_declared(db: Session, payload: dict, recipient_employee_id: uuid.UUID | None) -> TelegramMessage:
+    ctx = _Ctx(db, payload, recipient_employee_id)
+    status = _READINESS_LABELS.get(payload.get("status"), _label(payload.get("status")))
+    declaration = None
+    declaration_id = _uuid_or_none(payload.get("declaration_id"))
+    if declaration_id:
+        declaration = db.get(TaskReadinessDeclaration, declaration_id)
+    rows = ctx.rows(
+        ("Readiness", status),
+        ("Declared by", _user_name(db, declaration.declared_by) if declaration else "Unknown user"),
+        *([("Note", payload["note"])] if payload.get("note") else []),
+    )
+    step = _FYI if payload.get("status") == "ready" else "Help is needed before this task can start. Please follow up."
+    return _message(ctx, f"Readiness: {status}", rows, step)
 
 
 def _render_no_update(title: str) -> Callable[[Session, dict, uuid.UUID | None], TelegramMessage]:
@@ -693,18 +834,14 @@ TASK_RENDERERS: dict[str, Callable[[Session, dict, uuid.UUID | None], TelegramMe
     "task.blocker_resolved": _render_blocker_resolved,
     "task.delay_recorded": _render_delay_recorded,
     "task.rescheduled": _render_rescheduled,
-    "task.readiness_check": _render_daily_check(
-        "Readiness Check", "Is the site ready for this task? Mark it ready when it is.", with_start_buttons=True,
-    ),
-    "task.start_check": _render_daily_check(
-        "Start Check", "This task is due to start. Start it when work begins.", with_start_buttons=True,
-    ),
-    "task.midday_check": _render_daily_check(
-        "Midday Check", "Please log today's progress so far.", with_progress_button=True,
-    ),
-    "task.eod_check": _render_daily_check(
-        "End-of-Day Check", "Please log what was completed today.", with_progress_button=True,
-    ),
+    "task.prestart_warning": _render_prestart_warning,
+    "task.readiness_check": _render_readiness_check,
+    "task.start_check": _render_start_check,
+    "task.midday_check": _render_midday_check,
+    "task.eod_check": _render_eod_check,
+    "task.sla_overdue": _render_sla_overdue,
+    "task.sla_escalated": _render_sla_escalated,
+    "task.readiness_declared": _render_readiness_declared,
     "task.eod_followup_required": _render_no_update("Progress Update Overdue"),
     "task.escalated_to_admin": _render_no_update("Escalated: Progress Update Overdue"),
 }
