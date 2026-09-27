@@ -106,11 +106,14 @@ export function canExecute(detail, user, roles) {
 export function forwardTargetsFor(detail, user, roles) {
   const targets = FORWARD_TRANSITIONS[detail.lifecycle_status] || [];
   if (!targets.length) return [];
-  // Scheduling (`ready`) is Supervisor/PM authority on this project;
-  // start/submit follow the executor rule in canExecute.
+  // Scheduling (`ready`) is Supervisor/PM authority on this project, plus the
+  // actively assigned employee (task_lifecycle.py lets them mark it ready so
+  // a busy Supervisor/PM doesn't block its start); start/submit follow the
+  // executor rule in canExecute.
   const canSchedule = isPlatformAdmin(user)
     || roles.includes("site_supervisor")
-    || roles.includes("project_manager");
+    || roles.includes("project_manager")
+    || Boolean(detail.actor_is_assigned_support);
   const canExec = canExecute(detail, user, roles);
 
   return targets.filter(target => (
