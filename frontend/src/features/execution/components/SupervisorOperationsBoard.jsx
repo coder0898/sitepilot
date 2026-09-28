@@ -2,11 +2,11 @@ import { CalendarClock, ClipboardCheck, Clock3, Rocket, Search, ShieldAlert, Shi
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
-import { Button, EmptyState, LoadingSpinner, Pill } from "../../../components/ui";
+import { Button, EmptyState, LoadingSpinner, Pill, Select } from "../../../components/ui";
 import { todayIso } from "../../../utils/format";
 import { STATUS_TONE } from "./TaskDetailContent";
 import { TaskDetailDrawer } from "./TaskDetailDrawer";
-import { needsReview, startedEarlyDays, taskOccupiesDay, todayAsDay } from "./executionViewHelpers";
+import { matchesTaskType, needsReview, startedEarlyDays, TASK_TYPE_FILTERS, taskOccupiesDay, todayAsDay } from "./executionViewHelpers";
 
 const VISIBLE_PER_COLUMN = 5;
 
@@ -88,6 +88,7 @@ export function SupervisorOperationsBoard({ projectId, user }) {
   const [attentionFilter, setAttentionFilter] = useState(null);
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
 
   async function load() {
     setLoading(true);
@@ -109,7 +110,7 @@ export function SupervisorOperationsBoard({ projectId, user }) {
     projectsApi.detail(projectId).then(detail => { if (active) setProject(detail); }).catch(() => { if (active) setProject(null); });
     return () => { active = false; };
   }, [projectId]);
-  useEffect(() => { setExpandedColumns(new Set()); setAttentionFilter(null); setSearch(""); }, [projectId]);
+  useEffect(() => { setExpandedColumns(new Set()); setAttentionFilter(null); setSearch(""); setTypeFilter("all"); }, [projectId]);
 
   const today = todayAsDay();
   const candidates = (project?.memberships || []).filter(m => m.project_role === "internal_employee");
@@ -117,9 +118,10 @@ export function SupervisorOperationsBoard({ projectId, user }) {
 
   const term = search.trim().toLowerCase();
   const searchedTasks = useMemo(() => {
-    if (!term) return tasks;
-    return tasks.filter(task => [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term)));
-  }, [tasks, term]);
+    const typed = tasks.filter(task => matchesTaskType(task, typeFilter));
+    if (!term) return typed;
+    return typed.filter(task => [task.original_code, task.title, task.category, task.phase].some(value => value && value.toLowerCase().includes(term)));
+  }, [tasks, term, typeFilter]);
 
   const columns = useMemo(() => {
     if (!today) return [];
@@ -173,10 +175,15 @@ export function SupervisorOperationsBoard({ projectId, user }) {
         <span className="text-xs font-bold text-slate-500">Today: {new Date(`${todayIso()}T00:00:00Z`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" })}</span>
       </header>
 
-      <label className="relative min-w-[200px]">
+      <div className="flex flex-wrap items-center gap-2">
+      <label className="relative min-w-[200px] flex-1">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
         <input value={search} onChange={event => setSearch(event.target.value)} className="min-h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10" placeholder="Search task code, title, phase or category"/>
       </label>
+      <Select value={typeFilter} onChange={event => setTypeFilter(event.target.value)} aria-label="Filter by task type" className="min-h-10 w-auto min-w-[150px]">
+        {TASK_TYPE_FILTERS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+      </Select>
+      </div>
 
       {/* items-start: without it, a CSS Grid row stretches every column to
           match its tallest sibling by default. Each DayColumn is itself a

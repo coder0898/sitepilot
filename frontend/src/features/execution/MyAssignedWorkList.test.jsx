@@ -72,4 +72,11 @@ describe("MyAssignedWorkList", () => {
     render(<MyAssignedWorkList projectId="p1" onOpenTask={vi.fn()}/>);
     expect(await screen.findByText("No tasks assigned")).toBeInTheDocument();
   });
+
+  it("does not offer the task type filter to Internal Employees", async () => {
+    taskExecutionApi.list.mockResolvedValue([]);
+    render(<MyAssignedWorkList projectId="p1" onOpenTask={vi.fn()}/>);
+    await waitFor(() => expect(taskExecutionApi.list).toHaveBeenCalled());
+    expect(screen.queryByLabelText("Filter by task type")).not.toBeInTheDocument();
+  });
 });

@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.execution_models import TASK_CLASSES, is_work_task_kind
 from app.models import User
 from app.repositories.template_mutation_repository import TemplateMutationRepository
 from app.repositories.template_task_repository import TemplateTaskRepository
@@ -129,6 +130,18 @@ def _validate_task(values: dict[str, Any], *, duration_days: int) -> None:
 
     if values.get("applicability") not in {"mandatory", "conditional"}:
         raise _invalid_task("Applicability must be mandatory or conditional.")
+
+    task_class = values.get("task_class")
+    if task_class is not None and task_class not in TASK_CLASSES:
+        raise _invalid_task("Task class must be Standard or Class A.", task_class=task_class)
+    # Milestones and approval gates have their own flows - Standard/Class A
+    # only means something for ordinary work.
+    if task_class is not None and not is_work_task_kind(values.get("task_kind")):
+        raise _invalid_task(
+            "Task class applies only to work tasks, not milestones or approval gates.",
+            task_class=task_class,
+            task_kind=values.get("task_kind"),
+        )
 
     # Execution duration is authoritative and derived from persisted schedule days.
     # Pre-Activation duration remains optional because it has no project-day placement.

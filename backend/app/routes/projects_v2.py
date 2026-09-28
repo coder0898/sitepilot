@@ -20,6 +20,8 @@ from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectMa
 from app.services.project_manual_task import ProjectManualTaskService
 from app.services.project_task_applicability import ProjectTaskApplicabilityService
 from app.services.project_template_review import ProjectTemplateReviewService
+from app.schemas.project_task_classification import ProjectTaskClassificationListOut, ProjectTaskClassificationUpdateIn
+from app.services.project_task_classification import ProjectTaskClassificationService
 from app.services.project_gate_generation import ProjectGateGenerationService
 from app.schemas.project_gates import ProjectGateGenerateOut, ProjectGateListOut
 from app.schemas.project_gate_applicability import ProjectGateApplicabilityDecisionIn, ProjectGateApplicabilityDecisionOut, ProjectGateApplicabilityHistoryItem
@@ -677,6 +679,25 @@ def project_template_review_summary(
     db: Session = Depends(get_db),
 ):
     return ProjectTemplateReviewService(db).summary(project_id, actor)
+
+
+@router.get("/{project_id}/task-classification", response_model=ProjectTaskClassificationListOut)
+def project_task_classification(
+    project_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectTaskClassificationService(db).list(project_id, actor)
+
+
+@router.put("/{project_id}/task-classification", response_model=ProjectTaskClassificationListOut)
+def update_project_task_classification(
+    project_id: uuid.UUID,
+    payload: ProjectTaskClassificationUpdateIn,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return ProjectTaskClassificationService(db).update(project_id, actor, payload)
 
 
 @router.post("/{project_id}/tasks", response_model=ProjectManualTaskCreateOut, status_code=201)

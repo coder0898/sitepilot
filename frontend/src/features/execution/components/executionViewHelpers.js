@@ -204,3 +204,10 @@ export function taskTypeOf(task) {
   }
   return { key: "standard", label: "Standard", flow: null, tone: "gray" };
 }
+
+export const TASK_TYPE_FILTERS = [["all", "All task types"], ["standard", "Standard"], ["class_a", "Class A"], ["approval_gate", "Approval Gate"]];
+
+// Milestones have no task type, so they only ever match "all".
+export function matchesTaskType(task, filterKey) {
+  return filterKey === "all" || taskTypeOf(task)?.key === filterKey;
+}

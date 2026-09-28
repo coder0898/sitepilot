@@ -35,6 +35,8 @@ export const projectsApi = {
   gateApplicabilityHistory: (projectId, gateId) => api(`/api/v2/projects/${projectId}/gates/${gateId}/applicability-decisions`),
   templateReviewTasks: (projectId, params = {}) => api(`/api/v2/projects/${projectId}/template-review/tasks${query(params)}`),
   templateReviewSummary: projectId => api(`/api/v2/projects/${projectId}/template-review/summary`),
+  taskClassification: projectId => api(`/api/v2/projects/${projectId}/task-classification`),
+  updateTaskClassification: (projectId, items) => api(`/api/v2/projects/${projectId}/task-classification`, { method: "PUT", body: JSON.stringify({ items }) }),
   decideTaskApplicability: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/applicability-decisions`, { method: "POST", body: JSON.stringify(payload) }),
   taskApplicabilityHistory: (projectId, taskId) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/applicability-decisions`),
   createManualTask: (projectId, payload) => api(`/api/v2/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
