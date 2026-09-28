@@ -64,6 +64,12 @@ def is_work_task_kind(task_kind: str | None) -> bool:
     return task_kind not in ("milestone", "approval_gate")
 
 
+# The only task_class values baseline_tasks/tasks accept (ck_v2_*_task_class).
+# Template and project-task rows have no such DB check, so the app validates
+# against this before a bad value can reach activation.
+TASK_CLASSES = ("standard", "class_a")
+
+
 class ProjectBaseline(Base):
     __tablename__ = "project_baselines"
     __table_args__ = (

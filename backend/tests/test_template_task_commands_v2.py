@@ -135,7 +135,7 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
                 phase="Execution",
                 category="Site",
                 applicability="mandatory",
-                task_class="work",
+                task_class="standard",
                 task_kind="execution",
                 evidence_required=False,
                 duration_days=2,
@@ -273,6 +273,51 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
         self.assertEqual(audit.actor_user_id, ACTOR_ID)
         self.assertIsNone(audit.before_json)
         self.assertEqual(audit.after_json["code"], "T004")
+
+    def test_task_class_accepts_standard_and_class_a_only(self):
+        for code, sequence, task_class in (("T004", 4, "standard"), ("T005", 5, "class_a")):
+            response = self.client.post(
+                f"/api/v2/templates/versions/{self.draft_id}/tasks",
+                json=self.create_payload(code=code, sequence_no=sequence, task_class=task_class),
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(response.json()["task"]["task_class"], task_class)
+
+        for bad in ("classA", "Class A", "critical"):
+            response = self.client.post(
+                f"/api/v2/templates/versions/{self.draft_id}/tasks",
+                json=self.create_payload(code="T006", sequence_no=6, task_class=bad),
+            )
+            self.assertEqual(response.status_code, 422, bad)
+            self.assertEqual(response.json()["detail"]["code"], "invalid_template_task")
+
+        update = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks/{self.task_two_id}",
+            json={"revision_token": self.revision(), "task_class": "class_a"},
+        )
+        self.assertEqual(update.status_code, 200, update.text)
+        self.assertEqual(update.json()["task"]["task_class"], "class_a")
+        rejected = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks/{self.task_two_id}",
+            json={"revision_token": self.revision(), "task_class": "gold"},
+        )
+        self.assertEqual(rejected.status_code, 422)
+        with self.Session() as session:
+            self.assertEqual(session.get(V2TemplateTask, self.task_two_id).task_class, "class_a")
+
+    def test_task_class_is_rejected_on_approval_gates(self):
+        response = self.client.post(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks",
+            json=self.create_payload(task_kind="approval_gate", task_class="class_a"),
+        )
+        self.assertEqual(response.status_code, 422)
+        gate = self.client.post(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks",
+            json=self.create_payload(task_kind="approval_gate", task_class=None),
+        )
+        self.assertEqual(gate.status_code, 201, gate.text)
+        self.assertEqual(gate.json()["task"]["task_kind"], "approval_gate")
+        self.assertIsNone(gate.json()["task"]["task_class"])
 
     def test_duplicate_code_and_sequence_are_structured_conflicts(self):
         duplicate_code = self.client.post(

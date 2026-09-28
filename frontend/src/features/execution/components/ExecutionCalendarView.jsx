@@ -11,8 +11,8 @@ import { STATUS_TONE } from "./TaskDetailContent";
 import { TaskDetailDrawer } from "./TaskDetailDrawer";
 import { blockingReasonKinds, COMPUTED_READINESS_STATES, readinessLabel, readinessTone, REASON_ICON } from "./TaskReadinessPanel";
 import {
-  actualRange, daysBetween, executionCounts, gridColumnFor, matchesStatusBucket,
-  plannedRange, STATUS_BUCKETS, timelineSpan, todayAsDay,
+  actualRange, daysBetween, executionCounts, gridColumnFor, matchesStatusBucket, matchesTaskType,
+  plannedRange, STATUS_BUCKETS, TASK_TYPE_FILTERS, timelineSpan, todayAsDay,
 } from "./executionViewHelpers";
 
 // A real Gantt grid, not floating pills: a fixed-width LEFT task table (code,
@@ -242,6 +242,7 @@ export function ExecutionCalendarView({ projectId, user }) {
   const [search, setSearch] = useState("");
   const [phaseFilter, setPhaseFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState(null);
@@ -278,6 +279,7 @@ export function ExecutionCalendarView({ projectId, user }) {
   const filtered = tasks.filter(task => {
     if (!matchesStatusBucket(task, statusFilter)) return false;
     if (phaseFilter !== "all" && task.phase !== phaseFilter) return false;
+    if (!matchesTaskType(task, typeFilter)) return false;
     // A date-range filter only means something for a task that HAS planned
     // dates - it narrows the calendar's date-wise view, not the
     // Pre-Activation Checklist, which is undated by definition.
@@ -297,7 +299,7 @@ export function ExecutionCalendarView({ projectId, user }) {
   const span = timelineSpan(dated, today);
 
   const selectedTask = tasks.find(task => task.id === selectedTaskId) || null;
-  const filtersActive = Boolean(search.trim()) || phaseFilter !== "all" || statusFilter !== "all" || Boolean(dateFrom) || Boolean(dateTo);
+  const filtersActive = Boolean(search.trim()) || phaseFilter !== "all" || statusFilter !== "all" || typeFilter !== "all" || Boolean(dateFrom) || Boolean(dateTo);
   const dayColumnPx = ZOOM_PRESETS[zoom];
 
   function togglePhase(phase) {
@@ -312,6 +314,7 @@ export function ExecutionCalendarView({ projectId, user }) {
     setSearch("");
     setPhaseFilter("all");
     setStatusFilter("all");
+    setTypeFilter("all");
     setDateFrom("");
     setDateTo("");
   }
@@ -380,6 +383,9 @@ export function ExecutionCalendarView({ projectId, user }) {
         </Select>
         <Select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} aria-label="Filter by status" className="min-h-10 w-auto min-w-[150px]">
           {STATUS_BUCKETS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </Select>
+        <Select value={typeFilter} onChange={event => setTypeFilter(event.target.value)} aria-label="Filter by task type" className="min-h-10 w-auto min-w-[150px]">
+          {TASK_TYPE_FILTERS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </Select>
         {/* Assignee filter is intentionally not offered: the task list
             payload carries only support-assignment COUNTS, never assignee

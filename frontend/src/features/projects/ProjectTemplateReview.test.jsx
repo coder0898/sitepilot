@@ -6,7 +6,7 @@ import { ProjectTemplateReview } from "./components/ProjectTemplateReview";
 
 vi.mock("../../api/projectsApi", () => ({ projectsApi: {
   templateReviewTasks: vi.fn(), templateReviewSummary: vi.fn(), taskApplicabilityHistory: vi.fn(), detail: vi.fn(), activity: vi.fn(),
-  decideTaskApplicability: vi.fn(), createManualTask: vi.fn(), generateTasks: vi.fn(), setStatus: vi.fn(), setMembership: vi.fn(), remove: vi.fn(),
+  decideTaskApplicability: vi.fn(), createManualTask: vi.fn(), generateTasks: vi.fn(), taskClassification: vi.fn(), updateTaskClassification: vi.fn(), setStatus: vi.fn(), setMembership: vi.fn(), remove: vi.fn(),
 } }));
 
 const tasks = [
@@ -22,6 +22,7 @@ beforeEach(() => {
   projectsApi.templateReviewTasks.mockResolvedValue(page());
   projectsApi.templateReviewSummary.mockResolvedValue(summary);
   projectsApi.activity.mockResolvedValue([]);
+  projectsApi.taskClassification.mockResolvedValue({ project_id: "p1", editable: true, items: [] });
   projectsApi.taskApplicabilityHistory.mockResolvedValue([]);
   projectsApi.decideTaskApplicability.mockResolvedValue({ task_id: "t9", decision_state: "excluded", included: false });
   projectsApi.createManualTask.mockResolvedValue({ task_id: "manual-1", code: "MANUAL-001", sequence: 100, source_type: "project_manual" });

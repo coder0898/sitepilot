@@ -269,4 +269,25 @@ describe("ExecutionCalendarView", () => {
     fireEvent.click(screen.getByRole("button", { name: /^today$/i }));
     expect(scrollToSpy).toHaveBeenCalled();
   });
+
+  it("filters by task type, and never counts a milestone as Standard", async () => {
+    taskExecutionApi.list.mockResolvedValue([
+      task({ id: "s1", original_code: "T001", title: "Plain work", task_class: "standard" }),
+      task({ id: "s2", original_code: "T002", title: "Unclassified work", task_class: null }),
+      task({ id: "a1", original_code: "T003", title: "Pressure test", task_class: "class_a" }),
+      task({ id: "g1", original_code: "T004", title: "Society permission", task_kind: "approval_gate", task_class: null }),
+      task({ id: "m1", original_code: "T005", title: "Handover milestone", task_kind: "milestone", task_class: null }),
+    ]);
+    render(<ExecutionCalendarView projectId="p1" user={admin}/>);
+    const filter = await screen.findByLabelText("Filter by task type");
+    const visible = () => ["Plain work", "Unclassified work", "Pressure test", "Society permission", "Handover milestone"]
+      .filter(title => screen.queryAllByText(title).length > 0);
+    await waitFor(() => expect(visible()).toHaveLength(5));
+    fireEvent.change(filter, { target: { value: "standard" } });
+    await waitFor(() => expect(visible()).toEqual(["Plain work", "Unclassified work"]));
+    fireEvent.change(filter, { target: { value: "class_a" } });
+    await waitFor(() => expect(visible()).toEqual(["Pressure test"]));
+    fireEvent.change(filter, { target: { value: "approval_gate" } });
+    await waitFor(() => expect(visible()).toEqual(["Society permission"]));
+  });
 });
