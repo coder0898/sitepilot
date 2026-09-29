@@ -289,13 +289,18 @@ def delete_template_gate(
 @router.get("", response_model=TemplateListResponse)
 def list_templates(
     search: str | None = Query(default=None, max_length=200),
-    status_filter: Literal["draft", "published"] | None = Query(default=None, alias="status"),
+    status_filter: Literal["draft", "published", "archived"] | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     actor: User = Depends(require_template_reader),
     db: Session = Depends(get_db),
 ) -> TemplateListResponse:
-    statuses = {status_filter} if actor.role == UserRole.super_admin and status_filter else None
+    if actor.role == UserRole.super_admin:
+        # Archived versions are history: listed only when asked for, so the
+        # default list stays the working set (draft + published).
+        statuses = {status_filter} if status_filter else {"draft", "published"}
+    else:
+        statuses = None
     result = TemplateQueryService(db).list_versions(
         actor, search=search, statuses=statuses, page=page, page_size=page_size
     )

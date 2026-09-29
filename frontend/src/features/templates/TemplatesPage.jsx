@@ -132,7 +132,7 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
 
     <div className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,.05)]"><div className="flex flex-col gap-3 sm:flex-row sm:items-center">
       <label className="relative min-w-0 flex-1"><Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><Input aria-label="Search templates" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} className="min-h-12 pl-11" placeholder="Search template name, code or version"/></label>
-      {isSuperAdmin && <Select aria-label="Filter template status" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }} className="min-h-12 sm:max-w-48"><option value="">All statuses</option><option value="published">Published</option><option value="draft">Draft</option></Select>}
+      {isSuperAdmin && <Select aria-label="Filter template status" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }} className="min-h-12 sm:max-w-48"><option value="">Published &amp; draft</option><option value="published">Published</option><option value="draft">Draft</option><option value="archived">Archived (history)</option></Select>}
       {hasFilters && <Button variant="ghost" className="min-h-12" onClick={clearFilters}><FilterX size={17}/> Clear filters</Button>}
       <RefreshButton className="min-h-12" loading={loading} onClick={() => setRetryKey(value => value + 1)}/>
     </div></div>

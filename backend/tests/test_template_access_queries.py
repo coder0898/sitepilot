@@ -251,7 +251,8 @@ class TemplateAccessQueryTests(unittest.TestCase):
             self.assertEqual(3, super_admin.gate_count)
 
     def test_published_only_and_allowed_status_helpers(self):
-        self.assertEqual(frozenset({"draft", "published"}), allowed_template_statuses(UserRole.super_admin))
+        # Super Admin also reads archived versions, as read-only history.
+        self.assertEqual(frozenset({"draft", "published", "archived"}), allowed_template_statuses(UserRole.super_admin))
         self.assertEqual(frozenset({"published"}), allowed_template_statuses(UserRole.admin))
         with self.Session() as session:
             page = TemplateRepository(session).list_versions(UserRole.super_admin, statuses={"published"})
