@@ -42,6 +42,7 @@ from app.project_models import (
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -65,6 +66,7 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
     """
 
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},

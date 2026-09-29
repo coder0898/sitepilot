@@ -26,12 +26,19 @@ function templateOptions(items) {
   ))}</>;
 }
 
+// Local calendar date as YYYY-MM-DD, matching a date input's value format.
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 function validateCreate(values) {
   const errors = {};
   if (!values.name.trim()) errors.name = "Project name is required.";
   if (!values.client_name.trim()) errors.client_name = "Client is required.";
   if (!values.site_address.trim()) errors.site_address = "Location is required.";
   if (!values.start_date) errors.start_date = "Proposed start date is required.";
+  else if (values.start_date < todayIso()) errors.start_date = "The proposed start date cannot be before today.";
   if (!values.project_manager_user_id) errors.project_manager_user_id = "Select an active Project Manager.";
   if (!values.supervisor_user_id) errors.supervisor_user_id = "Select an active Supervisor.";
   if (!values.template_version_id) errors.template_version_id = "Select a published template version.";
@@ -135,6 +142,7 @@ export function ProjectFormModal({ project = null, references, templates = [], t
                 required
                 value={startDate}
                 onChange={event => setStartDate(event.target.value)}
+                min={editing ? undefined : todayIso()}
                 disabled={editing && Boolean(project?.template_version_id)}
                 aria-describedby="start-date-help start-date-error"
               />

@@ -58,6 +58,13 @@ def clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
+def today_ist() -> date:
+    """Today's calendar date in India, where every site runs - so a project
+    created late evening UTC still counts as that Indian day. One place, so
+    tests can pin "today"."""
+    return datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+
+
 def derive_target_handover_date(start_date: date, template_version: V2TemplateVersion) -> date:
     """Day 1 of the schedule is the start date itself, so a 45-day template
     starting on 11 Aug hands over on 24 Sep - start + 44, not start + 45.
@@ -340,6 +347,10 @@ def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles
     name = clean_required(payload.name, "Project name")
     client_name = clean_required(payload.client_name, "Client")
     site_address = clean_required(payload.site_address, "Location")
+    # A new project starts today or later, never in the past. (Editing an
+    # existing project is not affected - its start may already be behind us.)
+    if payload.start_date < today_ist():
+        raise HTTPException(422, "The proposed start date cannot be before today.")
 
     template_version = db.get(V2TemplateVersion, payload.template_version_id)
     if not template_version or template_version.status != "published":

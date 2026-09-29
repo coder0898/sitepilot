@@ -22,6 +22,7 @@ from app.routes.project_vendors_v2 import vendors_router
 from app.routes.projects_v2 import router as projects_router
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 from app.vendor_models import ProjectVendor, V2CapabilityCategory, V2Vendor, V2VendorCapability
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -47,6 +48,7 @@ class ProjectVendorMappingApiTests(unittest.TestCase):
     """
 
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},

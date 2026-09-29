@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../../api/projectsApi";
 import { ProjectFormModal } from "./components/ProjectFormModal";
 import { ProjectsPage } from "./ProjectsPage";
@@ -61,6 +61,10 @@ function fillForm() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // New projects can't start in the past; these tests type fixed dates, so
+  // pin "today" just before them (only Date is faked - timers stay real).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-08-01T09:00:00"));
   projectsApi.list.mockResolvedValue([]);
   projectsApi.references.mockResolvedValue(references);
   projectsApi.publishedTemplates.mockResolvedValue(templateResponse);
@@ -68,6 +72,10 @@ beforeEach(() => {
   // required to render without them.
   projectsApi.summaries.mockRejectedValue(new Error("Not Found"));
   projectsApi.attention.mockRejectedValue(new Error("Not Found"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Admin draft project creation", () => {
@@ -178,6 +186,22 @@ describe("Admin draft project creation", () => {
     fireEvent.click(screen.getByRole("button", { name: /create draft/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Select a published template version");
     expect(screen.getByRole("heading", { name: /create draft project/i })).toBeInTheDocument();
+  });
+
+  it("allows today or a future start date, but not a past one", async () => {
+    await openForm();
+    const start = screen.getByLabelText("Proposed start date");
+    expect(start).toHaveAttribute("min", "2026-08-01");
+    fillForm();
+    fireEvent.change(start, { target: { value: "2026-07-31" } });
+    fireEvent.click(screen.getByRole("button", { name: /create draft/i }));
+    expect(await screen.findByText("The proposed start date cannot be before today.")).toBeInTheDocument();
+    expect(projectsApi.create).not.toHaveBeenCalled();
+
+    projectsApi.create.mockResolvedValue({ id: "project-new", code: "PRJ-NEW" });
+    fireEvent.change(start, { target: { value: "2026-08-01" } });
+    fireEvent.click(screen.getByRole("button", { name: /create draft/i }));
+    await waitFor(() => expect(projectsApi.create).toHaveBeenCalledWith(expect.objectContaining({ start_date: "2026-08-01" })));
   });
 
   it("uses responsive full-width mobile actions", async () => {

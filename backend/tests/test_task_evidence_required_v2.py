@@ -64,6 +64,7 @@ from app.template_models import (
     V2TemplateTaskDependency,
     V2TemplateVersion,
 )
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -86,6 +87,7 @@ PNG_UPLOAD = {"evidence": ("bay3.png", TINY_PNG_BYTES, "image/png")}
 
 class TaskEvidenceRequiredApiTests(unittest.TestCase):
     def setUp(self):
+        pin_project_creation_today(self)
         self.evidence_store: dict[str, bytes] = {}
         self._storage_patches = [
             patch("app.services.evidence_storage.write", side_effect=lambda key, data, content_type: self.evidence_store.__setitem__(key, data)),
