@@ -685,6 +685,29 @@ class TaskVerificationApprovalApiTests(unittest.TestCase):
         self.assertEqual(different_actor.status_code, 200, different_actor.text)
         self.assertEqual(different_actor.json()["task"]["lifecycle_status"], "completed")
 
+    def test_super_admin_fallback_verifier_cannot_also_approve(self):
+        """Super Admin holds Admin's project authority but no separation-of-duty
+        bypass: having verified in the Supervisor's place, it cannot approve."""
+        super_admin = User(
+            id=uuid.UUID("abababab-abab-4bab-8bab-abababababab"), name="Super Admin",
+            email="super@example.com", role=UserRole.super_admin, active=True,
+        )
+        with self.Session.begin() as session:
+            session.add(super_admin)
+        project = self.activate_project()
+        t002 = self.tasks_by_code(project["id"])["T002"]
+        self.drive_to_submitted(project["id"], t002.id, submitted_by="supervisor")
+
+        self.act_as(super_admin)
+        r = self.verify(project["id"], t002.id, "verified")
+        self.assertEqual(r.status_code, 200, r.text)
+        same_actor = self.approve(project["id"], t002.id, "approved")
+        self.assertEqual(same_actor.status_code, 409, same_actor.text)
+
+        self.act_as_pm()
+        different_actor = self.approve(project["id"], t002.id, "approved")
+        self.assertEqual(different_actor.status_code, 200, different_actor.text)
+
     # ---- integration: predecessor decision unblocks successor ---------------
 
     def test_class_a_predecessor_only_unblocks_successor_once_pm_approved(self):

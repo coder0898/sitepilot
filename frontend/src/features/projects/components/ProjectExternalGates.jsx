@@ -4,6 +4,7 @@ import { projectsApi } from "../../../api/projectsApi";
 import { Button, EmptyState, Field, Modal, Pill, Textarea } from "../../../components/ui";
 import { GateApplicabilityControls } from "./GateApplicabilityDecisionModal";
 import { ProjectManualGateModal } from "./ProjectManualGateModal";
+import { isOrgAdmin } from "../../../utils/constants";
 
 const mappingLabel = { exact: "Exact", broad_text: "Broad text", unmapped: "Unmapped" };
 
@@ -29,11 +30,11 @@ export function ProjectExternalGates({ project, user }) {
   // with every gate undecided and then nobody could ever decide them, and
   // since only an APPLICABLE gate becomes a runtime approval, that project
   // could never hold an external approval at all.
-  const canDecide = user.role === "admin" && ["draft", "active"].includes(project.status);
+  const canDecide = isOrgAdmin(user) && ["draft", "active"].includes(project.status);
   // NOT the same rule: adding a brand-new approval is still draft-only on the
   // backend (`ProjectManualGateService`), so offering it on an active project
   // would render a control that 409s on click.
-  const canAddManual = user.role === "admin" && project.status === "draft";
+  const canAddManual = isOrgAdmin(user) && project.status === "draft";
 
   async function load() {
     setLoading(true); setError("");

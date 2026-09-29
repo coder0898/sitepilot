@@ -5,6 +5,7 @@ import { projectsApi } from "../../../api/projectsApi";
 import { TaskApplicabilityControls } from "./TaskApplicabilityDecisionModal";
 import { ProjectManualTaskModal } from "./ProjectManualTaskModal";
 import { ProjectTaskClassification } from "./ProjectTaskClassification";
+import { isOrgAdmin } from "../../../utils/constants";
 
 const emptyPage = { items: [], pagination: { page: 1, page_size: 100, total: 0, total_pages: 0 } };
 const emptySummary = { total: 0, included: 0, excluded: 0, pending_review: 0 };
@@ -75,9 +76,9 @@ function groupedTasks(tasks) {
 }
 
 export function ProjectTemplateReview({ projectId, user, projectStatus = "draft", debounceMs = 300 }) {
-  const canReview = user?.role === "admin" || user?.role === "project_manager";
-  // Reading is Admin + the assigned PM; deciding scope is Admin alone.
-  const canDecide = user?.role === "admin";
+  const canReview = isOrgAdmin(user) || user?.role === "project_manager";
+  // Reading is Admin/Super Admin + the assigned PM; deciding scope is Admin/Super Admin alone.
+  const canDecide = isOrgAdmin(user);
   const [result, setResult] = useState(emptyPage);
   const [summary, setSummary] = useState(emptySummary);
   const [loading, setLoading] = useState(canReview);

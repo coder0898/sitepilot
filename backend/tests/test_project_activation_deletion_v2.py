@@ -39,6 +39,8 @@ ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 EMPLOYEE_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
+SUPER_ADMIN_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
+PM2_ID = uuid.UUID("ffffffff-ffff-4fff-8fff-fffffffffff6")
 
 
 class ProjectActivationDeletionApiTests(unittest.TestCase):
@@ -122,10 +124,15 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             employee = User(
                 id=EMPLOYEE_ID, name="Employee", email="employee@example.com", role=UserRole.internal_employee, active=True,
             )
-            session.add_all([admin, pm, supervisor, employee])
+            super_admin = User(
+                id=SUPER_ADMIN_ID, name="Super Admin", email="super@example.com", role=UserRole.super_admin, active=True,
+            )
+            pm2 = User(id=PM2_ID, name="PM Two", email="pm2@example.com", role=UserRole.project_manager, active=True)
+            session.add_all([admin, pm, supervisor, employee, super_admin, pm2])
             session.flush()
             session.add_all([
                 EmployeeProfile(user_id=PM_ID, employee_code="PM-001", designation="PM", availability="available"),
+                EmployeeProfile(user_id=PM2_ID, employee_code="PM-002", designation="PM", availability="available"),
                 EmployeeProfile(
                     user_id=SUPERVISOR_ID, employee_code="SUP-001", designation="Supervisor", availability="available",
                 ),
@@ -298,14 +305,61 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             count = session.scalar(select(func.count()).select_from(OutboxEvent).where(OutboxEvent.event_type == "project.activated"))
             self.assertEqual(count, 1)
 
-    def test_only_admin_can_activate(self):
+    def act_as_super_admin(self):
+        self.app.dependency_overrides[current_user] = lambda: User(
+            id=SUPER_ADMIN_ID, name="Super Admin", email="super@example.com", role=UserRole.super_admin, active=True,
+        )
+
+    def test_only_org_admin_can_activate(self):
         project = self.create_draft()
-        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee, UserRole.super_admin):
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee):
             self.app.dependency_overrides[current_user] = lambda role=role: User(
                 id=ADMIN_ID, name=role.value, email=f"{role.value}@example.com", role=role, active=True,
             )
             response = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Attempt."})
             self.assertIn(response.status_code, (403,), (role, response.text))
+
+    def test_super_admin_can_activate_hold_and_resume(self):
+        project = self.create_draft()
+        self.act_as_super_admin()
+        activate = self.client.post(f"/api/v2/projects/{project['id']}/activate", json={"reason": "Go live."})
+        self.assertEqual(activate.status_code, 200, activate.text)
+        self.assertEqual(activate.json()["status"], "active")
+        hold = self.client.post(f"/api/v2/projects/{project['id']}/status", json={"status": "on_hold", "reason": "Client pause."})
+        self.assertEqual(hold.status_code, 200, hold.text)
+        resume = self.client.post(f"/api/v2/projects/{project['id']}/status", json={"status": "active", "reason": "Resuming."})
+        self.assertEqual(resume.status_code, 200, resume.text)
+        self.assertEqual(resume.json()["status"], "active")
+        with self.Session() as session:
+            self.assertEqual(session.get(V2Project, uuid.UUID(project["id"])).activated_by, SUPER_ADMIN_ID)
+
+    def test_super_admin_can_assign_and_end_pm_on_draft(self):
+        project = self.create_draft()
+        with self.Session() as session:
+            pm2_profile_id = session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == PM2_ID))
+        self.act_as_super_admin()
+        assign = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships",
+            json={"employee_id": str(pm2_profile_id), "project_role": "project_manager", "reason": "PM swap before start."},
+        )
+        self.assertEqual(assign.status_code, 200, assign.text)
+        end = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships/{assign.json()['id']}/end", json={"reason": "Undo swap."},
+        )
+        self.assertEqual(end.status_code, 200, end.text)
+
+    def test_pm_still_cannot_assign_a_pm(self):
+        project = self.create_draft()
+        with self.Session() as session:
+            pm2_profile_id = session.scalar(select(EmployeeProfile.id).where(EmployeeProfile.user_id == PM2_ID))
+        self.app.dependency_overrides[current_user] = lambda: User(
+            id=PM_ID, name="PM", email="pm@example.com", role=UserRole.project_manager, active=True,
+        )
+        response = self.client.post(
+            f"/api/v2/projects/{project['id']}/memberships",
+            json={"employee_id": str(pm2_profile_id), "project_role": "project_manager", "reason": "Self swap."},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
 
     def test_activation_rolls_back_on_audit_failure_leaving_project_in_draft(self):
         project = self.create_draft()
@@ -474,9 +528,19 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
             self.assertEqual(session.scalar(select(func.count()).select_from(V2TemplateVersion)), version_count_before)
             self.assertEqual(session.scalar(select(func.count()).select_from(V2TemplateTask)), task_count_before)
 
-    def test_only_admin_can_delete(self):
+    def test_super_admin_can_delete_draft(self):
         project = self.create_draft()
-        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee, UserRole.super_admin):
+        self.act_as_super_admin()
+        response = self.client.request(
+            "DELETE", f"/api/v2/projects/{project['id']}",
+            json={"confirmation": project["code"], "reason": "Draft created by mistake."},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["deleted"])
+
+    def test_only_org_admin_can_delete(self):
+        project = self.create_draft()
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee):
             self.app.dependency_overrides[current_user] = lambda role=role: User(
                 id=ADMIN_ID, name=role.value, email=f"{role.value}@example.com", role=role, active=True,
             )
@@ -535,10 +599,18 @@ class ProjectActivationDeletionApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409, response.text)
 
-    def test_only_admin_can_restore(self):
+    def test_super_admin_can_restore(self):
         project = self.create_draft()
         self.archive(project)
-        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.super_admin):
+        self.act_as_super_admin()
+        response = self.client.post(f"/api/v2/projects/{project['id']}/restore", json={"reason": "Archived in error."})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "draft")
+
+    def test_only_org_admin_can_restore(self):
+        project = self.create_draft()
+        self.archive(project)
+        for role in (UserRole.project_manager, UserRole.supervisor):
             self.app.dependency_overrides[current_user] = lambda role=role: User(
                 id=ADMIN_ID, name=role.value, email=f"{role.value}@example.com", role=role, active=True,
             )

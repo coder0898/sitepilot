@@ -253,8 +253,13 @@ class ProjectTemplateReviewApiTests(unittest.TestCase):
         self.assertEqual(self.get_tasks().status_code, 403)
         self.assertEqual(self.get_summary().status_code, 403)
 
+    def test_super_admin_can_review_generated_tasks(self):
+        self.actor = self.users["super_admin"]
+        self.assertEqual(self.get_tasks().status_code, 200)
+        self.assertEqual(self.get_summary().status_code, 200)
+
     def test_other_roles_are_denied(self):
-        for key in ("supervisor", "internal", "super_admin"):
+        for key in ("supervisor", "internal"):
             with self.subTest(role=key):
                 self.actor = self.users[key]
                 self.assertEqual(self.get_tasks().status_code, 403)

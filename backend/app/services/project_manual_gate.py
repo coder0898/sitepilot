@@ -17,6 +17,7 @@ from app.project_models import (
     V2ProjectTask,
 )
 from app.schemas.project_manual_gate import ProjectManualGateCreateIn, ProjectManualGateCreateOut
+from app.services.access_control import is_org_admin
 
 MANUAL_GATE_CODE = re.compile(r"^MANUAL-GATE-(\d+)$")
 
@@ -32,7 +33,7 @@ class ProjectManualGateService:
         # Same authority as deciding gate applicability: Admin. The gate still
         # records the project's PM as accountable for chasing it (below) - they
         # own the follow-up, not the decision to add it.
-        if actor.role != UserRole.admin:
+        if not is_org_admin(actor):
             raise HTTPException(403, "Only Admin can add a manual approval.")
         if project.status != "draft":
             raise HTTPException(409, "Manual approvals can only be added while the project is Draft.")

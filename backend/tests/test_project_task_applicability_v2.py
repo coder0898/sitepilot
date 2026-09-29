@@ -237,9 +237,17 @@ class ProjectTaskApplicabilityApiTests(unittest.TestCase):
         self.assertIn("Only Admin", response.json()["detail"])
         self.assertEqual(self.client.get(history_url).status_code, 200)
 
+    def test_super_admin_can_read_and_decide_conditional_tasks(self):
+        self.actor = self.users["super_admin"]
+        response = self.decide(self.conditional_id, "excluded", "Client dropped this scope.")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["actor_user_id"], str(SUPER_ADMIN_ID))
+        history_url = f"/api/v2/projects/{self.project_id}/tasks/{self.conditional_id}/applicability-decisions"
+        self.assertEqual(self.client.get(history_url).status_code, 200)
+
     def test_unrelated_roles_can_neither_read_nor_decide(self):
         history_url = f"/api/v2/projects/{self.project_id}/tasks/{self.conditional_id}/applicability-decisions"
-        for key in ("other_pm", "supervisor", "super_admin"):
+        for key in ("other_pm", "supervisor"):
             with self.subTest(role=key):
                 self.actor = self.users[key]
                 response = self.decide(self.conditional_id, "included", "Not permitted")

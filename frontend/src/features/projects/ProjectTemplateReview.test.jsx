@@ -129,7 +129,14 @@ describe("Project template review", () => {
     await waitFor(() => expect(projectsApi.templateReviewTasks).toHaveBeenCalledTimes(2));
   });
 
-  it.each(["supervisor", "internal_employee", "super_admin"])("does not call review APIs for %s", role => {
+  it("lets a Super Admin review generated tasks like an Admin", async () => {
+    render(<ProjectTemplateReview projectId="p1" user={{ role: "super_admin" }} debounceMs={0}/>);
+    expect(await screen.findByText("Generated project tasks")).toBeInTheDocument();
+    expect(screen.queryByText("Task review is role restricted")).not.toBeInTheDocument();
+    expect(projectsApi.templateReviewTasks).toHaveBeenCalled();
+  });
+
+  it.each(["supervisor", "internal_employee"])("does not call review APIs for %s", role => {
     render(<ProjectTemplateReview projectId="p1" user={{ role }} debounceMs={0}/>);
     expect(screen.getByText("Task review is role restricted")).toBeInTheDocument();
     expect(projectsApi.templateReviewTasks).not.toHaveBeenCalled();

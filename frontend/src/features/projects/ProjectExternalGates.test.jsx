@@ -44,6 +44,13 @@ describe("Project external gate applicability", () => {
     await waitFor(() => expect(projectsApi.externalGates).toHaveBeenCalledTimes(2));
   });
 
+  it("gives a Super Admin the same applicability and manual-approval controls as Admin", async () => {
+    render(<ProjectExternalGates project={project} user={{ role: "super_admin" }}/>);
+    await screen.findByText("2 gates");
+    expect(screen.getAllByRole("button", { name: /^Applicable$/i })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /add manual approval/i })).toBeInTheDocument();
+  });
+
   it("gives the assigned PM a read-only view: applicability belongs to Admin", async () => {
     render(<ProjectExternalGates project={project} user={{ role: "project_manager" }}/>);
     await screen.findByText("2 gates");

@@ -17,6 +17,12 @@ describe("ProjectDependencies",()=>{
     expect(await screen.findByText("38 dependencies")).toBeInTheDocument();
     expect(screen.getByText(/includes an excluded task/i)).toBeInTheDocument();
   });
+  it.each([["super_admin",true],["admin",true],["project_manager",false]])("offers Create Manual Dependency to %s: %s",async(role,shown)=>{
+    projectsApi.dependencies.mockResolvedValue({total:0,excluded_warning_count:0,items:[]});
+    render(<ProjectDependencies project={project} user={{role}}/>);
+    await screen.findByText("No project dependencies generated");
+    expect(!!screen.queryByRole("button",{name:/create manual dependency/i})).toBe(shown);
+  });
   it("uses full-width mobile generation action",async()=>{
     projectsApi.dependencies.mockResolvedValue({total:0,excluded_warning_count:0,items:[]});
     render(<ProjectDependencies project={project} user={user}/>);

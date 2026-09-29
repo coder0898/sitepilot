@@ -12,6 +12,7 @@ from app.schemas.project_template_review import (
     ProjectTemplateReviewTaskOut,
     ProjectTemplateReviewTaskPage,
 )
+from app.services.access_control import is_org_admin
 from app.template_schemas import PaginationMetadata
 
 
@@ -24,7 +25,7 @@ class ProjectTemplateReviewService:
         project = self.db.get(V2Project, project_id)
         if not project:
             raise HTTPException(404, "Project not found.")
-        if actor.role == UserRole.admin:
+        if is_org_admin(actor):
             return project
         if actor.role == UserRole.project_manager:
             assigned = self.db.scalar(

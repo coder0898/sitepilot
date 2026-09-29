@@ -1,5 +1,14 @@
 from app.models import UserRole
 
+# Org-level admin authority over projects. Super Admin holds everything Admin
+# can do on a project. Separation-of-duty rules (e.g. a fallback verifier may
+# not also approve) are checked separately and bind both roles alike.
+ORG_ADMIN_ROLES = frozenset({UserRole.super_admin, UserRole.admin})
+
+
+def is_org_admin(actor) -> bool:
+    return actor.role in ORG_ADMIN_ROLES
+
 
 ROLE_DEFINITIONS = {
     UserRole.super_admin: {

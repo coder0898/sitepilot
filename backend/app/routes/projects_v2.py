@@ -32,6 +32,7 @@ from app.schemas.project_dependencies import ProjectDependencyGenerateOut, Proje
 from app.services.project_dependency_generation import ProjectDependencyGenerationService
 from app.services.project_baseline import ProjectBaselineService
 from app.services.project_role_change import ProjectRoleChangeService
+from app.services.access_control import ORG_ADMIN_ROLES, is_org_admin
 from app.services.outbox import OutboxService
 
 router = APIRouter(prefix="/api/v2/projects", tags=["v2-projects"])
@@ -122,11 +123,11 @@ def has_membership(db: Session, project_id: uuid.UUID, actor: User, roles: set[s
 
 
 def can_view(db: Session, project: V2Project, actor: User) -> bool:
-    return actor.role in {UserRole.super_admin, UserRole.admin} or has_membership(db, project.id, actor)
+    return is_org_admin(actor) or has_membership(db, project.id, actor)
 
 
 def can_edit(db: Session, project: V2Project, actor: User) -> bool:
-    return actor.role in {UserRole.super_admin, UserRole.admin} or (actor.role == UserRole.project_manager and has_membership(db, project.id, actor, {"project_manager"}))
+    return is_org_admin(actor) or (actor.role == UserRole.project_manager and has_membership(db, project.id, actor, {"project_manager"}))
 
 
 def get_project(db: Session, project_id: uuid.UUID, actor: User) -> V2Project:
@@ -220,7 +221,7 @@ def role_reference(db: Session, role: UserRole) -> list[dict]:
 
 @router.get("/reference-data")
 def reference_data(actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    can_assign_pm = actor.role in {UserRole.super_admin, UserRole.admin}
+    can_assign_pm = is_org_admin(actor)
     can_assign_supervisor = actor.role in {UserRole.super_admin, UserRole.admin, UserRole.project_manager}
     can_assign_support = actor.role in {UserRole.super_admin, UserRole.admin, UserRole.project_manager, UserRole.supervisor}
     return {
@@ -233,7 +234,7 @@ def reference_data(actor: User = Depends(current_user), db: Session = Depends(ge
 
 @router.get("/published-template-versions")
 def published_template_versions(
-    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)),
+    actor: User = Depends(require_roles(*ORG_ADMIN_ROLES)),
     db: Session = Depends(get_db),
 ):
     """Return the stable project-form reference list of eligible templates."""
@@ -265,7 +266,7 @@ def published_template_versions(
 @router.get("")
 def list_projects(status_filter: str | None = Query(None, alias="status"), search: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     statement = select(V2Project).order_by(V2Project.updated_at.desc())
-    if actor.role not in {UserRole.super_admin, UserRole.admin}:
+    if not is_org_admin(actor):
         employee = actor_employee(db, actor)
         if not employee:
             return []
@@ -330,7 +331,7 @@ def assign_membership(db: Session, project: V2Project, employee_id: uuid.UUID, p
 
 
 @router.post("", status_code=201)
-def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)), db: Session = Depends(get_db)):
+def create_project(payload: ProjectCreateIn, actor: User = Depends(require_roles(*ORG_ADMIN_ROLES)), db: Session = Depends(get_db)):
     """Create only the draft project shell and accountable memberships.
 
     Template task generation is deliberately deferred to the next Phase 3
@@ -563,7 +564,7 @@ def generate_task_snapshot(db: Session, project: V2Project, actor: User, *, comm
 @router.post("/{project_id}/generate-tasks")
 def generate_project_tasks(
     project_id: uuid.UUID,
-    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)),
+    actor: User = Depends(require_roles(*ORG_ADMIN_ROLES)),
     db: Session = Depends(get_db),
 ):
     """Manual fallback. Creation now generates the snapshot automatically, so
@@ -589,7 +590,7 @@ def create_project_manual_gate(
 
 
 @router.post("/{project_id}/generate-dependencies", response_model=ProjectDependencyGenerateOut)
-def generate_project_dependencies(project_id: uuid.UUID, actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)), db: Session = Depends(get_db)):
+def generate_project_dependencies(project_id: uuid.UUID, actor: User = Depends(require_roles(*ORG_ADMIN_ROLES)), db: Session = Depends(get_db)):
     project = get_project(db, project_id, actor)
     return ProjectDependencyGenerationService(db).generate(project, actor)
 
@@ -602,7 +603,7 @@ def list_project_dependencies(project_id: uuid.UUID, actor: User = Depends(curre
 @router.post("/{project_id}/generate-gates", response_model=ProjectGateGenerateOut)
 def generate_project_gates(
     project_id: uuid.UUID,
-    actor: User = Depends(require_roles(UserRole.super_admin, UserRole.admin)),
+    actor: User = Depends(require_roles(*ORG_ADMIN_ROLES)),
     db: Session = Depends(get_db),
 ):
     return ProjectGateGenerationService(db).generate(project_id, actor)
@@ -752,7 +753,7 @@ def update_project(project_id: uuid.UUID, payload: ProjectUpdateIn, actor: User 
     if payload.site_address is not None: project.site_address = clean_required(payload.site_address, "Site address")
     if payload.description is not None: project.description = clean_optional(payload.description)
     if payload.template_version_id is not None:
-        if actor.role not in {UserRole.super_admin, UserRole.admin}:
+        if not is_org_admin(actor):
             raise HTTPException(403, "Only Admin or Super Admin can attach the published template version.")
         if project.status != "draft":
             raise HTTPException(409, "A template can only be attached while the project is draft.")
@@ -798,7 +799,7 @@ def set_membership(project_id: uuid.UUID, payload: ProjectMembershipIn, actor: U
         raise HTTPException(409, "The team cannot change on a completed or archived project.")
     is_pm = has_membership(db, project.id, actor, {"project_manager"})
     is_supervisor = has_membership(db, project.id, actor, {"site_supervisor"})
-    allowed = (payload.project_role == "project_manager" and actor.role == UserRole.admin) or (payload.project_role == "site_supervisor" and (actor.role == UserRole.admin or is_pm)) or (payload.project_role == "internal_employee" and (actor.role == UserRole.admin or is_pm or is_supervisor))
+    allowed = (payload.project_role == "project_manager" and is_org_admin(actor)) or (payload.project_role == "site_supervisor" and (is_org_admin(actor) or is_pm)) or (payload.project_role == "internal_employee" and (is_org_admin(actor) or is_pm or is_supervisor))
     if not allowed:
         raise HTTPException(403, "You do not have permission to assign this project role.")
     if payload.project_role in ACCOUNTABLE_ROLES and project.status == "active":
@@ -833,7 +834,7 @@ def end_membership(project_id: uuid.UUID, membership_id: uuid.UUID, payload: Pro
         raise HTTPException(404, "Active project membership not found.")
     is_pm = has_membership(db, project.id, actor, {"project_manager"})
     is_supervisor = has_membership(db, project.id, actor, {"site_supervisor"})
-    allowed = (membership.project_role == "project_manager" and actor.role == UserRole.admin) or (membership.project_role == "site_supervisor" and (actor.role == UserRole.admin or is_pm)) or (membership.project_role == "internal_employee" and (actor.role == UserRole.admin or is_pm or is_supervisor))
+    allowed = (membership.project_role == "project_manager" and is_org_admin(actor)) or (membership.project_role == "site_supervisor" and (is_org_admin(actor) or is_pm)) or (membership.project_role == "internal_employee" and (is_org_admin(actor) or is_pm or is_supervisor))
     if not allowed:
         raise HTTPException(403, "You do not have permission to end this project assignment.")
     if project.status == "active" and membership.project_role in ACCOUNTABLE_ROLES:
@@ -965,7 +966,7 @@ def activate_project(project_id: uuid.UUID, payload: ProjectActivateIn, actor: U
         raise HTTPException(409, "This project is already active. Activation cannot be requested again.")
     if project.status != "draft":
         raise HTTPException(409, f"A {project.status.replace('_', ' ')} project cannot be activated. Only a draft project is eligible.")
-    if actor.role != UserRole.admin:
+    if not is_org_admin(actor):
         raise HTTPException(403, "Only Admin can activate a project.")
 
     roles = {item.project_role for item in active_memberships(db, project.id)}
@@ -1056,7 +1057,7 @@ def restore_project(project_id: uuid.UUID, payload: ProjectRestoreIn, actor: Use
     which left an accidentally archived project unrecoverable through the
     portal - this is the only route out of it."""
     project = get_project(db, project_id, actor)
-    if actor.role != UserRole.admin:
+    if not is_org_admin(actor):
         raise HTTPException(403, "Only Admin can restore an archived project.")
     if project.status != "archived":
         raise HTTPException(409, "Only an archived project can be restored.")
@@ -1089,9 +1090,9 @@ def change_status(project_id: uuid.UUID, payload: ProjectStatusIn, actor: User =
     if target not in allowed_transitions[project.status]:
         raise HTTPException(409, f"A {project.status.replace('_', ' ')} project cannot move to {target.replace('_', ' ')}.")
     is_pm = has_membership(db, project.id, actor, {"project_manager"})
-    if target in {"active", "archived"} and actor.role != UserRole.admin:
+    if target in {"active", "archived"} and not is_org_admin(actor):
         raise HTTPException(403, "Only Admin can activate or archive a project.")
-    if target in {"on_hold", "completed"} and not (actor.role == UserRole.admin or is_pm):
+    if target in {"on_hold", "completed"} and not (is_org_admin(actor) or is_pm):
         raise HTTPException(403, "Only Admin or the assigned Project Manager can make this status change.")
     if target == "active" and project.status == "draft":
         roles = {item.project_role for item in active_memberships(db, project.id)}
@@ -1190,7 +1191,7 @@ def project_execution_tasks(project_id: uuid.UUID, actor: User = Depends(current
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: uuid.UUID, payload: ProjectDeleteIn, actor: User = Depends(require_roles(UserRole.admin)), db: Session = Depends(get_db)):
+def delete_project(project_id: uuid.UUID, payload: ProjectDeleteIn, actor: User = Depends(require_roles(*ORG_ADMIN_ROLES)), db: Session = Depends(get_db)):
     """Controlled Phase 8 project deletion.
 
     - Draft projects are permanently removed (hard delete). Membership rows
