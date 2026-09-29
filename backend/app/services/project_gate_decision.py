@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -129,6 +129,9 @@ class ExternalApprovalView:
     decided_by_name: str | None
     decided_at: datetime | None
     submissions: tuple[GateSubmissionView, ...]
+    # The deadline set when the gate was assigned (or resolved from a manual
+    # gate's day rule). None for gates that never had one.
+    due_at: date | None = None
 
 
 class ProjectGateDecisionService:
@@ -368,6 +371,7 @@ class ProjectGateDecisionService:
             decided_by_name=decided_by_name,
             decided_at=approval.decided_at,
             submissions=submissions,
+            due_at=approval.due_at,
         )
 
     def _submissions_for_approvals(

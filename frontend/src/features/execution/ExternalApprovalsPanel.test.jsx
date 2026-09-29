@@ -466,4 +466,67 @@ describe("ExternalApprovalsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show Less" }));
     await waitFor(() => expect(bodyRows()).toHaveLength(6));
   });
+
+  // ---- due date set at assignment ------------------------------------------
+
+  const isoIn = days => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  it("sends the chosen due date with the assignment", async () => {
+    taskExecutionApi.assignExternalApproval.mockResolvedValue({});
+    renderPanel(admin);
+    fireEvent.click(await screen.findByRole("button", { name: "Assign" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: employee.id } });
+    fireEvent.change(within(dialog).getByLabelText(/due date/i), { target: { value: isoIn(16) } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign" }));
+    await waitFor(() => expect(taskExecutionApi.assignExternalApproval).toHaveBeenCalledWith(
+      "p1", "a1", { assignee_user_id: employee.id, due_date: isoIn(16) },
+    ));
+  });
+
+  it("refuses a due date before today without calling the API", async () => {
+    renderPanel(admin);
+    fireEvent.click(await screen.findByRole("button", { name: "Assign" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: employee.id } });
+    const dueInput = within(dialog).getByLabelText(/due date/i);
+    // The picker itself will not offer days before today...
+    expect(dueInput).toHaveAttribute("min", isoIn(0));
+    fireEvent.change(dueInput, { target: { value: isoIn(-3) } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign" }));
+    // ...and a typed past date never reaches the API.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(taskExecutionApi.assignExternalApproval).not.toHaveBeenCalled();
+  });
+
+  it.each([["Admin", admin], ["PM", pm], ["the assigned employee", employee]])("shows the due date to %s in the list and details", async (_label, viewer) => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee", due_at: "2026-10-15" },
+    ]);
+    renderPanel(viewer);
+    expect(await screen.findAllByText("15 Oct 2026")).not.toHaveLength(0);
+    await openApproval("FIRE-NOC");
+    expect(screen.getAllByText("15 Oct 2026").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("flags an unapproved gate past its due date as overdue, but not an approved one", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([
+      { ...baseApproval, id: "late", gate_code: "LATE", status: "assigned", assigned_to_user_id: employee.id, assigned_to_name: "employee", due_at: isoIn(-2) },
+      { ...baseApproval, id: "done", gate_code: "DONE", status: "approved", assigned_to_user_id: employee.id, assigned_to_name: "employee", due_at: isoIn(-2) },
+    ]);
+    renderPanel(admin);
+    await screen.findByText("LATE");
+    expect(screen.getAllByText("Overdue")).toHaveLength(1);
+  });
+
+  it("shows a dash for older gates that have no due date", async () => {
+    renderPanel(admin);
+    await openApproval("FIRE-NOC");
+    const summary = screen.getByText("Due date").parentElement;
+    expect(within(summary).getByText("—")).toBeInTheDocument();
+  });
 });

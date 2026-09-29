@@ -5,7 +5,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
-import { Button, EmptyState, Field, LoadingSpinner, Modal, Pill, Select, Textarea } from "../../../components/ui";
+import { Button, EmptyState, Field, Input, LoadingSpinner, Modal, Pill, Select, Textarea } from "../../../components/ui";
 import { formatDateShort, initials } from "../../../utils/format";
 
 // Plan: External Approval Gate Assignment & Evidence Lifecycle (U6), redesigned
@@ -70,6 +70,23 @@ function statusMeta(approval) {
 // regardless of the `blocking` flag - so "still blocking" excludes it.
 function stillBlocking(approval) {
   return approval.blocking && approval.status !== "approved";
+}
+
+// Local calendar date as YYYY-MM-DD - what a date input's `min` expects.
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+// The gate's deadline (set when it was assigned), flagged once it has passed
+// without the approval being granted. Older gates without one show "—".
+function DueDate({ approval }) {
+  if (!approval.due_at) return <span className="text-sm font-medium text-slate-400">—</span>;
+  const overdue = approval.status !== "approved" && approval.due_at < todayIso();
+  return <span className="flex flex-wrap items-center gap-1.5">
+    <span className={`text-sm font-bold ${overdue ? "text-rose-700" : "text-slate-800"}`}>{formatDateShort(approval.due_at)}</span>
+    {overdue && <Pill tone="red">Overdue</Pill>}
+  </span>;
 }
 
 const STATUS_SORT_RANK = { submitted: 0, unassigned: 1, assigned: 2, rejected: 2, approved: 3 };
@@ -271,9 +288,7 @@ function ApprovalsTable({ approvals, mayManage, user, selectedId, onSelect, onAs
                   : <span className="text-sm font-medium text-slate-400">Not assigned</span>}
               </td>
               <td className="px-4 py-3 align-top"><CoverageCell approval={approval}/></td>
-              {/* No due/expected date field exists on ProjectExternalApprovalOut - shown honestly as
-                  unavailable rather than a fabricated date. See the final report's data-gap note. */}
-              <td className="px-4 py-3 align-top text-sm font-medium text-slate-400">—</td>
+              <td className="px-4 py-3 align-top"><DueDate approval={approval}/></td>
               <td className="px-4 py-3 align-top">
                 <Button size="sm" variant={action.kind === "assign" ? "primary" : "secondary"} onClick={event => { event.stopPropagation(); if (action.kind === "assign") onAssign(approval); else onSelect(approval.id); }}>
                   {action.label}
@@ -295,15 +310,21 @@ function ApprovalsTable({ approvals, mayManage, user, selectedId, onSelect, onAs
 
 function AssignModal({ approval, candidates, title, confirmLabel, onConfirm, onClose }) {
   const [employeeId, setEmployeeId] = useState("");
+  // Pre-filled with the gate's current deadline, if any, so a reassign keeps it by default.
+  const [dueDate, setDueDate] = useState(approval.due_at || "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   async function submit(event) {
     event.preventDefault();
+    if (dueDate && dueDate < todayIso()) {
+      setError("The due date cannot be before today.");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
-      await onConfirm(employeeId);
+      await onConfirm(employeeId, dueDate || null);
     } catch (caught) {
       // A 409 here specifically means someone else assigned/decided this
       // gate in the interim (single-writer) - surfaced the same as any
@@ -320,6 +341,9 @@ function AssignModal({ approval, candidates, title, confirmLabel, onConfirm, onC
           <option value="">{candidates.length ? "Select employee" : "No eligible employees on this project"}</option>
           {candidates.map(candidate => <option key={candidate.user_id} value={candidate.user_id}>{candidate.name}</option>)}
         </Select>
+      </Field>
+      <Field label="Due date" hint="When this approval should be obtained by. Cannot be before today.">
+        <Input type="date" value={dueDate} min={todayIso()} onChange={event => setDueDate(event.target.value)}/>
       </Field>
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error}</div>}
       <div className="grid gap-2 sm:grid-cols-2">
@@ -569,10 +593,8 @@ function ReviewPanel({ projectId, approval, mayManage, user, candidates, tasksBy
           : <span className="text-sm font-medium text-slate-400">Not assigned</span>}
       </div>
       <div className="flex items-center justify-between gap-2">
-        {/* No due/expected-submission date field exists on this record - shown
-            honestly as unavailable rather than invented. */}
         <span className="text-xs font-bold text-slate-500">Due date</span>
-        <span className="text-sm font-medium text-slate-400">—</span>
+        <DueDate approval={approval}/>
       </div>
       <CoveredTasks approval={approval} tasksById={tasksById}/>
 
@@ -726,9 +748,9 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
     await load();
   }
 
-  async function assign(approval, mode, assigneeUserId) {
+  async function assign(approval, mode, assigneeUserId, dueDate) {
     const call = mode === "reassign" ? taskExecutionApi.reassignExternalApproval : taskExecutionApi.assignExternalApproval;
-    await call(projectId, approval.id, { assignee_user_id: assigneeUserId });
+    await call(projectId, approval.id, { assignee_user_id: assigneeUserId, ...(dueDate ? { due_date: dueDate } : {}) });
     setAssigning(null);
     await load();
   }
@@ -838,7 +860,7 @@ export function ExternalApprovalsPanel({ projectId, project, user }) {
       candidates={candidates}
       title={assigning.mode === "reassign" ? "Reassign external approval" : "Assign external approval"}
       confirmLabel={assigning.mode === "reassign" ? "Reassign" : "Assign"}
-      onConfirm={assigneeUserId => assign(assigning.approval, assigning.mode, assigneeUserId)}
+      onConfirm={(assigneeUserId, dueDate) => assign(assigning.approval, assigning.mode, assigneeUserId, dueDate)}
       onClose={() => setAssigning(null)}
     />}
   </div>;
