@@ -26,6 +26,8 @@ def public_user(user: User, db: Session | None = None) -> dict:
             "availability": profile.availability,
             "active_channel": profile.active_channel,
             "telegram_connected": bool(profile.telegram_chat_id),
+            # Enough to tell which chat is linked, not the full chat id.
+            "telegram_chat_hint": f"•••{profile.telegram_chat_id[-4:]}" if profile.telegram_chat_id else None,
             # Messaging readiness is a fact about the CURRENT active_channel,
             # not a blanket "has any channel" check - deliberately no
             # auto-fallback to WhatsApp if Telegram is selected but

@@ -18,6 +18,7 @@ from app.auth import require_roles
 from app.database import get_db
 from app.models import User, UserRole
 from app.services.telegram_connect import TelegramConnectService
+from app.services.telegram_provider import TelegramProviderAdapter
 
 router = APIRouter(prefix="/api/v2/telegram", tags=["v2-telegram-connect"])
 ADMIN_ROLES = (UserRole.super_admin, UserRole.admin)
@@ -40,13 +41,16 @@ def generate_connect_code(
     actor: User = Depends(require_roles(*ADMIN_ROLES)),
     db: Session = Depends(get_db),
 ):
-    token = TelegramConnectService(db).generate_code(
+    issued = TelegramConnectService(db).generate_code(
         employee_id=payload.employee_id, vendor_contact_id=payload.vendor_contact_id,
     )
+    # The raw token appears only in this response - the database holds its hash.
+    username = TelegramProviderAdapter().bot_username()
     return {
-        "code": token.token,
-        "expires_at": token.expires_at.isoformat(),
-        "start_command": f"/start {token.token}",
+        "code": issued.raw_token,
+        "expires_at": issued.expires_at.isoformat(),
+        "start_command": f"/start {issued.raw_token}",
+        "link": f"https://t.me/{username}?start={issued.raw_token}" if username else None,
     }
 
 

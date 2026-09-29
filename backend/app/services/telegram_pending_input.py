@@ -127,6 +127,13 @@ def peek_pending(db: Session, chat_id: str) -> TelegramPendingInput | None:
     return db.scalar(select(TelegramPendingInput).where(TelegramPendingInput.chat_id == chat_id))
 
 
+def clear_pending(db: Session, chat_id: str) -> None:
+    """Drops this chat's open question. A question belongs to whoever the
+    chat was linked to when it was asked, so it is cleared whenever the chat
+    is linked or unlinked - the next person on this chat must never answer it."""
+    db.execute(delete(TelegramPendingInput).where(TelegramPendingInput.chat_id == chat_id))
+
+
 def open_add_progress_mode(db: Session, chat_id: str, now: datetime | None = None) -> TelegramPendingInput | None:
     """This chat's Add Progress mode while it is still open. An expired mode
     is dropped here; the text and media handlers first offer it to
