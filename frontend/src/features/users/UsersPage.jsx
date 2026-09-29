@@ -17,6 +17,7 @@ import { usersApi } from "../../api/usersApi";
 import { roles } from "../../utils/constants";
 import { initials } from "../../utils/format";
 import { CreateUserModal, EditMyProfileModal, UserModal } from "./components/UserModals";
+import { MyTelegramPanel } from "./components/MyTelegramPanel";
 
 const managementRoles = new Set(["super_admin", "admin"]);
 
@@ -135,6 +136,8 @@ function PersonalProfile({ data, user, action }) {
       <article className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,.06)] sm:p-6"><p className="text-xs font-black uppercase tracking-[.16em] text-slate-500">Employee identity</p><div className="mt-5 grid gap-3 sm:grid-cols-2">{detailRows.map(([label, value, icon]) => <div key={label} className="rounded-[20px] bg-slate-50 p-4"><span className="flex items-center gap-2 text-xs font-black uppercase tracking-[.1em] text-slate-400">{icon}{label}</span><strong className="mt-3 block break-words text-sm text-slate-900">{value}</strong></div>)}</div></article>
       <article className="rounded-[26px] border border-blue-100 bg-blue-50/70 p-5 sm:p-6"><span className="grid size-11 place-items-center rounded-2xl bg-blue-600 text-white"><ShieldCheck size={21}/></span><p className="mt-5 text-xs font-black uppercase tracking-[.16em] text-blue-700">Your access boundary</p><h2 className="mt-1 text-xl font-black text-slate-950">{definition.label}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{definition.summary}</p><div className="mt-5 grid gap-2">{definition.capabilities.map(item => <span key={item} className="rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm">{item}</span>)}</div></article>
     </section>
+
+    <MyTelegramPanel/>
 
     <section className="flex items-start gap-3 rounded-[22px] border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-600 sm:p-5"><CircleUserRound className="mt-0.5 shrink-0 text-blue-600" size={20}/><p>You can update personal contact details here. Role, employee code, designation, department, and account status are controlled by authorized administrators.</p></section>
     {editing && <EditMyProfileModal user={user} action={action} onClose={() => setEditing(false)}/>}
