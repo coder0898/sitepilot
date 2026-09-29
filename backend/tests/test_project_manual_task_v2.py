@@ -325,8 +325,9 @@ class ProjectManualTaskApiTests(unittest.TestCase):
         self.assertEqual(self.create_task(title="Other PM task").status_code, 403)
         self.actor = self.users["supervisor"]
         self.assertEqual(self.create_task(title="Supervisor task").status_code, 403)
+        # Super Admin holds Admin's project authority.
         self.actor = self.users["super_admin"]
-        self.assertEqual(self.create_task(title="Super Admin task").status_code, 403)
+        self.assertEqual(self.create_task(title="Super Admin task").status_code, 201)
 
         self.actor = self.users["admin"]
         with self.Session.begin() as session:

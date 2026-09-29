@@ -93,6 +93,33 @@ describe("Draft-to-active activation", () => {
     expect(projectsApi.setStatus).not.toHaveBeenCalled();
   });
 
+  it("lets a Super Admin activate a draft through the activate endpoint", async () => {
+    projectsApi.activate.mockResolvedValue({ id: "p1", status: "active" });
+    renderPane({ role: "super_admin", id: "u-super" }, { status: "draft" });
+
+    expect(screen.getByLabelText("Move project to")).toHaveValue("active");
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Kickoff approved." } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
+
+    await waitFor(() => expect(projectsApi.activate).toHaveBeenCalledWith("p1", "Kickoff approved."));
+  });
+
+  it("offers a Super Admin hold and resume on a live project", () => {
+    renderPane({ role: "super_admin", id: "u-super" }, { status: "active" });
+    const options = [...screen.getByLabelText("Move project to").options].map(option => option.value);
+    expect(options).toContain("on_hold");
+    renderPane({ role: "super_admin", id: "u-super" }, { status: "on_hold" });
+    const resumeOptions = [...screen.getAllByLabelText("Move project to")[1].options].map(option => option.value);
+    expect(resumeOptions).toContain("active");
+  });
+
+  it("offers a Super Admin restore on an archived project and deletion of an unused draft", () => {
+    renderPane({ role: "super_admin", id: "u-super" });
+    expect(screen.getByRole("button", { name: /restore project/i })).toBeInTheDocument();
+    renderPane({ role: "super_admin", id: "u-super" }, { status: "draft", template_version_id: null, memberships: [] });
+    expect(screen.getByText("Delete unused draft")).toBeInTheDocument();
+  });
+
   it("still uses setStatus for a non-activation transition", async () => {
     projectsApi.setStatus.mockResolvedValue({ id: "p1", status: "on_hold" });
     renderPane({ role: "admin", id: "u-admin" }, { status: "active" });

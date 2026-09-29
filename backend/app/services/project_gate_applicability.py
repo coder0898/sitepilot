@@ -19,6 +19,7 @@ from app.schemas.project_gate_applicability import (
     ProjectGateApplicabilityDecisionOut,
     ProjectGateApplicabilityHistoryItem,
 )
+from app.services.access_control import is_org_admin
 from app.services.project_baseline import ProjectApprovalInstantiationService
 
 
@@ -47,7 +48,7 @@ class ProjectGateApplicabilityService:
                 409,
                 f"Gate applicability cannot be reviewed on a {project.status.replace('_', ' ')} project.",
             )
-        if actor.role == UserRole.admin:
+        if is_org_admin(actor):
             return project
         if actor.role == UserRole.project_manager:
             assigned = self.db.scalar(
@@ -70,7 +71,7 @@ class ProjectGateApplicabilityService:
         The assigned PM keeps read access through `_require_access` so they can
         see which approvals are blocking their site and why."""
         project = self._require_access(project_id, actor)
-        if actor.role != UserRole.admin:
+        if not is_org_admin(actor):
             raise HTTPException(403, "Only Admin can decide gate applicability.")
         return project
 

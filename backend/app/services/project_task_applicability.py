@@ -12,6 +12,7 @@ from app.schemas.project_task_applicability import (
     ProjectTaskApplicabilityDecisionOut,
     ProjectTaskApplicabilityHistoryItem,
 )
+from app.services.access_control import is_org_admin
 
 
 class ProjectTaskApplicabilityService:
@@ -22,7 +23,7 @@ class ProjectTaskApplicabilityService:
         project = self.db.get(V2Project, project_id)
         if not project:
             raise HTTPException(404, "Project not found.")
-        if actor.role == UserRole.admin:
+        if is_org_admin(actor):
             return project
         if actor.role == UserRole.project_manager:
             assigned = self.db.scalar(
@@ -49,7 +50,7 @@ class ProjectTaskApplicabilityService:
         they just cannot change it. Deciding what is in scope for a project is
         a controlled call, made centrally."""
         project = self._require_access(project_id, actor)
-        if actor.role != UserRole.admin:
+        if not is_org_admin(actor):
             raise HTTPException(403, "Only Admin can decide conditional task applicability.")
         return project
 

@@ -31,7 +31,7 @@ class ProjectTaskClassificationService:
         self.db = db
 
     def _require_access(self, project_id: uuid.UUID, actor: User) -> V2Project:
-        # Same people who review the generated tasks: Admin and the assigned PM.
+        # Same people who review the generated tasks: Admin, Super Admin and the assigned PM.
         return ProjectTemplateReviewService(self.db).require_access(project_id, actor)
 
     def list(self, project_id: uuid.UUID, actor: User) -> ProjectTaskClassificationListOut:

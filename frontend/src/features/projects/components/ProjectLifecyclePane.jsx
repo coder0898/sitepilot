@@ -2,23 +2,25 @@ import { ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { Alert, Button, Field, Input, Select } from "../../../components/ui";
+import { isOrgAdmin } from "../../../utils/constants";
 
 const actionLabel = value => value.toLowerCase().replaceAll("_", " ").replace(/(^|\s)\S/g, match => match.toUpperCase());
 
 // Mirrors change_status' guards in backend/app/routes/projects_v2.py:
-// activate and archive are Admin-only, on-hold/complete are Admin or the
-// project's own PM. Super Admin is deliberately absent - it cannot move a
-// project's lifecycle at all.
+// activate and archive are Admin/Super Admin, on-hold/complete are
+// Admin/Super Admin or the project's own PM.
+const ORG_ADMIN_TRANSITIONS = { draft: ["active", "archived"], active: ["on_hold", "completed", "archived"], on_hold: ["active", "completed", "archived"], completed: ["archived"], archived: [] };
 const TRANSITIONS = {
-  admin: { draft: ["active", "archived"], active: ["on_hold", "completed", "archived"], on_hold: ["active", "completed", "archived"], completed: ["archived"], archived: [] },
+  super_admin: ORG_ADMIN_TRANSITIONS,
+  admin: ORG_ADMIN_TRANSITIONS,
   project_manager: { active: ["on_hold", "completed"], on_hold: ["completed"] },
 };
 
 export function ProjectLifecyclePane({ project, user, onChanged, onDeleted }) {
   const transitions = TRANSITIONS[user.role]?.[project.status] || [];
-  const canDelete = user.role === "admin" && project.status === "draft" && !project.template_version_id && project.memberships.length === 0;
+  const canDelete = isOrgAdmin(user) && project.status === "draft" && !project.template_version_id && project.memberships.length === 0;
   const isArchived = project.status === "archived";
-  const canRestore = isArchived && user.role === "admin";
+  const canRestore = isArchived && isOrgAdmin(user);
   const [target, setTarget] = useState(transitions[0] || "");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");

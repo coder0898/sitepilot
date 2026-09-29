@@ -29,6 +29,7 @@ ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 PM_ID = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
 OTHER_PM_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 SUPERVISOR_ID = uuid.UUID("dddddddd-dddd-4ddd-8ddd-ddddddddddd4")
+SUPER_ADMIN_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
 
 # code, template class, template kind
 TEMPLATE_TASKS = [
@@ -86,6 +87,7 @@ class ProjectTaskClassificationApiTests(unittest.TestCase):
             "pm": User(id=PM_ID, name="Assigned PM", email="pm@example.com", role=UserRole.project_manager, active=True),
             "other_pm": User(id=OTHER_PM_ID, name="Other PM", email="other@example.com", role=UserRole.project_manager, active=True),
             "supervisor": User(id=SUPERVISOR_ID, name="Supervisor", email="sup@example.com", role=UserRole.supervisor, active=True),
+            "super_admin": User(id=SUPER_ADMIN_ID, name="Super Admin", email="super@example.com", role=UserRole.super_admin, active=True),
         }
         with self.Session.begin() as session:
             session.add_all(users.values())
@@ -207,6 +209,17 @@ class ProjectTaskClassificationApiTests(unittest.TestCase):
         self.assertEqual(self.project_classes()["T001"], "class_a")
         body = self.client.get(f"/api/v2/projects/{self.project_id}/task-classification").json()
         self.assertFalse(body["editable"])
+
+    def test_super_admin_can_classify_draft_tasks(self):
+        self.actor = self.users["super_admin"]
+        ids = self.task_ids()
+        self.assertEqual(self.client.get(f"/api/v2/projects/{self.project_id}/task-classification").status_code, 200)
+        response = self.put([{"task_id": str(ids["T002"]), "task_class": "class_a"}])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.project_classes()["T002"], "class_a")
+        with self.Session() as session:
+            audit = session.scalar(select(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_TASK_CLASSIFICATION_CHANGED"))
+        self.assertEqual(audit.actor_user_id, SUPER_ADMIN_ID)
 
     def test_only_admin_and_the_assigned_pm_have_access(self):
         ids = self.task_ids()

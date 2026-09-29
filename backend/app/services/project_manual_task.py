@@ -7,9 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import EmployeeProfile, User, UserRole
+from app.models import EmployeeProfile, User
 from app.project_models import V2AuditEvent, V2Project, V2ProjectMembership, V2ProjectTask
 from app.schemas.project_manual_task import ProjectManualTaskCreateIn, ProjectManualTaskCreateOut
+from app.services.access_control import is_org_admin
 from app.template_models import V2TemplateVersion
 
 
@@ -29,7 +30,7 @@ class ProjectManualTaskService:
         # Adding a task changes what is in scope, so it sits with the same
         # authority that decides applicability: Admin. The assigned PM keeps
         # read access to the task list, they just cannot extend it.
-        if actor.role != UserRole.admin:
+        if not is_org_admin(actor):
             raise HTTPException(403, "Only Admin can add project tasks.")
         if project.status != "draft":
             raise HTTPException(409, "Project-specific tasks can only be added while the project is Draft.")

@@ -238,20 +238,27 @@ class ProjectGateApplicabilityTests(unittest.TestCase):
             self.assertEqual(session.scalar(select(func.count()).select_from(V2ProjectExternalGateApplicabilityDecision)), 2)
             self.assertEqual(session.scalar(select(func.count()).select_from(V2AuditEvent).where(V2AuditEvent.action == "PROJECT_GATE_APPLICABILITY_DECIDED")), 2)
 
-    def test_no_role_other_than_admin_can_decide_gate_applicability(self):
-        """Whether an external approval applies is Admin's call. The assigned
-        PM still reads the gate list; they just cannot decide it."""
+    def test_super_admin_can_decide_gate_applicability(self):
+        super_admin = User(id=uuid.uuid4(), name="Super Admin", email="sa@test", role=UserRole.super_admin, active=True)
+        with self.Session.begin() as session:
+            session.add(super_admin)
+        self.actor = super_admin
+        response = self.decide("not_applicable", "Permit not needed for this site.")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["applicability_state"], "not_applicable")
+        with self.Session() as session:
+            decision = session.scalar(select(V2ProjectExternalGateApplicabilityDecision))
+            self.assertEqual(decision.actor_user_id, super_admin.id)
+
+    def test_no_role_other_than_org_admin_can_decide_gate_applicability(self):
+        """Whether an external approval applies is Admin/Super Admin's call.
+        The assigned PM still reads the gate list; they just cannot decide it."""
         self.actor = self.users["pm"]
         response = self.decide("applicable", "PM confirmed")
         self.assertEqual(response.status_code, 403, response.text)
         self.assertIn("Only Admin", response.json()["detail"])
-        users_extra = {
-            "super_admin": User(id=uuid.uuid4(), name="Super Admin", email="sa@test", role=UserRole.super_admin, active=True),
-            "internal": User(id=uuid.uuid4(), name="Internal", email="int@test", role=UserRole.internal_employee, active=True),
-        }
-        for role, user in users_extra.items():
-            self.users[role] = user
-        for role in ("other_pm", "supervisor", "super_admin", "internal"):
+        self.users["internal"] = User(id=uuid.uuid4(), name="Internal", email="int@test", role=UserRole.internal_employee, active=True)
+        for role in ("other_pm", "supervisor", "internal"):
             with self.subTest(role=role):
                 self.actor = self.users[role]
                 self.assertEqual(self.decide("not_applicable", "Denied").status_code, 403)

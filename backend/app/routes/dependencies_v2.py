@@ -9,6 +9,7 @@ from app.auth import current_user
 from app.database import get_db
 from app.models import User, UserRole
 from app.project_models import V2Project, V2ProjectTask, V2ProjectTaskDependency
+from app.services.access_control import is_org_admin
 from app.services.project_dependency_generation import ProjectDependencyGenerationService
 from app.schemas.project_dependencies import ProjectDependencyGenerateOut, ProjectDependencyListOut
 
@@ -70,7 +71,7 @@ def create_manual_dependency(project_id:uuid.UUID, payload:ManualDependencyIn, d
     # Adding a dependency changes the shape of the schedule, so it sits with
     # the same authority that decides task and gate applicability: Admin. The
     # assigned PM keeps read access to the dependency list.
-    if user.role != UserRole.admin:
+    if not is_org_admin(user):
         raise HTTPException(403, "Only Admin can add a manual dependency.")
     if payload.predecessor_project_task_id == payload.successor_project_task_id:
         raise HTTPException(422,"Self dependency not allowed.")

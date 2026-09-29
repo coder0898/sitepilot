@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { projectsApi } from "../../../api/projectsApi";
 import { Button, EmptyState, Pill } from "../../../components/ui";
 import { ProjectManualDependencyModal } from "./ProjectManualDependencyModal";
+import { isOrgAdmin } from "../../../utils/constants";
 
 const typeLabel = { finish_to_start: "Finish to Start", start_to_start: "Start to Start" };
 
@@ -17,8 +18,8 @@ export function ProjectDependencies({ project, user }) {
   const submitRef = useRef(false);
   const canGenerate = ["admin", "super_admin"].includes(user.role) && project.status === "draft";
   // Adding a dependency reshapes the schedule, so it follows the same
-  // authority as applicability decisions: Admin only.
-  const canAddManual = user.role === "admin" && project.status === "draft";
+  // authority as applicability decisions: Admin/Super Admin only.
+  const canAddManual = isOrgAdmin(user) && project.status === "draft";
 
   async function load() {
     setLoading(true); setError("");

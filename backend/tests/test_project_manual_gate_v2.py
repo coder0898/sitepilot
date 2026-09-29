@@ -76,5 +76,10 @@ class ManualGateTests(unittest.TestCase):
         self.assertIn('Only Admin',r.json()['detail'])
         with self.Session() as s:
             self.assertEqual(s.scalar(select(func.count()).select_from(V2ProjectExternalGate)),0)
+    def test_super_admin_can_add_a_manual_approval(self):
+        self.actor=User(id=uuid.uuid4(),name='Super Admin',email='sa@x',role=UserRole.super_admin,active=True)
+        with self.Session.begin() as s: s.add(self.actor)
+        r=self.client.post(f'/api/v2/projects/{self.project_id}/gates',json=self.payload())
+        self.assertEqual(r.status_code,201,r.text)
 
 if __name__=='__main__': unittest.main()
