@@ -22,7 +22,9 @@ from app.config import settings
 from app.database import get_db
 from app.execution_models import TelegramConnectToken, TelegramInboundUpdate, TelegramPendingInput
 from app.models import EmployeeProfile, User, UserRole
+from app.project_models import V2AuditEvent
 from app.routes.telegram_webhook import router as telegram_webhook_router
+from app.services.telegram_connect import hash_token
 from app.vendor_models import V2Vendor, V2VendorContact
 
 WEBHOOK_SECRET = "test-telegram-webhook-secret"
@@ -59,6 +61,7 @@ class TelegramConnectFlowTests(unittest.TestCase):
         for table in (
             User.__table__, EmployeeProfile.__table__, V2Vendor.__table__, V2VendorContact.__table__,
             TelegramConnectToken.__table__, TelegramInboundUpdate.__table__, TelegramPendingInput.__table__,
+            V2AuditEvent.__table__,
         ):
             table.create(self.engine)
 
@@ -100,16 +103,16 @@ class TelegramConnectFlowTests(unittest.TestCase):
     def _add_token(self, *, employee_id=None, vendor_contact_id=None, expires_in=timedelta(days=1), used=False, token="tok-123"):
         with self.Session.begin() as session:
             session.add(TelegramConnectToken(
-                token=token, employee_id=employee_id, vendor_contact_id=vendor_contact_id,
+                token=hash_token(token), employee_id=employee_id, vendor_contact_id=vendor_contact_id,
                 expires_at=datetime.now(timezone.utc) + expires_in,
                 used_at=datetime.now(timezone.utc) if used else None,
             ))
         return token
 
-    def _start(self, text: str, update_id: int = 1, chat_id: int = 555):
+    def _start(self, text: str, update_id: int = 1, chat_id: int = 555, chat_type: str = "private"):
         return self.client.post(
             "/api/v2/telegram/inbound",
-            json={"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}},
+            json={"update_id": update_id, "message": {"chat": {"id": chat_id, "type": chat_type}, "text": text}},
             headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
 

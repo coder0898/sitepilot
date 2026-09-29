@@ -139,7 +139,7 @@ _SUCCEEDED_STATUSES = ("sent", "delivered", "read")
 # (no Telegram chat linked / no phone on file). Retrying them cannot succeed
 # until that changes, so they are only retried once the recipient is
 # reachable again - see `_select_events`.
-_UNREACHABLE_FAILURE_CODES = ("missing_chat_id", "missing_phone")
+_UNREACHABLE_FAILURE_CODES = ("missing_chat_id", "missing_phone", "recipient_offboarded")
 
 # Phase 1b (locked decision #1): Class A approval decisions are the one
 # task-event class where Admin becomes a CC recipient - visibility only,
@@ -921,6 +921,16 @@ class MessageDispatchService:
             select(V2VendorContact.telegram_chat_id).where(V2VendorContact.id == recipient.vendor_contact_id)
         ) or ""
 
+    def _is_offboarded_employee(self, recipient: Recipient) -> bool:
+        if recipient.employee_id is None:
+            return False
+        active = self.db.scalar(
+            select(User.active)
+            .join(EmployeeProfile, EmployeeProfile.user_id == User.id)
+            .where(EmployeeProfile.id == recipient.employee_id)
+        )
+        return active is False
+
     def _dispatch_to_recipient(self, event: OutboxEvent, recipient: Recipient, spec: TemplateSpec) -> None:
         if self._resolve_recipient_channel(recipient) == "telegram" and _skipped_on_telegram(event):
             return  # another message to this person already covers it
@@ -953,6 +963,17 @@ class MessageDispatchService:
                 delivery = self._existing_delivery(event.id, recipient, template)
                 if delivery is None or delivery.status in _SUCCEEDED_STATUSES:
                     return
+
+        # An offboarded employee gets nothing further - checked at send time,
+        # so queued or parked deliveries stop too. Recorded as an unreachable
+        # failure: it is never retried unless the account is restored. The one
+        # exception is the offboarding notice itself (R13), addressed to them.
+        if event.event_type != "user.offboarded" and self._is_offboarded_employee(recipient):
+            delivery.status = "failed"
+            delivery.failure_code = "recipient_offboarded"
+            delivery.failure_reason = "Recipient's account is offboarded."
+            self.db.flush()
+            return
 
         # U9: the channel this attempt actually targets, read fresh from the
         # recipient's identity row (U8) rather than trusting
@@ -1055,6 +1076,8 @@ class MessageDispatchService:
             .join(User, User.id == EmployeeProfile.user_id)
             .where(
                 EmployeeProfile.id == MessageDelivery.recipient_employee_id,
+                # Offboarded: nothing is sent to them, so nothing to retry.
+                User.active.is_(True),
                 or_(
                     and_(EmployeeProfile.active_channel == "telegram",
                          func.coalesce(EmployeeProfile.telegram_chat_id, "") != ""),

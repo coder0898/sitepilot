@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertTriangle, ArrowLeftRight, Check, Clock3, KeyRound, MessageCircle, RotateCcw, Save, ShieldCheck, Trash2, Unlink, UserPlus, UserX } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeftRight, Check, Clock3, Copy, KeyRound, MessageCircle, RotateCcw, Save, ShieldCheck, Trash2, Unlink, UserPlus, UserX } from "lucide-react";
 import { channelToggleApi } from "../../../api/channelToggleApi";
 import { telegramConnectApi } from "../../../api/telegramConnectApi";
 import { usersApi } from "../../../api/usersApi";
@@ -27,6 +27,8 @@ function CapabilityPreview({ definition }) {
 function ChannelPanel({ profile, phone }) {
   const [channel, setChannel] = useState(profile?.active_channel || "whatsapp");
   const [connected, setConnected] = useState(!!profile?.telegram_connected);
+  const [chatHint, setChatHint] = useState(profile?.telegram_chat_hint || "");
+  const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [codeBusy, setCodeBusy] = useState(false);
@@ -63,12 +65,13 @@ function ChannelPanel({ profile, phone }) {
   async function unlinkTelegram() {
     // eslint-disable-next-line no-alert -- deliberately simple: this is an
     // Admin-only, low-frequency identity action, not worth a full modal.
-    if (!window.confirm(`Unlink Telegram from this person? They'll need a new connect code to reconnect, and this frees their chat for someone else to use.`)) return;
+    if (!window.confirm(`Unlink Telegram from this person? Messages to them stop going to that chat right away. They'll need a new link to reconnect, and the chat becomes free for someone else to link.`)) return;
     setUnlinkBusy(true);
     setUnlinkError("");
     try {
       await telegramConnectApi.unlink(profile.id);
       setConnected(false);
+      setChatHint("");
       setConnectCode(null);
     } catch (err) {
       setUnlinkError(err.message || "Could not unlink Telegram.");
@@ -80,13 +83,23 @@ function ChannelPanel({ profile, phone }) {
   async function generateCode() {
     setCodeBusy(true);
     setCodeError("");
+    setCopied(false);
     try {
       const response = await telegramConnectApi.generateCode(profile.id);
       setConnectCode(response);
     } catch (err) {
-      setCodeError(err.message || "Could not generate a connect code.");
+      setCodeError(err.message || "Could not generate a connect link.");
     } finally {
       setCodeBusy(false);
+    }
+  }
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(connectCode.link || connectCode.start_command);
+      setCopied(true);
+    } catch {
+      setCodeError("Could not copy - select the link and copy it manually.");
     }
   }
 
@@ -98,7 +111,7 @@ function ChannelPanel({ profile, phone }) {
         <p className="mt-1 text-sm leading-6 text-slate-600">Where this person currently receives task, gate and approval notifications - and can reply with commands.</p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Pill tone={channel === "telegram" ? "blue" : "green"}>{channel === "telegram" ? "Telegram" : "WhatsApp"}</Pill>
-          {!connected && <Pill tone="gray">Telegram not connected yet</Pill>}
+          {connected ? <Pill tone="blue">Telegram connected{chatHint ? ` · chat ${chatHint}` : ""}</Pill> : <Pill tone="gray">Telegram not connected</Pill>}
           {!messagingReady && <Pill tone="orange">Messaging Not Ready</Pill>}
         </div>
         {!canSwitchToOther && <p className="mt-2 text-xs font-semibold text-amber-700">They must connect Telegram (below) before they can be switched over.</p>}
@@ -116,18 +129,27 @@ function ChannelPanel({ profile, phone }) {
         {!connected && <div className="mt-4 rounded-2xl border border-dashed border-blue-200 bg-blue-50/60 p-3">
           <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[.14em] text-blue-700"><KeyRound size={14}/>Connect Telegram</p>
           {!connectCode ? <>
-            <p className="mt-1 text-xs leading-5 text-slate-600">Generates a one-time code. They open Telegram, find the bot themselves, and send the code as a message - no link needed.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">Generates a one-time link. They open it on their phone, tap Start in a private chat with the bot, and they're connected.</p>
             {codeError && <p className="mt-2 text-xs font-semibold text-rose-600">{codeError}</p>}
             <Button type="button" variant="secondary" className="mt-2" loading={codeBusy} onClick={generateCode}>
-              <KeyRound size={16}/>Generate code
+              <KeyRound size={16}/>Generate link
             </Button>
           </> : <>
-            <p className="mt-1 text-sm leading-6 text-slate-700">Tell them to open Telegram, search for the bot, and send this message:</p>
-            <code className="mt-2 block rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-900 shadow-sm">{connectCode.start_command}</code>
-            <p className="mt-2 text-xs font-semibold text-slate-500">Expires {new Date(connectCode.expires_at).toLocaleTimeString("en-GB")}. Refresh this record afterward to confirm it connected.</p>
-            <Button type="button" variant="secondary" className="mt-2" loading={codeBusy} onClick={generateCode}>
-              <KeyRound size={16}/>Generate a new code
-            </Button>
+            {connectCode.link ? <>
+              <p className="mt-1 text-sm leading-6 text-slate-700">Send them this link. It opens the bot; they tap <strong>Start</strong>:</p>
+              <code className="mt-2 block break-all rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-900 shadow-sm">{connectCode.link}</code>
+            </> : <>
+              <p className="mt-1 text-sm leading-6 text-slate-700">The bot link isn't available right now. Tell them to open the bot in Telegram and send this message:</p>
+              <code className="mt-2 block break-all rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-900 shadow-sm">{connectCode.start_command}</code>
+            </>}
+            <p className="mt-2 text-xs font-semibold text-slate-500">Works once. Expires {new Date(connectCode.expires_at).toLocaleTimeString("en-GB")}. Refresh this record afterward to confirm it connected.</p>
+            {codeError && <p className="mt-2 text-xs font-semibold text-rose-600">{codeError}</p>}
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button type="button" onClick={copyLink}><Copy size={16}/>{copied ? "Copied" : "Copy link"}</Button>
+              <Button type="button" variant="secondary" loading={codeBusy} onClick={generateCode}>
+                <KeyRound size={16}/>Generate a new link
+              </Button>
+            </div>
           </>}
         </div>}
       </div>

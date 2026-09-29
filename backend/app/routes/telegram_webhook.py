@@ -101,6 +101,22 @@ def _extract_media(message: dict) -> dict | None:
 router = APIRouter(prefix="/api/v2/telegram", tags=["v2-telegram-webhook"])
 
 
+def _redact_start_token(message_text: str | None) -> str | None:
+    """A `/start <token>` connect link's token is a one-time secret: the
+    stored copy keeps only `/start`, which is all the connect rate limit
+    (`TelegramConnectService._is_rate_limited`) counts on."""
+    if message_text and message_text.startswith("/start") and len(message_text.split(maxsplit=1)) > 1:
+        return "/start [redacted]"
+    return message_text
+
+
+def _redact_start_payload(payload: dict, message_text: str | None) -> dict:
+    redacted = _redact_start_token(message_text)
+    if redacted == message_text or not isinstance(payload.get("message"), dict):
+        return payload
+    return {**payload, "message": {**payload["message"], "text": redacted}}
+
+
 def _verify_secret_token(header_value: str | None) -> None:
     if not settings.telegram_webhook_secret:
         raise HTTPException(401, "Invalid webhook secret.")
@@ -165,9 +181,9 @@ async def receive_inbound_telegram_update(
     row = TelegramInboundUpdate(
         update_id=int(update_id),
         chat_id=chat_id,
-        message_text=message_text,
+        message_text=_redact_start_token(message_text),
         callback_data=callback_data,
-        raw_payload=payload,
+        raw_payload=_redact_start_payload(payload, message_text),
     )
     db.add(row)
     try:
@@ -195,7 +211,7 @@ async def receive_inbound_telegram_update(
             TelegramEvidenceService(db).handle_media(update_id=int(update_id), chat_id=chat_id, media=media)
     elif message_text and message_text.startswith("/start"):
         # U13: connect-flow.
-        TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text)
+        TelegramConnectService(db).handle_start(chat_id=chat_id, message_text=message_text, chat_type=chat_type)
     elif message_text:
         # A question the bot asked (rejection reason / health note) takes
         # the next text message first; otherwise it is a normal message.

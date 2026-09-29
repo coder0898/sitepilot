@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
+# The bot's @username never changes for a given bot token, so `getMe` is
+# asked once per token per process (connect links are `t.me/<username>`).
+_BOT_USERNAMES: dict[str, str] = {}
+
 
 class TelegramProviderAdapter:
     """Sends Telegram messages via the Bot API's `sendMessage` method.
@@ -91,6 +95,28 @@ class TelegramProviderAdapter:
         """Stops the pressed button's loading spinner and shows `text` as a
         short toast. Best-effort: a failure is logged, never raised."""
         return self._call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text[:200]})
+
+    def bot_username(self) -> str | None:
+        """The bot's @username (without the @), for building a
+        `https://t.me/<username>?start=<token>` link. None when the bot is
+        not configured or Telegram can't be reached - callers fall back to
+        the typed `/start <token>` command."""
+        if not self.access_token:
+            return None
+        cached = _BOT_USERNAMES.get(self.access_token)
+        if cached:
+            return cached
+        try:
+            response = httpx.post(f"{TELEGRAM_API_BASE}/bot{self.access_token}/getMe", json={}, timeout=self.timeout)
+            data = response.json() if response.content else {}
+        except (httpx.HTTPError, ValueError) as exc:
+            # The exception text can carry the request URL, which holds the bot token.
+            logger.warning("Telegram getMe failed: %s", type(exc).__name__)
+            return None
+        username = (data.get("result") or {}).get("username") if data.get("ok") else None
+        if username:
+            _BOT_USERNAMES[self.access_token] = username
+        return username
 
     def remove_buttons(self, chat_id: str, message_id: int) -> bool:
         """Removes the inline keyboard from an already-sent message, so a

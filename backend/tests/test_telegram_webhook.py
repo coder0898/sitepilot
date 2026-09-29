@@ -137,7 +137,8 @@ class TelegramWebhookApiTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].update_id, 1001)
         self.assertEqual(rows[0].chat_id, "555")
-        self.assertEqual(rows[0].message_text, "/start abc123")
+        # A connect token is a one-time secret: only "/start" is kept.
+        self.assertEqual(rows[0].message_text, "/start [redacted]")
         self.assertIsNone(rows[0].callback_data)
 
     def test_valid_secret_and_callback_query_is_accepted_and_stored(self):

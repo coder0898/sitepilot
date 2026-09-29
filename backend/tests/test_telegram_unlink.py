@@ -14,6 +14,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.execution_models import TelegramPendingInput
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent
 from app.services.telegram_connect import TelegramConnectService
@@ -39,7 +40,7 @@ class TelegramUnlinkTests(unittest.TestCase):
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
 
-        for table in (User.__table__, EmployeeProfile.__table__, V2AuditEvent.__table__):
+        for table in (User.__table__, EmployeeProfile.__table__, V2AuditEvent.__table__, TelegramPendingInput.__table__):
             table.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -131,7 +132,7 @@ class VendorContactTelegramUnlinkTests(unittest.TestCase):
         def attach_schema(dbapi_connection, _connection_record):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
 
-        for table in (User.__table__, V2AuditEvent.__table__, V2Vendor.__table__, V2VendorContact.__table__):
+        for table in (User.__table__, V2AuditEvent.__table__, V2Vendor.__table__, V2VendorContact.__table__, TelegramPendingInput.__table__):
             table.create(self.engine)
 
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
