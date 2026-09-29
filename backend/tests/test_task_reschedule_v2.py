@@ -73,6 +73,7 @@ from app.template_models import (
     V2TemplateTaskDependency,
     V2TemplateVersion,
 )
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -89,6 +90,7 @@ INTERNAL_ID = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5")
 
 class TaskRescheduleApiTests(unittest.TestCase):
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},

@@ -53,6 +53,7 @@ from app.vendor_models import (
     V2VendorCapability,
     VendorAcknowledgement,
 )
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -73,6 +74,7 @@ class VendorSoftRemovalApiTests(unittest.TestCase):
     schema harness as test_task_vendor_assignment_v2.py."""
 
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},

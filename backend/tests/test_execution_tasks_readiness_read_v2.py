@@ -82,6 +82,7 @@ from app.template_models import (
     V2TemplateTaskDependency,
     V2TemplateVersion,
 )
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -105,6 +106,7 @@ class ReadinessReadApiTestCase(unittest.TestCase):
     Internal Employee who can be support-assigned to one of them."""
 
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},

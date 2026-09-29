@@ -27,6 +27,7 @@ from app.project_models import (
 )
 from app.routes.projects_v2 import router
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -44,6 +45,7 @@ class ProjectExecutionTasksApiTests(unittest.TestCase):
     """Phase 9: read-only task baseline for activated projects."""
 
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},

@@ -64,6 +64,7 @@ from app.vendor_models import (
     V2VendorContact,
     VendorAcknowledgement,
 )
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -105,6 +106,7 @@ class InboundMessageMatchingApiTests(unittest.TestCase):
     """
 
     def setUp(self):
+        pin_project_creation_today(self)
         # U10: evidence attachments write through the same
         # app.services.evidence_storage module project_gate_submission.py's
         # portal path uses - patched to an in-memory dict, same pattern as

@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import uuid
 from datetime import date, datetime, timezone
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,7 +18,9 @@ from app.database import get_db
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectExternalGateTask, V2ProjectMembership, V2ProjectTask, V2ProjectTaskDependency
 from app.routes.projects_v2 import router
+from app.routes.projects_v2 import today_ist as real_today_ist  # bound before setUp pins "today"
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from tests.project_dates import pin_project_creation_today
 
 
 @compiles(JSONB, "sqlite")
@@ -32,6 +35,7 @@ SUPERVISOR_ID = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc3")
 
 class DraftProjectCreateApiTests(unittest.TestCase):
     def setUp(self):
+        pin_project_creation_today(self)
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -258,6 +262,25 @@ class DraftProjectCreateApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         with self.Session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(V2Project)), 0)
+
+    def test_start_date_may_be_today_or_later_but_not_in_the_past(self):
+        with patch("app.routes.projects_v2.today_ist", return_value=date(2026, 8, 1)):
+            past = self.client.post("/api/v2/projects", json=self.payload(proposed_start_date="2026-07-31"))
+            self.assertEqual(past.status_code, 422, past.text)
+            self.assertIn("cannot be before today", past.json()["detail"])
+            with self.Session() as session:
+                self.assertEqual(session.scalar(select(func.count()).select_from(V2Project)), 0)
+            today = self.client.post("/api/v2/projects", json=self.payload(proposed_start_date="2026-08-01"))
+            self.assertEqual(today.status_code, 201, today.text)
+            future = self.client.post("/api/v2/projects", json=self.payload(proposed_start_date="2026-09-15"))
+            self.assertEqual(future.status_code, 201, future.text)
+
+    def test_today_is_the_india_calendar_date(self):
+        # 20:00 UTC on 31 Jul is already 01:30 on 1 Aug in India.
+        fake_now = datetime(2026, 7, 31, 20, 0, tzinfo=timezone.utc)
+        with patch("app.routes.projects_v2.datetime") as clock:
+            clock.now.side_effect = lambda tz=None: fake_now.astimezone(tz)
+            self.assertEqual(real_today_ist(), date(2026, 8, 1))
 
     def test_super_admin_fallback_can_create(self):
         self.app.dependency_overrides[current_user] = lambda: User(
