@@ -21,7 +21,7 @@ consistent with `decided_by`/`assigned_by` on this same table.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -31,6 +31,15 @@ from app.execution_models import ProjectExternalApproval
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.outbox import OutboxService
+
+# Sites work on India time: "today" for the due-date check is the IST date,
+# so an assignment made late evening UTC still counts as that Indian day.
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _require_due_date_not_before(due_date: date | None, assigned_at: datetime) -> None:
+    if due_date is not None and due_date < assigned_at.astimezone(_IST).date():
+        raise HTTPException(422, "The due date cannot be before the assignment date.")
 
 
 class ProjectGateAssignmentService:
@@ -105,6 +114,7 @@ class ProjectGateAssignmentService:
 
     def assign(
         self, project_id: uuid.UUID, approval_id: uuid.UUID, assignee_user_id: uuid.UUID, actor: User,
+        due_date: date | None = None,
     ) -> ProjectExternalApproval:
         project = self._require_access(project_id, actor)
         self._require_assigner(actor)
@@ -123,12 +133,14 @@ class ProjectGateAssignmentService:
             action="PROJECT_EXTERNAL_APPROVAL_ASSIGNED",
             event_type="project_external_approval.assigned",
             previous_status=approval.status,
+            due_date=due_date,
         )
 
     # ---- reassign / unassign -------------------------------------------
 
     def reassign(
         self, project_id: uuid.UUID, approval_id: uuid.UUID, new_assignee_user_id: uuid.UUID, actor: User,
+        due_date: date | None = None,
     ) -> ProjectExternalApproval:
         """R8: covers the assignee-unavailable case - moves an `assigned`/
         `submitted` gate to a different employee. Distinct from the reject
@@ -150,6 +162,7 @@ class ProjectGateAssignmentService:
             action="PROJECT_EXTERNAL_APPROVAL_REASSIGNED",
             event_type="project_external_approval.reassigned",
             previous_status=approval.status,
+            due_date=due_date,
         )
 
     def unassign(self, project_id: uuid.UUID, approval_id: uuid.UUID, actor: User) -> ProjectExternalApproval:
@@ -218,13 +231,19 @@ class ProjectGateAssignmentService:
         action: str,
         event_type: str,
         previous_status: str,
+        due_date: date | None = None,
     ) -> ProjectExternalApproval:
         assigned_at = datetime.now(timezone.utc)
+        _require_due_date_not_before(due_date, assigned_at)
         previous_assignee = approval.assigned_to_user_id
+        previous_due = approval.due_at
         approval.status = "assigned"
         approval.assigned_to_user_id = assignee_user_id
         approval.assigned_by = actor.id
         approval.assigned_at = assigned_at
+        if due_date is not None:
+            # Omitted = keep whatever due date the gate already has.
+            approval.due_at = due_date
         self.db.add(approval)
 
         self.db.add(V2AuditEvent(
@@ -234,8 +253,16 @@ class ProjectGateAssignmentService:
             entity_id=approval.id,
             project_id=project.id,
             source="portal",
-            before_json={"status": previous_status, "assigned_to_user_id": str(previous_assignee) if previous_assignee else None},
-            after_json={"status": "assigned", "assigned_to_user_id": str(assignee_user_id)},
+            before_json={
+                "status": previous_status,
+                "assigned_to_user_id": str(previous_assignee) if previous_assignee else None,
+                "due_at": previous_due.isoformat() if previous_due else None,
+            },
+            after_json={
+                "status": "assigned",
+                "assigned_to_user_id": str(assignee_user_id),
+                "due_at": approval.due_at.isoformat() if approval.due_at else None,
+            },
             reason=f"External approval assigned by Admin ({action}).",
             occurred_at=assigned_at,
         ))

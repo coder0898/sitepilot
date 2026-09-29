@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, select
@@ -27,10 +27,18 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import template_models  # noqa: F401  - registers v2_template_* tables on Base.metadata so V2Project's (unused, nullable) template_version_id FK can resolve at table.create() time.
-from app.execution_models import OutboxEvent, ProjectExternalApproval
+from app.execution_models import (
+    OutboxEvent,
+    ProjectExternalApproval,
+    ProjectExternalApprovalEvidence,
+    ProjectExternalApprovalSubmission,
+    ProjectExternalApprovalTask,
+)
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
+from app.schemas.project_gate_decision import ProjectExternalApprovalOut
 from app.services.project_gate_assignment import ProjectGateAssignmentService
+from app.services.project_gate_decision import ProjectGateDecisionService
 
 
 @compiles(JSONB, "sqlite")
@@ -346,6 +354,61 @@ class ProjectGateAssignmentTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             self.service.unassign(self.project_id, approval.id, self.pm_user())
         self.assertEqual(ctx.exception.status_code, 403)
+
+    # ---- due date set at assignment (2026-09-29) ---------------------------
+
+    def test_assigning_with_a_due_date_saves_it_audits_it_and_puts_it_in_the_message(self):
+        approval = self.make_approval()
+        due = date.today() + timedelta(days=16)
+        result = self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user(), due_date=due)
+        self.assertEqual(result.due_at, due)
+        self.assertEqual(self.stored(approval.id).due_at, due)
+        with self.Session() as session:
+            audit = session.scalars(select(V2AuditEvent).where(V2AuditEvent.entity_id == approval.id)).one()
+            self.assertEqual((audit.before_json["due_at"], audit.after_json["due_at"]), (None, due.isoformat()))
+            event = session.scalars(select(OutboxEvent).where(OutboxEvent.aggregate_id == approval.id)).one()
+            self.assertEqual(event.payload["due_date"], due.isoformat())
+
+    def test_a_due_date_before_the_assignment_date_is_refused_and_nothing_changes(self):
+        approval = self.make_approval()
+        with self.assertRaises(HTTPException) as ctx:
+            self.service.assign(
+                self.project_id, approval.id, INTERNAL_ID, self.admin_user(), due_date=date.today() - timedelta(days=2),
+            )
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("before the assignment date", ctx.exception.detail)
+        self.db.rollback()
+        stored = self.stored(approval.id)
+        self.assertEqual((stored.status, stored.due_at), ("unassigned", None))
+
+    def test_assigning_without_a_due_date_keeps_the_gates_existing_one(self):
+        approval = self.make_approval(due_at=date(2026, 12, 25))
+        result = self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user())
+        self.assertEqual(result.due_at, date(2026, 12, 25))
+
+    def test_reassigning_can_set_a_new_due_date(self):
+        approval = self.make_approval(status="assigned", assigned_to_user_id=INTERNAL_ID, due_at=date(2026, 12, 25))
+        new_due = date.today() + timedelta(days=30)
+        result = self.service.reassign(
+            self.project_id, approval.id, OTHER_INTERNAL_ID, self.admin_user(), due_date=new_due,
+        )
+        self.assertEqual((result.assigned_to_user_id, result.due_at), (OTHER_INTERNAL_ID, new_due))
+
+    def test_admin_pm_and_the_assigned_employee_all_see_the_due_date(self):
+        for table in (ProjectExternalApprovalTask.__table__, ProjectExternalApprovalSubmission.__table__,
+                      ProjectExternalApprovalEvidence.__table__):
+            table.create(self.engine, checkfirst=True)
+        approval = self.make_approval()
+        due = date.today() + timedelta(days=16)
+        self.service.assign(self.project_id, approval.id, INTERNAL_ID, self.admin_user(), due_date=due)
+        decisions = ProjectGateDecisionService(self.db)
+        for viewer in (self.admin_user(), self.pm_user(), self.internal_user()):
+            with self.subTest(viewer=viewer.role.value):
+                views = decisions.list_for_project(self.project_id, viewer)
+                self.assertEqual([(v.id, v.due_at) for v in views], [(approval.id, due)])
+        # The API shape carries it too.
+        out = ProjectExternalApprovalOut.model_validate(decisions.view_for_approval(self.stored(approval.id)))
+        self.assertEqual(out.due_at, due)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ held up.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -79,6 +79,7 @@ class ProjectExternalApprovalOut(BaseModel):
     decided_by_name: str | None
     decided_at: datetime | None
     submissions: list[ProjectGateSubmissionSummaryOut] = Field(default_factory=list)
+    due_at: date | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -86,6 +87,9 @@ class ProjectExternalApprovalOut(BaseModel):
 class ProjectGateAssignIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     assignee_user_id: uuid.UUID
+    # Optional so existing callers keep working; when given it becomes the
+    # gate's deadline (must not be before the assignment date).
+    due_date: date | None = None
 
 
 class ProjectGateSubmissionOut(BaseModel):

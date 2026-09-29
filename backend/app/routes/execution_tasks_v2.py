@@ -552,7 +552,9 @@ def assign_project_external_approval(
     actor: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    approval = ProjectGateAssignmentService(db).assign(project_id, approval_id, payload.assignee_user_id, actor)
+    approval = ProjectGateAssignmentService(db).assign(
+        project_id, approval_id, payload.assignee_user_id, actor, due_date=payload.due_date,
+    )
     return ProjectGateDecisionService(db).view_for_approval(approval)
 
 
@@ -567,7 +569,9 @@ def reassign_project_external_approval(
     actor: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    approval = ProjectGateAssignmentService(db).reassign(project_id, approval_id, payload.assignee_user_id, actor)
+    approval = ProjectGateAssignmentService(db).reassign(
+        project_id, approval_id, payload.assignee_user_id, actor, due_date=payload.due_date,
+    )
     return ProjectGateDecisionService(db).view_for_approval(approval)
 
 
