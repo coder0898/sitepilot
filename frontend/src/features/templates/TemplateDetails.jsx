@@ -396,6 +396,6 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
       </section>}
     </>}
 
-    <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-semibold text-slate-500"><span className="inline-flex items-center gap-2"><BookOpenCheck size={16} className="text-blue-700"/> {summary.status === "published" ? "Published version is view-only" : "Draft details remain unchanged until edited"}</span><span className="inline-flex items-center gap-2"><CalendarDays size={16} className="text-emerald-700"/> Accessed as {user.role.replaceAll("_", " ")}</span></footer>
+    <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-semibold text-slate-500"><span className="inline-flex items-center gap-2"><BookOpenCheck size={16} className="text-blue-700"/> {summary.status === "archived" ? "Archived version: kept as read-only history, not offered for new projects" : summary.status === "published" ? "Published version is view-only" : "Draft details remain unchanged until edited"}</span><span className="inline-flex items-center gap-2"><CalendarDays size={16} className="text-emerald-700"/> Accessed as {user.role.replaceAll("_", " ")}</span></footer>
   </div>;
 }

@@ -115,6 +115,17 @@ describe("TemplateDetails", () => {
     expect(onDeleteDraft).toHaveBeenCalledWith(expect.objectContaining({ version_id: "version-draft" }));
   });
 
+  it("opens an archived version as read-only history for a Super Admin", async () => {
+    templatesApi.getVersion.mockResolvedValue({ ...summary, version_id: "version-archived", status: "archived", is_current_published: false });
+    render(<Harness role="super_admin" versionId="version-archived" onArchive={vi.fn()} onClone={vi.fn()} onDeleteDraft={vi.fn()} onOpenDraftEditor={vi.fn()}/>);
+    expect(await screen.findByText("Workved 45-Day Interior Delivery")).toBeInTheDocument();
+    expect(screen.getByText("archived")).toBeInTheDocument();
+    expect(screen.getByText(/kept as read-only history, not offered for new projects/i)).toBeInTheDocument();
+    expect(screen.queryByText("Current published")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /archive version|clone as draft|open draft editor|delete draft/i })).not.toBeInTheDocument();
+    expect(await screen.findByTestId("task-row-T008")).toBeInTheDocument();  // its tasks are still viewable
+  });
+
   it("preserves backend order and sends all API filters after trimming text", async () => {
     render(<Harness/>);
     await screen.findByTestId("task-card-T008");

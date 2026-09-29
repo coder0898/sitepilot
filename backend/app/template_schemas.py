@@ -18,7 +18,7 @@ class TemplateListItem(BaseModel):
     template_description: str | None
     version_id: uuid.UUID
     version_no: int
-    status: Literal["draft", "published"]
+    status: Literal["draft", "published", "archived"]
     is_current_published: bool
     duration_days: int
     task_count: int
@@ -56,7 +56,7 @@ class TemplateVersionResponse(BaseModel):
     template_description: str | None
     version_id: uuid.UUID
     version_no: int
-    status: Literal["draft", "published"]
+    status: Literal["draft", "published", "archived"]
     is_current_published: bool
     duration_days: int
     task_count: int

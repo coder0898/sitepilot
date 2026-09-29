@@ -7,6 +7,7 @@ export function formatTemplateDate(value) {
 }
 
 export function statusTone(status) {
+  if (status === "archived") return "gray";
   return status === "published" ? "green" : "orange";
 }
 
