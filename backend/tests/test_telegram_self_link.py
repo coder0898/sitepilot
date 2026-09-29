@@ -335,6 +335,118 @@ class TelegramSelfLinkTests(unittest.TestCase):
         self._dispatch()
         self.assertFalse([c for c in mock_post.call_args_list if c.args[0].endswith("/sendMessage")])
 
+    # ---- self-service (My Profile) ------------------------------------
+
+    def act_as(self, user_id: uuid.UUID) -> None:
+        with self.Session() as session:
+            self.actor = session.get(User, user_id)
+
+    def my_code(self, body: dict | None = None):
+        return self.client.post("/api/v2/telegram/me/connect-code", json=body)
+
+    @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)
+    def test_logged_in_user_generates_a_link_for_themselves_and_connects(self, mock_post):
+        self.act_as(ROHAN_ID)
+        self.assertFalse(self.client.get("/api/v2/telegram/me").json()["telegram_connected"])
+        response = self.my_code()
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        # Same bot flow as the Admin link: t.me deep link, no id/email in it.
+        self.assertEqual(body["link"], f"https://t.me/SiteOpsBot?start={body['code']}")
+        self.assertNotIn("rohan", body["link"].lower())
+        self.start(f"/start {body['code']}")
+        self.assertEqual(self.chat_of("rohan"), str(MY_CHAT))
+        status = self.client.get("/api/v2/telegram/me").json()
+        self.assertTrue(status["telegram_connected"])
+        self.assertEqual(status["telegram_chat_hint"], f"•••{str(MY_CHAT)[-4:]}")
+
+    @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)
+    def test_self_service_link_can_never_target_another_person(self, mock_post):
+        self.act_as(ROHAN_ID)
+        # A crafted body naming Deepak is ignored: the session decides.
+        code = self.my_code({"employee_id": str(self.profile_ids["deepak"])}).json()["code"]
+        with self.Session() as session:
+            token = session.scalar(select(TelegramConnectToken).where(TelegramConnectToken.token == hash_token(code)))
+        self.assertEqual(token.employee_id, self.profile_ids["rohan"])
+        self.start(f"/start {code}")
+        self.assertEqual(self.chat_of("rohan"), str(MY_CHAT))
+        self.assertIsNone(self.chat_of("deepak"))
+        # And the Admin-only routes stay closed to a normal user.
+        self.assertEqual(self.generate("deepak").status_code, 403)
+        self.assertEqual(self.unlink("deepak").status_code, 403)
+
+    @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)
+    def test_already_connected_user_cannot_generate_another_link(self, mock_post):
+        self.act_as(ROHAN_ID)
+        self.start(f"/start {self.my_code().json()['code']}")
+        response = self.my_code()
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Unlink it first", response.json()["detail"])
+        self.assertEqual(self.chat_of("rohan"), str(MY_CHAT))
+
+    @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)
+    def test_self_link_refused_when_telegram_belongs_to_someone_else(self, mock_post):
+        self.link("deepak", mock_post)  # Admin linked Deepak to this chat
+        self.act_as(ROHAN_ID)
+        self.start(f"/start {self.my_code().json()['code']}")
+        self.assertIsNone(self.chat_of("rohan"))
+        self.assertEqual(self.chat_of("deepak"), str(MY_CHAT))
+        self.assertEqual(self.replies(mock_post)[-1], "This Telegram account is already linked. Unlink it first.")
+
+    @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)
+    def test_self_service_link_expires_and_cannot_be_reused(self, mock_post):
+        self.act_as(ROHAN_ID)
+        expired = self.my_code().json()["code"]
+        with self.Session.begin() as session:
+            session.scalar(select(TelegramConnectToken).where(TelegramConnectToken.token == hash_token(expired))).expires_at = (
+                datetime.now(timezone.utc) - timedelta(minutes=1)
+            )
+        self.start(f"/start {expired}")
+        self.assertIsNone(self.chat_of("rohan"))
+
+        used = self.my_code().json()["code"]
+        self.start(f"/start {used}")
+        self.client.post("/api/v2/telegram/me/unlink")
+        self.start(f"/start {used}")
+        self.assertIsNone(self.chat_of("rohan"))
+        self.assertIn("isn't valid or has expired", self.replies(mock_post)[-1])
+
+    @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)
+    def test_self_disconnect_then_relink_to_another_user_never_crosses_messages(self, mock_post):
+        self.act_as(ROHAN_ID)
+        self.start(f"/start {self.my_code().json()['code']}")
+        response = self.client.post("/api/v2/telegram/me/unlink")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["telegram_connected"])
+        with self.Session() as session:
+            audit = session.scalar(select(V2AuditEvent).where(V2AuditEvent.action == "telegram_unlinked"))
+            self.assertEqual((audit.entity_id, audit.actor_user_id), (self.profile_ids["rohan"], ROHAN_ID))
+
+        rohan_event = self._user_event(ROHAN_ID, "Rohan")
+        self._dispatch()  # parked: Rohan has no chat
+
+        self.act_as(DEEPAK_ID)
+        self.start(f"/start {self.my_code().json()['code']}")
+        self.assertEqual(self.chat_of("deepak"), str(MY_CHAT))
+        deepak_event = self._user_event(DEEPAK_ID, "Deepak")
+        mock_post.reset_mock()
+        self._dispatch()
+        sent = [c for c in mock_post.call_args_list if c.args[0].endswith("/sendMessage")]
+        self.assertEqual(len(sent), 1)  # Deepak's own message only
+        with self.Session() as session:
+            rohan_delivery = session.scalar(select(MessageDelivery).where(MessageDelivery.outbox_event_id == rohan_event))
+            deepak_delivery = session.scalar(select(MessageDelivery).where(MessageDelivery.outbox_event_id == deepak_event))
+        self.assertEqual((rohan_delivery.recipient_employee_id, rohan_delivery.status), (self.profile_ids["rohan"], "failed"))
+        self.assertEqual((deepak_delivery.recipient_employee_id, deepak_delivery.status), (self.profile_ids["deepak"], "sent"))
+
+    def test_account_without_an_employee_profile_has_nothing_to_link(self):
+        with self.Session.begin() as session:
+            session.add(User(id=uuid.UUID("99990000-aaaa-4aaa-8aaa-aaaaaaaaaaa9"), name="No Profile",
+                             email="none@example.com", role=UserRole.super_admin, active=True))
+        self.act_as(uuid.UUID("99990000-aaaa-4aaa-8aaa-aaaaaaaaaaa9"))
+        self.assertEqual(self.client.get("/api/v2/telegram/me").status_code, 404)
+        self.assertEqual(self.my_code().status_code, 404)
+
     # ---- offboarding --------------------------------------------------
 
     @patch("app.services.telegram_provider.httpx.post", side_effect=_telegram_ok)

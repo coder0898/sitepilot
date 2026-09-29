@@ -5,7 +5,7 @@ import { UserModal } from "./components/UserModals";
 
 vi.mock("../../api/usersApi", () => ({ usersApi: { events: vi.fn().mockResolvedValue([]) } }));
 vi.mock("../../api/channelToggleApi", () => ({ channelToggleApi: { toggle: vi.fn() } }));
-vi.mock("../../api/telegramConnectApi", () => ({ telegramConnectApi: { generateCode: vi.fn(), unlink: vi.fn() } }));
+vi.mock("../../api/telegramConnectApi", () => ({ telegramConnectApi: { generateCode: vi.fn(), unlink: vi.fn(), myStatus: vi.fn(), generateMyCode: vi.fn() } }));
 
 function person(profile) {
   return {
@@ -63,5 +63,20 @@ describe("Telegram link in User Management", () => {
     await waitFor(() => expect(telegramConnectApi.unlink).toHaveBeenCalledWith("p1"));
     expect(await screen.findByText("Telegram not connected")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /generate link/i })).toBeInTheDocument();
+  });
+
+  it("lets an Admin connect their own Telegram from their own read-only record", async () => {
+    telegramConnectApi.myStatus.mockResolvedValue({ telegram_connected: false, telegram_chat_hint: null });
+    const admin = { ...person({ telegram_connected: false }), id: "admin-1", role: "admin" };
+    render(<UserModal selectedUser={admin} actor={admin} catalog={[]} manageableRoles={["supervisor"]} onClose={vi.fn()} action={vi.fn()}/>);
+    expect(await screen.findByRole("button", { name: /connect telegram/i })).toBeInTheDocument();
+    expect(screen.getByText(/This is your own account/)).toBeInTheDocument();
+  });
+
+  it("does not offer self-linking on someone else's read-only record", async () => {
+    const other = { ...person({}), id: "admin-2", role: "admin" };
+    render(<UserModal selectedUser={other} actor={{ id: "admin-1", role: "admin" }} catalog={[]} manageableRoles={["supervisor"]} onClose={vi.fn()} action={vi.fn()}/>);
+    expect(screen.getByText(/falls outside your management authority/)).toBeInTheDocument();
+    expect(telegramConnectApi.myStatus).not.toHaveBeenCalled();
   });
 });
