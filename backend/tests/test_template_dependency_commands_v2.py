@@ -355,9 +355,8 @@ class TemplateDependencyCommandApiTests(unittest.TestCase):
             self.assertEqual(count, 1)
         self.audit_writer.assert_not_called()
 
-    def test_non_super_admin_roles_forbidden(self):
+    def test_non_org_admin_roles_forbidden(self):
         for role in (
-            UserRole.admin,
             UserRole.project_manager,
             UserRole.supervisor,
             UserRole.internal_employee,

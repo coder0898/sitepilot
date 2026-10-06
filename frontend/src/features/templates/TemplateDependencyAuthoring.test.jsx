@@ -114,7 +114,7 @@ describe("draft dependency authoring",()=>{
 
     cleanup();
     templatesApi.getVersion.mockResolvedValue(summary);
-    view("admin");
+    view("project_manager");
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
   });
 

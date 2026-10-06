@@ -161,8 +161,8 @@ class TemplateValidationApiTests(unittest.TestCase):
             after=(s.scalar(select(func.count()).select_from(V2TemplateTask)), s.get(V2TemplateVersion,self.draft_id).updated_at)
         self.assertEqual(before,after)
 
-    def test_only_super_admin_can_validate_drafts(self):
-        for role in (UserRole.admin, UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee):
+    def test_only_org_admins_can_validate_drafts(self):
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee):
             with self.subTest(role=role):
                 self.role=role
                 response=self.client.post(f"/api/v2/templates/versions/{self.draft_id}/validate")

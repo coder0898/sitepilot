@@ -98,7 +98,7 @@ describe("template validation and publication", () => {
     view(); await openValidation();
     expect(screen.getByRole("button", { name:/validate draft/i })).toHaveClass("w-full");
     cleanup();
-    view({ role:"admin" });
+    view({ role:"project_manager" });
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name:/validate draft/i })).not.toBeInTheDocument();
   });

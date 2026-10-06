@@ -61,7 +61,7 @@ describe("TemplatesPage", () => {
     await waitFor(() => expect(templatesApi.list.mock.calls.at(-1)[0]).toMatchObject({ status: "draft", page: 1 }));
   });
 
-  it.each(["admin", "project_manager"])("does not expose the draft filter to %s", async role => {
+  it.each(["project_manager"])("does not expose the draft filter to %s", async role => {
     templatesApi.list.mockResolvedValue(response());
     renderPage(role);
     await screen.findByTestId("template-card-version-published");
@@ -111,7 +111,7 @@ describe("TemplatesPage", () => {
     expect(await screen.findByText("Secret draft schedule")).toBeInTheDocument();
 
     templatesApi.list.mockResolvedValue(response([published]));
-    view.rerender(<DashboardTab tab="templates" loading={false} data={{}} user={{ id: "user-1", role: "admin" }} action={vi.fn()} />);
+    view.rerender(<DashboardTab tab="templates" loading={false} data={{}} user={{ id: "user-1", role: "project_manager" }} action={vi.fn()} />);
     expect(await screen.findByText("Template library")).toBeInTheDocument();
     expect(screen.queryByText("Secret draft schedule")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Filter template status")).not.toBeInTheDocument();

@@ -14,12 +14,13 @@ TEMPLATE_READER_ROLES = (
 )
 TEMPLATE_VERSION_STATUSES = frozenset({"draft", "published", "archived"})
 TEMPLATE_ALLOWED_STATUSES = {
-    # Super Admin also reads archived versions (read-only history): without
-    # it an archived version vanished from template management entirely and
-    # its detail page answered 404. Every mutation path still requires a
-    # draft or published version, so archived stays view-only.
+    # Super Admin and Admin (the template authors) also read archived versions
+    # (read-only history): without it an archived version vanished from
+    # template management entirely and its detail page answered 404. Every
+    # mutation path still requires a draft or published version, so archived
+    # stays view-only.
     UserRole.super_admin: frozenset({"draft", "published", "archived"}),
-    UserRole.admin: frozenset({"published"}),
+    UserRole.admin: frozenset({"draft", "published", "archived"}),
     UserRole.project_manager: frozenset({"published"}),
 }
 

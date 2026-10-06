@@ -109,9 +109,8 @@ class MutationRouteAuthorizationAuditTests(unittest.TestCase):
         call = getattr(self.client, method)
         return call(url, json=payload) if payload is not None else call(url)
 
-    def test_every_mutation_route_rejects_every_non_super_admin_role(self):
+    def test_every_mutation_route_rejects_every_non_org_admin_role(self):
         for role in (
-            UserRole.admin,
             UserRole.project_manager,
             UserRole.supervisor,
             UserRole.internal_employee,

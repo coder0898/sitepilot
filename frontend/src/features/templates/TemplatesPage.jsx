@@ -10,6 +10,7 @@ import { TemplateDraftEditorEntry } from "./components/TemplateDraftEditorEntry"
 import { TemplateDetails } from "./TemplateDetails";
 import { TemplateTable } from "./components/TemplateTable";
 import { useDebouncedValue } from "./useDebouncedValue";
+import { ORG_ADMIN_ROLES } from "../../utils/constants";
 
 const emptyPage = { items: [], pagination: { page: 1, page_size: 20, total: 0, total_pages: 0 } };
 
@@ -18,7 +19,7 @@ function LoadingState() {
 }
 
 export function TemplatesPage({ user, debounceMs = 350 }) {
-  const isSuperAdmin = user.role === "super_admin";
+  const canManageTemplates = ORG_ADMIN_ROLES.includes(user.role);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
@@ -36,12 +37,12 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
   const debouncedSearch = useDebouncedValue(search.trim(), debounceMs);
 
   useEffect(() => {
-    if (isSuperAdmin || templateView !== "editor") return;
+    if (canManageTemplates || templateView !== "editor") return;
     setTemplateView("list");
     setSelectedTemplateVersionId(null);
     setDraftEditorSummary(null);
     setActiveTemplateTab("tasks");
-  }, [isSuperAdmin, templateView]);
+  }, [canManageTemplates, templateView]);
 
   useEffect(() => {
     if (search.trim() !== debouncedSearch) return undefined;
@@ -51,7 +52,7 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
     setError("");
     const params = { page, page_size: 20 };
     if (debouncedSearch) params.search = debouncedSearch;
-    if (isSuperAdmin && status) params.status = status;
+    if (canManageTemplates && status) params.status = status;
     templatesApi.list(params, { signal: controller.signal })
       .then(data => { if (active) setResult(data); })
       .catch(requestError => {
@@ -59,9 +60,9 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [debouncedSearch, isSuperAdmin, page, retryKey, status]);
+  }, [debouncedSearch, canManageTemplates, page, retryKey, status]);
 
-  const hasFilters = Boolean(search.trim() || (isSuperAdmin && status));
+  const hasFilters = Boolean(search.trim() || (canManageTemplates && status));
   const publishedOnPage = useMemo(() => result.items.filter(item => item.status === "published").length, [result.items]);
   const draftOnPage = useMemo(() => result.items.filter(item => item.status === "draft").length, [result.items]);
 
@@ -110,10 +111,10 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
         activeTemplateTab={activeTemplateTab}
         onTabChange={setActiveTemplateTab}
         onBack={backToList}
-        onClone={isSuperAdmin ? source => setAuthoring({ mode: "clone", source }) : undefined}
-        onArchive={isSuperAdmin ? source => setArchiveVersion(source) : undefined}
-        onDeleteDraft={isSuperAdmin ? source => setDeleteDraftVersion(source) : undefined}
-        onOpenDraftEditor={isSuperAdmin ? source => {
+        onClone={canManageTemplates ? source => setAuthoring({ mode: "clone", source }) : undefined}
+        onArchive={canManageTemplates ? source => setArchiveVersion(source) : undefined}
+        onDeleteDraft={canManageTemplates ? source => setDeleteDraftVersion(source) : undefined}
+        onOpenDraftEditor={canManageTemplates ? source => {
           setDraftEditorSummary(source);
           setTemplateView("editor");
         } : undefined}
@@ -127,18 +128,18 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
   return <section className="grid gap-5" data-template-view={templateView} data-selected-version-id={selectedTemplateVersionId || ""}>
     <header className="relative overflow-hidden rounded-[26px] border border-slate-200/80 bg-slate-950 p-5 text-white shadow-[0_24px_70px_rgba(15,23,42,.16)] sm:p-7">
       <div aria-hidden="true" className="absolute -right-14 -top-20 size-64 rounded-full border-[36px] border-blue-500/15"/>
-      <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between"><div><div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.22em] text-blue-300"><BookOpenCheck size={15}/> Approved delivery system</div><h2 className="mt-3 max-w-2xl text-2xl font-black tracking-[-.04em] sm:text-3xl">Template library</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">{isSuperAdmin ? "Inspect published schedules and prepare governed draft versions." : "Inspect governed schedule versions before they become a live project plan. This workspace is read-only."}</p>{isSuperAdmin && <Button className="mt-4 w-full bg-blue-600 hover:bg-blue-500 sm:w-fit" onClick={() => setAuthoring({ mode: "create" })}><FilePlus2 size={17}/> Create Template</Button>}</div><div className="grid grid-cols-2 gap-2 sm:flex"><span className="rounded-xl border border-white/10 bg-white/[.07] px-4 py-3"><b className="block text-xl font-black">{result.pagination.total}</b><small className="text-slate-300">Visible versions</small></span><span className="rounded-xl border border-white/10 bg-white/[.07] px-4 py-3"><b className="block text-xl font-black">{publishedOnPage}</b><small className="text-slate-300">Published here</small></span>{isSuperAdmin && <span className="col-span-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 sm:col-span-1"><b className="block text-xl font-black text-amber-200">{draftOnPage}</b><small className="text-amber-100/80">Drafts here</small></span>}</div></div>
+      <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between"><div><div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[.22em] text-blue-300"><BookOpenCheck size={15}/> Approved delivery system</div><h2 className="mt-3 max-w-2xl text-2xl font-black tracking-[-.04em] sm:text-3xl">Template library</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">{canManageTemplates ? "Inspect published schedules and prepare governed draft versions." : "Inspect governed schedule versions before they become a live project plan. This workspace is read-only."}</p>{canManageTemplates && <Button className="mt-4 w-full bg-blue-600 hover:bg-blue-500 sm:w-fit" onClick={() => setAuthoring({ mode: "create" })}><FilePlus2 size={17}/> Create Template</Button>}</div><div className="grid grid-cols-2 gap-2 sm:flex"><span className="rounded-xl border border-white/10 bg-white/[.07] px-4 py-3"><b className="block text-xl font-black">{result.pagination.total}</b><small className="text-slate-300">Visible versions</small></span><span className="rounded-xl border border-white/10 bg-white/[.07] px-4 py-3"><b className="block text-xl font-black">{publishedOnPage}</b><small className="text-slate-300">Published here</small></span>{canManageTemplates && <span className="col-span-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 sm:col-span-1"><b className="block text-xl font-black text-amber-200">{draftOnPage}</b><small className="text-amber-100/80">Drafts here</small></span>}</div></div>
     </header>
 
     <div className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,.05)]"><div className="flex flex-col gap-3 sm:flex-row sm:items-center">
       <label className="relative min-w-0 flex-1"><Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><Input aria-label="Search templates" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} className="min-h-12 pl-11" placeholder="Search template name, code or version"/></label>
-      {isSuperAdmin && <Select aria-label="Filter template status" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }} className="min-h-12 sm:max-w-48"><option value="">Published &amp; draft</option><option value="published">Published</option><option value="draft">Draft</option><option value="archived">Archived (history)</option></Select>}
+      {canManageTemplates && <Select aria-label="Filter template status" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }} className="min-h-12 sm:max-w-48"><option value="">Published &amp; draft</option><option value="published">Published</option><option value="draft">Draft</option><option value="archived">Archived (history)</option></Select>}
       {hasFilters && <Button variant="ghost" className="min-h-12" onClick={clearFilters}><FilterX size={17}/> Clear filters</Button>}
       <RefreshButton className="min-h-12" loading={loading} onClick={() => setRetryKey(value => value + 1)}/>
     </div></div>
 
     {loading ? <LoadingState/> : error ? <Alert tone="danger" className="items-center"><div><strong className="block">Template library unavailable</strong><span className="mt-1 block font-medium">{error}</span></div><Button size="sm" variant="secondary" onClick={() => setRetryKey(value => value + 1)}><RefreshCw size={15}/> Retry</Button></Alert> : !result.items.length ? <EmptyState className="min-h-64 bg-white" icon={hasFilters ? <Search size={21}/> : <DatabaseZap size={21}/>} title={hasFilters ? "No templates match these filters" : "No template versions available"} description={hasFilters ? "Clear the filters or try a broader name, code or version." : "Published template versions will appear here after the approved import is completed."} action={hasFilters ? <Button variant="secondary" onClick={clearFilters}><FilterX size={16}/> Clear filters</Button> : null}/> : <>
-      <TemplateTable items={result.items} selectedTemplateVersionId={selectedTemplateVersionId} onSelect={selectVersion} onArchive={isSuperAdmin ? setArchiveVersion : undefined} onDeleteDraft={isSuperAdmin ? setDeleteDraftVersion : undefined}/>
+      <TemplateTable items={result.items} selectedTemplateVersionId={selectedTemplateVersionId} onSelect={selectVersion} onArchive={canManageTemplates ? setArchiveVersion : undefined} onDeleteDraft={canManageTemplates ? setDeleteDraftVersion : undefined}/>
       <div className="grid gap-3 lg:hidden">{result.items.map(item => <TemplateCard key={item.version_id} item={item} selected={selectedTemplateVersionId === item.version_id} onSelect={selectVersion}/>)}</div>
     </>}
 

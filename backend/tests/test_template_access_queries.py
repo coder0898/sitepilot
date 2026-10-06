@@ -184,18 +184,18 @@ class TemplateAccessQueryTests(unittest.TestCase):
     def service(self, session: Session):
         return TemplateQueryService(session)
 
-    def test_super_admin_can_query_draft_and_published(self):
+    def test_super_admin_and_admin_can_query_draft_and_published(self):
         with self.Session() as session:
-            page = self.service(session).list_versions(UserRole.super_admin)
-            self.assertEqual(3, page.total)
-            self.assertEqual({"draft", "published"}, {item.status for item in page.items})
-
-    def test_admin_and_pm_queries_return_published_only(self):
-        with self.Session() as session:
-            for role in (UserRole.admin, UserRole.project_manager):
+            for role in (UserRole.super_admin, UserRole.admin):
                 page = self.service(session).list_versions(role)
-                self.assertEqual(2, page.total)
-                self.assertTrue(all(item.status == "published" for item in page.items))
+                self.assertEqual(3, page.total)
+                self.assertEqual({"draft", "published"}, {item.status for item in page.items})
+
+    def test_pm_queries_return_published_only(self):
+        with self.Session() as session:
+            page = self.service(session).list_versions(UserRole.project_manager)
+            self.assertEqual(2, page.total)
+            self.assertTrue(all(item.status == "published" for item in page.items))
 
     def test_supervisor_and_internal_employee_receive_403(self):
         with self.Session() as session:
@@ -204,36 +204,41 @@ class TemplateAccessQueryTests(unittest.TestCase):
                     self.service(session).list_versions(role)
                 self.assertEqual(403, raised.exception.status_code)
 
-    def test_admin_and_pm_direct_draft_access_returns_nonrevealing_404(self):
+    def test_pm_direct_draft_access_returns_nonrevealing_404(self):
         with self.Session() as session:
-            for role in (UserRole.admin, UserRole.project_manager):
-                with self.assertRaises(HTTPException) as raised:
-                    self.service(session).get_version(role, self.draft_id)
-                self.assertEqual(404, raised.exception.status_code)
-                self.assertEqual(TEMPLATE_NOT_FOUND_DETAIL, raised.exception.detail)
+            with self.assertRaises(HTTPException) as raised:
+                self.service(session).get_version(UserRole.project_manager, self.draft_id)
+            self.assertEqual(404, raised.exception.status_code)
+            self.assertEqual(TEMPLATE_NOT_FOUND_DETAIL, raised.exception.detail)
+
+    def test_admin_can_open_a_draft_directly(self):
+        with self.Session() as session:
+            self.assertEqual("draft", self.service(session).get_version(UserRole.admin, self.draft_id).status)
 
     def test_pagination_total_excludes_drafts_and_order_is_deterministic(self):
         with self.Session() as session:
-            first = self.service(session).list_versions(UserRole.admin, page=1, page_size=1)
-            second = self.service(session).list_versions(UserRole.admin, page=2, page_size=1)
+            first = self.service(session).list_versions(UserRole.project_manager, page=1, page_size=1)
+            second = self.service(session).list_versions(UserRole.project_manager, page=2, page_size=1)
             self.assertEqual(2, first.total)
             self.assertEqual("alpha-published", first.items[0].template_code)
             self.assertEqual("beta-published", second.items[0].template_code)
 
     def test_search_and_status_filters_do_not_reveal_drafts(self):
         with self.Session() as session:
-            admin_search = self.service(session).list_versions(UserRole.admin, search="Secret Draft")
-            admin_draft_filter = self.service(session).list_versions(UserRole.admin, statuses={"draft"})
-            super_search = self.service(session).list_versions(UserRole.super_admin, search="Secret Draft")
-            self.assertEqual(0, admin_search.total)
-            self.assertEqual(0, admin_draft_filter.total)
-            self.assertEqual(1, super_search.total)
-            self.assertEqual("draft", super_search.items[0].status)
+            pm_search = self.service(session).list_versions(UserRole.project_manager, search="Secret Draft")
+            pm_draft_filter = self.service(session).list_versions(UserRole.project_manager, statuses={"draft"})
+            self.assertEqual(0, pm_search.total)
+            self.assertEqual(0, pm_draft_filter.total)
+            for role in (UserRole.super_admin, UserRole.admin):
+                author_search = self.service(session).list_versions(role, search="Secret Draft")
+                self.assertEqual(1, author_search.total)
+                self.assertEqual("draft", author_search.items[0].status)
 
     def test_aggregate_counts_exclude_inaccessible_versions(self):
         with self.Session() as session:
-            admin = self.service(session).aggregate_counts(UserRole.admin)
+            pm = self.service(session).aggregate_counts(UserRole.project_manager)
             super_admin = self.service(session).aggregate_counts(UserRole.super_admin)
+            admin = self.service(session).aggregate_counts(UserRole.admin)
             self.assertEqual(
                 {
                     "version_count": 2,
@@ -243,17 +248,19 @@ class TemplateAccessQueryTests(unittest.TestCase):
                     "exact_mapping_count": 1,
                     "broad_text_gate_count": 1,
                 },
-                admin.to_dict(),
+                pm.to_dict(),
             )
+            self.assertEqual(super_admin.to_dict(), admin.to_dict())
             self.assertEqual(3, super_admin.version_count)
             self.assertEqual(4, super_admin.task_count)
             self.assertEqual(2, super_admin.dependency_count)
             self.assertEqual(3, super_admin.gate_count)
 
     def test_published_only_and_allowed_status_helpers(self):
-        # Super Admin also reads archived versions, as read-only history.
+        # Super Admin and Admin also read archived versions, as read-only history.
         self.assertEqual(frozenset({"draft", "published", "archived"}), allowed_template_statuses(UserRole.super_admin))
-        self.assertEqual(frozenset({"published"}), allowed_template_statuses(UserRole.admin))
+        self.assertEqual(frozenset({"draft", "published", "archived"}), allowed_template_statuses(UserRole.admin))
+        self.assertEqual(frozenset({"published"}), allowed_template_statuses(UserRole.project_manager))
         with self.Session() as session:
             page = TemplateRepository(session).list_versions(UserRole.super_admin, statuses={"published"})
             self.assertEqual(2, page.total)

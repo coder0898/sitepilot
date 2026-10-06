@@ -74,12 +74,14 @@ beforeEach(() => {
 });
 
 describe("Phase 2 template authoring entry", () => {
-  it("shows Create Template only to Super Admin", async () => {
-    const superAdmin = renderPage("super_admin");
-    expect(await screen.findByRole("button", { name: /create template/i })).toBeInTheDocument();
-    superAdmin.unmount();
+  it("shows Create Template only to Super Admin and Admin", async () => {
+    for (const role of ["super_admin", "admin"]) {
+      const author = renderPage(role);
+      expect(await screen.findByRole("button", { name: /create template/i })).toBeInTheDocument();
+      author.unmount();
+    }
 
-    for (const role of ["admin", "project_manager", "supervisor", "internal_employee"]) {
+    for (const role of ["project_manager", "supervisor", "internal_employee"]) {
       const view = renderPage(role);
       await screen.findByText("Template library");
       expect(screen.queryByRole("button", { name: /create template/i })).not.toBeInTheDocument();
@@ -205,12 +207,12 @@ describe("Phase 2 template authoring entry", () => {
     fireEvent.click(await screen.findByRole("button", { name: /open draft editor/i }));
     await screen.findByTestId("template-draft-editor");
 
-    view.rerender(<TemplatesPage user={{ id: "user-1", role: "admin" }} debounceMs={0}/>);
+    view.rerender(<TemplatesPage user={{ id: "user-1", role: "project_manager" }} debounceMs={0}/>);
     await waitFor(() => expect(view.container.querySelector("[data-template-view]")).toHaveAttribute("data-template-view", "list"));
     expect(view.container.querySelector("[data-template-view]")).toHaveAttribute("data-selected-version-id", "");
   });
 
-  it.each(["admin", "project_manager"])("keeps %s details fully read-only", async role => {
+  it.each(["project_manager"])("keeps %s details fully read-only", async role => {
     renderPage(role);
     await openPublishedDetails();
     expect(screen.queryByRole("button", { name: /clone as draft/i })).not.toBeInTheDocument();

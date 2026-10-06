@@ -217,11 +217,11 @@ class TemplateDependencyApiTests(unittest.TestCase):
             service = self.service(session)
             for role in (UserRole.super_admin, UserRole.admin, UserRole.project_manager):
                 self.assertEqual(service.list_dependencies(role, self.published_id, page_size=100).total, 38)
-            self.assertEqual(service.list_dependencies(UserRole.super_admin, self.draft_id).total, 0)
-            for role in (UserRole.admin, UserRole.project_manager):
-                with self.assertRaises(HTTPException) as raised:
-                    service.list_dependencies(role, self.draft_id)
-                self.assertEqual(raised.exception.status_code, 404)
+            for role in (UserRole.super_admin, UserRole.admin):
+                self.assertEqual(service.list_dependencies(role, self.draft_id).total, 0)
+            with self.assertRaises(HTTPException) as raised:
+                service.list_dependencies(UserRole.project_manager, self.draft_id)
+            self.assertEqual(raised.exception.status_code, 404)
             for role in (UserRole.supervisor, UserRole.internal_employee):
                 with self.assertRaises(HTTPException) as raised:
                     service.list_dependencies(role, self.published_id)

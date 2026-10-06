@@ -54,14 +54,15 @@ class MutationAuthorizationTests(unittest.TestCase):
             )
         return self.client.post("/mutation-check")
 
-    def test_super_admin_mutation_allowed(self):
-        response = self.request_as(UserRole.super_admin)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"role": "super_admin"})
+    def test_super_admin_and_admin_mutation_allowed(self):
+        for role in (UserRole.super_admin, UserRole.admin):
+            with self.subTest(role=role):
+                response = self.request_as(role)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"role": role.value})
 
     def test_all_other_authenticated_roles_forbidden(self):
         for role in (
-            UserRole.admin,
             UserRole.project_manager,
             UserRole.supervisor,
             UserRole.internal_employee,

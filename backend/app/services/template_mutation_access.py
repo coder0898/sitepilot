@@ -12,15 +12,18 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.auth import require_roles
-from app.models import User, UserRole
+from app.models import User
+from app.services.access_control import ORG_ADMIN_ROLES, is_org_admin
 
 
-require_template_mutator = require_roles(UserRole.super_admin)
+# Admin holds the same template authority as Super Admin (create, clone, edit,
+# validate, publish, archive, delete draft).
+require_template_mutator = require_roles(*ORG_ADMIN_ROLES)
 
 
 def require_template_mutation_access(actor: User) -> User:
-    """Allow only an active Super Admin to mutate template aggregates."""
-    if actor.role != UserRole.super_admin:
+    """Allow only an org admin (Super Admin or Admin) to mutate template aggregates."""
+    if not is_org_admin(actor):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission for this action.",
