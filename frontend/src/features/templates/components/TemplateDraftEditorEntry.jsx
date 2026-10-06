@@ -10,6 +10,7 @@ import { dependencyTypeLabel } from "./TemplateDependencyCard";
 import { TemplateGateEditorModal } from "./TemplateGateEditorModal";
 import { gateMappingLabel } from "./TemplateGateCard";
 import { TemplateValidationPublishPanel } from "./TemplateValidationPublishPanel";
+import { ORG_ADMIN_ROLES } from "../../../utils/constants";
 import { nextStructuredCode } from "./templateAuthoringOptions";
 
 function apiMessage(error) {
@@ -155,7 +156,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   const [gateDeleteError,setGateDeleteError]=useState(null);
   const [deletingGate,setDeletingGate]=useState(false);
   const refreshPromiseRef = useRef(null);
-  const editable = user?.role === "super_admin" && summary?.status === "draft";
+  const editable = ORG_ADMIN_ROLES.includes(user?.role) && summary?.status === "draft";
   const reorderDirty = useMemo(() => tasks.map(task => task.id).join("|") !== savedOrder.join("|"), [savedOrder,tasks]);
   const dirty = formDirty || reorderDirty;
   const gateTaskCount = useMemo(() => tasks.filter(task => task.task_kind === "approval_gate").length, [tasks]);
@@ -281,7 +282,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   async function confirmGateDelete(){if(deletingGate)return;setDeletingGate(true);setGateDeleteError(null);try{const response=await templatesApi.deleteGate(summary.version_id,deleteGate.id,summary.revision_token);setSummary(c=>({...c,revision_token:response.revision_token}));setDeleteGate(null);await refresh();}catch(error){setGateDeleteError(error)}finally{setDeletingGate(false)}}
 
 
-  if(!editable) return <Alert tone="danger"><AlertTriangle size={18}/><div><strong>Draft authoring is unavailable</strong><span className="mt-1 block">Only Super Admin can edit a draft template version.</span></div></Alert>;
+  if(!editable) return <Alert tone="danger"><AlertTriangle size={18}/><div><strong>Draft authoring is unavailable</strong><span className="mt-1 block">Only Super Admin or Admin can edit a draft template version.</span></div></Alert>;
 
   return <section className="grid gap-5" data-testid="template-draft-editor">
     <header className="relative overflow-hidden rounded-[26px] bg-slate-950 p-5 text-white shadow-[0_24px_70px_rgba(15,23,42,.18)] sm:p-7">

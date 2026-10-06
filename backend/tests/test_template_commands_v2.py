@@ -229,10 +229,11 @@ class TemplateCommandApiTests(unittest.TestCase):
         fetched = self.client.get(f"/api/v2/templates/versions/{payload['version_id']}")
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json()["version_id"], payload["version_id"])
-        for role in (UserRole.admin, UserRole.project_manager):
-            self.set_role(role)
-            hidden = self.client.get(f"/api/v2/templates/versions/{payload['version_id']}")
-            self.assertEqual(hidden.status_code, 404)
+        self.set_role(UserRole.admin)
+        self.assertEqual(self.client.get(f"/api/v2/templates/versions/{payload['version_id']}").status_code, 200)
+        self.set_role(UserRole.project_manager)
+        hidden = self.client.get(f"/api/v2/templates/versions/{payload['version_id']}")
+        self.assertEqual(hidden.status_code, 404)
         self.set_role(UserRole.super_admin)
         with self.Session() as session:
             template = session.get(V2Template, uuid.UUID(payload["template_id"]))
@@ -271,10 +272,9 @@ class TemplateCommandApiTests(unittest.TestCase):
         with self.Session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(V2Template)), 1)
 
-    def test_only_super_admin_can_create_or_clone(self):
+    def test_only_org_admins_can_create_or_clone(self):
         create_payload = {"code": "SECURE-01", "name": "Secure", "duration_days": 5}
         for role in (
-            UserRole.admin,
             UserRole.project_manager,
             UserRole.supervisor,
             UserRole.internal_employee,
@@ -288,6 +288,22 @@ class TemplateCommandApiTests(unittest.TestCase):
                     403,
                 )
         self.assertEqual(self.post("/api/v2/templates", create_payload, None).status_code, 401)
+
+    def test_admin_can_create_and_clone_like_super_admin(self):
+        created = self.post(
+            "/api/v2/templates",
+            {"code": "ADMIN-01", "name": "Admin authored", "duration_days": 5},
+            UserRole.admin,
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["status"], "draft")
+        cloned = self.post(
+            f"/api/v2/templates/versions/{self.source_version_id}/clone",
+            {"change_note": "Admin revision."},
+            UserRole.admin,
+        )
+        self.assertEqual(cloned.status_code, 201, cloned.text)
+        self.assertEqual(cloned.json()["status"], "draft")
 
     def test_clone_reproduces_records_and_re_resolves_all_foreign_keys(self):
         response = self.post(

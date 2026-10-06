@@ -224,11 +224,11 @@ class TemplateGateApiTests(unittest.TestCase):
             service = self.service(session)
             for role in (UserRole.super_admin, UserRole.admin, UserRole.project_manager):
                 self.assertEqual(service.list_gates(role, self.published_id, page_size=100).total, 32)
-            self.assertEqual(service.list_gates(UserRole.super_admin, self.draft_id).total, 0)
-            for role in (UserRole.admin, UserRole.project_manager):
-                with self.assertRaises(HTTPException) as raised:
-                    service.list_gates(role, self.draft_id)
-                self.assertEqual(raised.exception.status_code, 404)
+            for role in (UserRole.super_admin, UserRole.admin):
+                self.assertEqual(service.list_gates(role, self.draft_id).total, 0)
+            with self.assertRaises(HTTPException) as raised:
+                service.list_gates(UserRole.project_manager, self.draft_id)
+            self.assertEqual(raised.exception.status_code, 404)
             for role in (UserRole.supervisor, UserRole.internal_employee):
                 with self.assertRaises(HTTPException) as raised:
                     service.list_gates(role, self.published_id)

@@ -220,18 +220,18 @@ class TemplateListApiTests(unittest.TestCase):
             f"/api/v2/templates/versions/{version_id or self.published_id}/tasks",
             params=params or {},
         )
-    def test_super_admin_sees_draft_and_published(self):
-        response = self.get(UserRole.super_admin)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["pagination"]["total"], 3)
-        self.assertEqual({row["status"] for row in response.json()["items"]}, {"draft", "published"})
-
-    def test_admin_and_pm_receive_published_only(self):
-        for role in (UserRole.admin, UserRole.project_manager):
+    def test_super_admin_and_admin_see_draft_and_published(self):
+        for role in (UserRole.super_admin, UserRole.admin):
             response = self.get(role)
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["pagination"]["total"], 2)
-            self.assertEqual({row["status"] for row in response.json()["items"]}, {"published"})
+            self.assertEqual(response.json()["pagination"]["total"], 3)
+            self.assertEqual({row["status"] for row in response.json()["items"]}, {"draft", "published"})
+
+    def test_pm_receives_published_only(self):
+        response = self.get(UserRole.project_manager)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["pagination"]["total"], 2)
+        self.assertEqual({row["status"] for row in response.json()["items"]}, {"published"})
 
     def test_unsupported_roles_receive_403(self):
         for role in (UserRole.supervisor, UserRole.internal_employee):
@@ -250,19 +250,19 @@ class TemplateListApiTests(unittest.TestCase):
         self.assertEqual([row["template_code"] for row in by_code.json()["items"]], ["BETA-02"])
         self.assertEqual([row["template_code"] for row in by_version.json()["items"]], ["SECRET-03"])
 
-    def test_super_admin_status_filter(self):
-        draft = self.get(UserRole.super_admin, {"status": "draft"})
-        published = self.get(UserRole.super_admin, {"status": "published"})
-        self.assertEqual(draft.json()["pagination"]["total"], 1)
-        self.assertEqual({row["status"] for row in draft.json()["items"]}, {"draft"})
-        self.assertEqual(published.json()["pagination"]["total"], 2)
+    def test_super_admin_and_admin_status_filter(self):
+        for role in (UserRole.super_admin, UserRole.admin):
+            draft = self.get(role, {"status": "draft"})
+            published = self.get(role, {"status": "published"})
+            self.assertEqual(draft.json()["pagination"]["total"], 1)
+            self.assertEqual({row["status"] for row in draft.json()["items"]}, {"draft"})
+            self.assertEqual(published.json()["pagination"]["total"], 2)
 
-    def test_admin_and_pm_status_cannot_expose_drafts(self):
-        for role in (UserRole.admin, UserRole.project_manager):
-            response = self.get(role, {"status": "draft"})
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["pagination"]["total"], 2)
-            self.assertEqual({row["status"] for row in response.json()["items"]}, {"published"})
+    def test_pm_status_cannot_expose_drafts(self):
+        response = self.get(UserRole.project_manager, {"status": "draft"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["pagination"]["total"], 2)
+        self.assertEqual({row["status"] for row in response.json()["items"]}, {"published"})
 
     def test_pagination_and_empty_result(self):
         first = self.get(UserRole.super_admin, {"page": 1, "page_size": 1}).json()
@@ -287,10 +287,10 @@ class TemplateListApiTests(unittest.TestCase):
         for role in (UserRole.super_admin, UserRole.admin, UserRole.project_manager):
             self.assertEqual(self.get_version_response(role).status_code, 200)
             self.assertEqual(self.get_tasks_response(role).status_code, 200)
-        self.assertEqual(self.get_version_response(UserRole.super_admin, self.draft_id).status_code, 200)
-        for role in (UserRole.admin, UserRole.project_manager):
-            self.assertEqual(self.get_version_response(role, self.draft_id).status_code, 404)
-            self.assertEqual(self.get_tasks_response(role, self.draft_id).status_code, 404)
+        for role in (UserRole.super_admin, UserRole.admin):
+            self.assertEqual(self.get_version_response(role, self.draft_id).status_code, 200)
+        self.assertEqual(self.get_version_response(UserRole.project_manager, self.draft_id).status_code, 404)
+        self.assertEqual(self.get_tasks_response(UserRole.project_manager, self.draft_id).status_code, 404)
         for role in (UserRole.supervisor, UserRole.internal_employee):
             self.assertEqual(self.get_version_response(role).status_code, 403)
             self.assertEqual(self.get_tasks_response(role).status_code, 403)

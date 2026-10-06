@@ -142,8 +142,8 @@ class TemplatePublishApiTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 422)
         self.assertEqual(missing.json()["detail"]["code"], "change_note_required")
 
-    def test_non_super_admin_forbidden(self):
-        for role in (UserRole.admin, UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee):
+    def test_non_org_admin_forbidden(self):
+        for role in (UserRole.project_manager, UserRole.supervisor, UserRole.internal_employee):
             with self.subTest(role=role):
                 self.role = role
                 response = self.publish(self.draft_id)

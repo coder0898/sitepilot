@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, UserRole
+from app.models import User
+from app.services.access_control import is_org_admin
 from app.services.template_access import require_template_reader
 from app.services.template_commands import TemplateCommandService
 from app.services.template_task_commands import TemplateTaskCommandService
@@ -295,7 +296,7 @@ def list_templates(
     actor: User = Depends(require_template_reader),
     db: Session = Depends(get_db),
 ) -> TemplateListResponse:
-    if actor.role == UserRole.super_admin:
+    if is_org_admin(actor):
         # Archived versions are history: listed only when asked for, so the
         # default list stays the working set (draft + published).
         statuses = {status_filter} if status_filter else {"draft", "published"}

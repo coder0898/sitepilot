@@ -169,12 +169,13 @@ class TemplateArchiveTests(unittest.TestCase):
         with self.Session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(V2TemplateTask)), before)
 
-    def test_admin_still_sees_only_published_versions(self):
-        self.archive(1)
+    def test_admin_can_archive_and_sees_archived_history_like_super_admin(self):
         self.actor = ADMIN
-        self.assertEqual(self.listed(), [(2, "published")])
-        self.assertEqual(self.listed("archived"), [(2, "published")])  # filter is Super Admin only
-        self.assertEqual(self.client.get(f"/api/v2/templates/versions/{self.versions[1]}").status_code, 404)
+        response = self.archive(1)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.listed(), [(2, "published")])  # working list
+        self.assertEqual(self.listed("archived"), [(1, "archived")])  # history
+        self.assertEqual(self.client.get(f"/api/v2/templates/versions/{self.versions[1]}").status_code, 200)
 
 
 if __name__ == "__main__":

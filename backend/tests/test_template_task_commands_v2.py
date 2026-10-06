@@ -247,7 +247,7 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["revision_token"], self.revision())
 
-        self.set_role(UserRole.admin)
+        self.set_role(UserRole.project_manager)
         hidden = self.client.get(
             f"/api/v2/templates/versions/{self.draft_id}"
         )
@@ -433,7 +433,6 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
         )
 
         for role in (
-            UserRole.admin,
             UserRole.project_manager,
             UserRole.supervisor,
             UserRole.internal_employee,

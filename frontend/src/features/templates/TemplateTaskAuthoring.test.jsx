@@ -43,7 +43,7 @@ describe("draft task authoring",()=>{
     view();
     expect(await screen.findByText("Draft task authoring")).toBeInTheDocument();
     expect(screen.getByRole("button",{name:/add task/i})).toBeInTheDocument();
-    const denied=view("admin");
+    const denied=view("project_manager");
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
     denied.unmount();
   });
