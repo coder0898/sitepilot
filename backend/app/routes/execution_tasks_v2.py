@@ -81,6 +81,8 @@ from app.services.project_gate_assignment import ProjectGateAssignmentService
 from app.services.project_gate_decision import ProjectGateDecisionService
 from app.services.project_gate_status_check import ProjectGateStatusCheckService
 from app.services.project_gate_submission import ProjectGateSubmissionService
+from app.services.project_reference_material import approval_reference_file, material_for_task, task_reference_file
+from app.services.template_reference_files import reference_file_response
 from app.services.task_approval import TaskApprovalService
 from app.services.task_approval_metadata import build_approval_metadata
 from app.services.task_blocker import TaskBlockerService
@@ -324,6 +326,7 @@ def get_project_task(
         phase=task.phase,
         category=task.category,
         evidence_required=task.evidence_required,
+        **material_for_task(db, task),
         created_at=task.created_at,
         updated_at=task.updated_at,
         approval=build_approval_metadata(task.task_kind, task.task_class, task.lifecycle_status),
@@ -764,6 +767,34 @@ def end_task_support(
         reason_code=payload.reason_code, reason_detail=payload.reason_detail,
         replacement_employee_id=payload.replacement_employee_id,
     )
+
+
+@router.get("/{project_id}/tasks/{task_id}/reference-files/{reference_id}")
+def download_task_reference_file(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    reference_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Admin-provided reference material from the template version this
+    project is pinned to - not evidence."""
+    project = get_project(db, project_id, actor)
+    file_object, content = task_reference_file(db, project, task_id, reference_id, actor)
+    return reference_file_response(file_object, content)
+
+
+@router.get("/{project_id}/external-approvals/{approval_id}/reference-files/{reference_id}")
+def download_external_approval_reference_file(
+    project_id: uuid.UUID,
+    approval_id: uuid.UUID,
+    reference_id: uuid.UUID,
+    actor: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_project(db, project_id, actor)
+    file_object, content = approval_reference_file(db, project, approval_id, reference_id, actor)
+    return reference_file_response(file_object, content)
 
 
 @router.get("/{project_id}/tasks/{task_id}/evidence/{file_id}")

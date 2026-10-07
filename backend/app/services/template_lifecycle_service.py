@@ -17,7 +17,7 @@ from app.services.template_mutation_access import (
 )
 from app.services.transaction_boundary import command_transaction
 from app.template_lifecycle_schemas import TemplateArchiveVersionRequest, TemplateArchiveVersionResponse, TemplateDeleteDraftRequest, TemplateDeleteDraftResponse
-from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
+from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateGateReferenceFile, V2TemplateTask, V2TemplateTaskDependency, V2TemplateTaskReferenceFile, V2TemplateVersion
 
 
 class TemplateLifecycleService:
@@ -150,6 +150,9 @@ class TemplateLifecycleService:
             task_ids = select(V2TemplateTask.id).where(V2TemplateTask.template_version_id == version.id)
             self.db.execute(delete(V2TemplateExternalGateTask).where((V2TemplateExternalGateTask.gate_id.in_(gate_ids)) | (V2TemplateExternalGateTask.template_task_id.in_(task_ids))))
             self.db.execute(delete(V2TemplateTaskDependency).where(V2TemplateTaskDependency.template_version_id == version.id))
+            # Reference links only; the file rows may be shared with other versions.
+            self.db.execute(delete(V2TemplateTaskReferenceFile).where(V2TemplateTaskReferenceFile.template_task_id.in_(task_ids)))
+            self.db.execute(delete(V2TemplateGateReferenceFile).where(V2TemplateGateReferenceFile.gate_id.in_(gate_ids)))
             self.db.execute(delete(V2TemplateExternalGate).where(V2TemplateExternalGate.template_version_id == version.id))
             self.db.execute(delete(V2TemplateTask).where(V2TemplateTask.template_version_id == version.id))
 

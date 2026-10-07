@@ -9,6 +9,8 @@ export const taskExecutionApi = {
   transitionStatus: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/status`, { method: "POST", body: JSON.stringify(payload) }),
   submitProgress: (projectId, taskId, formData) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/progress`, { method: "POST", body: formData }),
   downloadEvidence: (projectId, taskId, fileId) => fetchBinary(`/api/v2/projects/${projectId}/tasks/${taskId}/evidence/${fileId}`),
+  // Admin reference material from the pinned template version (not evidence).
+  downloadTaskReference: (projectId, taskId, referenceId) => fetchBinary(`/api/v2/projects/${projectId}/tasks/${taskId}/reference-files/${referenceId}`),
   verify: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/verify`, { method: "POST", body: JSON.stringify(payload) }),
   approve: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/approve`, { method: "POST", body: JSON.stringify(payload) }),
   logBlocker: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/blockers`, { method: "POST", body: JSON.stringify(payload) }),
@@ -26,6 +28,7 @@ export const taskExecutionApi = {
   unassignExternalApproval: (projectId, approvalId) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/unassign`, { method: "POST" }),
   submitExternalApprovalEvidence: (projectId, approvalId, formData) => api(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/submission`, { method: "POST", body: formData }),
   downloadExternalApprovalEvidence: (projectId, approvalId, fileId) => fetchBinary(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/evidence/${fileId}`),
+  downloadApprovalReference: (projectId, approvalId, referenceId) => fetchBinary(`/api/v2/projects/${projectId}/external-approvals/${approvalId}/reference-files/${referenceId}`),
   assignSupport: (projectId, taskId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/support-assignments`, { method: "POST", body: JSON.stringify(payload) }),
   endSupportAssignment: (projectId, taskId, assignmentId, payload) => api(`/api/v2/projects/${projectId}/tasks/${taskId}/support-assignments/${assignmentId}/end`, { method: "POST", body: JSON.stringify(payload) }),
 };

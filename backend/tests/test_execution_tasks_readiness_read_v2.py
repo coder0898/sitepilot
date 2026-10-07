@@ -74,6 +74,7 @@ from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
 from app.services.task_delay_variance import variance_for_task
 from app.services.task_readiness import BLOCKED, READY, REASON_APPROVAL, REASON_DEPENDENCY, TaskReadinessService
+from tests.template_reference_tables import TEMPLATE_REFERENCE_LINK_TABLES
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -144,7 +145,7 @@ class ReadinessReadApiTestCase(unittest.TestCase):
             ProjectExternalApprovalTask.__table__,
             TaskDependency.__table__,
             TaskProgressUpdate.__table__,
-            FileObject.__table__,
+            FileObject.__table__, *TEMPLATE_REFERENCE_LINK_TABLES,
             TaskEvidence.__table__,
             TaskVerification.__table__,
             TaskApprovalDecision.__table__,

@@ -175,6 +175,9 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   const [editorTask, setEditorTask] = useState(undefined);
   const [editorOpen, setEditorOpen] = useState(false);
   const [formDirty, setFormDirty] = useState(false);
+  // Reference uploads/removals are draft changes of their own: keep the newest
+  // revision for the next save, and reload the lists once the dialog closes.
+  const referencesChangedRef = useRef(false);
   const [deleteTask, setDeleteTask] = useState(null);
   const [deleteError, setDeleteError] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -340,12 +343,15 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     setActiveEditorTab(issue.group==="dependencies"?"dependencies":issue.group==="gates"||issue.group==="mappings"?"gates":"tasks");
   }
 
+  function referencesChanged(token){referencesChangedRef.current=true;setSummary(current=>({...current,revision_token:token}));}
+  function reloadAfterReferenceChanges(){if(referencesChangedRef.current){referencesChangedRef.current=false;refresh();}}
+
   function openAddGate(){setEditorGate(null);setGateEditorOpen(true);}
   function openEditGate(gate){setEditorGate(gate);setGateEditorOpen(true);}
   async function saveGate(payload,gate,initialJson){
     if(!gate){const response=await templatesApi.createGate(summary.version_id,payload);setSummary(c=>({...c,revision_token:response.revision_token}));}
     else {
-      const initial=JSON.parse(initialJson); const metadataKeys=["code","approval_name","description","external_party","required_by_type","required_by_value","impact","sequence_no"];
+      const initial=JSON.parse(initialJson); const metadataKeys=["code","approval_name","description","external_party","required_by_type","required_by_value","impact","evidence_instructions","sequence_no"];
       const changes={revision_token:summary.revision_token}; metadataKeys.forEach(key=>{const old=initial[key]??null,newValue=payload[key]??null;if(old!==newValue)changes[key]=newValue;});
       let token=summary.revision_token;
       if(Object.keys(changes).length>1){const updated=await templatesApi.updateGate(summary.version_id,gate.id,changes);token=updated.revision_token;}
@@ -401,11 +407,11 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     </> : null}
     <div className={activeEditorTab === "validation" ? "block" : "hidden"} aria-hidden={activeEditorTab !== "validation"}><TemplateValidationPublishPanel summary={summary} active={activeEditorTab === "validation"} tasks={tasks} gates={gates} onFix={fixIssue} onRefresh={refresh} onPublished={onPublished}/></div>
 
-    {editorOpen && <TemplateTaskEditorModal task={editorTask} tasks={tasks} dependencies={dependencies} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={tasks.length+1} suggestedCode={nextStructuredCode(tasks, "T")} onClose={()=>{setEditorOpen(false);setFormDirty(false);}} onSaved={saveTask} onDirtyChange={setFormDirty}/>}
+    {editorOpen && <TemplateTaskEditorModal task={editorTask} tasks={tasks} dependencies={dependencies} versionId={summary.version_id} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={tasks.length+1} suggestedCode={nextStructuredCode(tasks, "T")} onClose={()=>{setEditorOpen(false);setFormDirty(false);reloadAfterReferenceChanges();}} onSaved={saveTask} onDirtyChange={setFormDirty} onReferencesChanged={referencesChanged}/>}
     {deleteTask && <DeleteTaskModal task={deleteTask} busy={deleting} error={deleteError} onClose={()=>{setDeleteTask(null);setDeleteError(null);}} onConfirm={confirmDelete}/>}
     {dependencyEditorOpen && <TemplateDependencyEditorModal dependency={editorDependency} tasks={tasks} revisionToken={summary.revision_token} nextSequence={dependencies.length+1} onClose={()=>{setDependencyEditorOpen(false);setFormDirty(false);}} onSaved={saveDependency} onDirtyChange={setFormDirty}/>} 
     {deleteDependency && <DeleteDependencyModal dependency={deleteDependency} busy={deletingDependency} error={dependencyDeleteError} onClose={()=>{setDeleteDependency(null);setDependencyDeleteError(null);}} onConfirm={confirmDependencyDelete}/>} 
-    {gateEditorOpen && <TemplateGateEditorModal gate={editorGate} tasks={tasks} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={gates.length+1} suggestedCode={nextStructuredCode(gates, "E")} onClose={()=>{setGateEditorOpen(false);setFormDirty(false)}} onSaved={saveGate} onDirtyChange={setFormDirty}/>} 
+    {gateEditorOpen && <TemplateGateEditorModal gate={editorGate} tasks={tasks} versionId={summary.version_id} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={gates.length+1} suggestedCode={nextStructuredCode(gates, "E")} onClose={()=>{setGateEditorOpen(false);setFormDirty(false);reloadAfterReferenceChanges();}} onSaved={saveGate} onDirtyChange={setFormDirty} onReferencesChanged={referencesChanged}/>} 
     {deleteGate && <DeleteGateModal gate={deleteGate} busy={deletingGate} error={gateDeleteError} onClose={()=>{setDeleteGate(null);setGateDeleteError(null)}} onConfirm={confirmGateDelete}/>} 
   </section>;
 }

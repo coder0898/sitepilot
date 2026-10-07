@@ -16,6 +16,7 @@ from app.database import get_db
 from app.models import User, UserRole
 from app.repositories.template_repository import _task_validation_issues
 from app.routes.templates_v2 import router
+from tests.template_reference_tables import TEMPLATE_REFERENCE_TABLES
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -53,7 +54,7 @@ class TemplateListApiTests(unittest.TestCase):
             V2TemplateTask.__table__,
             V2TemplateTaskDependency.__table__,
             V2TemplateExternalGate.__table__,
-            V2TemplateExternalGateTask.__table__,
+            V2TemplateExternalGateTask.__table__, *TEMPLATE_REFERENCE_TABLES,
         ):
             table.create(cls.engine)
         cls.Session = sessionmaker(bind=cls.engine, expire_on_commit=False)
@@ -383,7 +384,8 @@ class TemplateListApiTests(unittest.TestCase):
             event.remove(self.engine, "before_cursor_execute", capture)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["items"]), 99)
-        self.assertEqual(len(statements), 3)
+        # One batched reference-file query per page (Phase 2) - still constant.
+        self.assertEqual(len(statements), 4)
         self.assertTrue(all("v2_template" in statement for statement in statements))
     def test_list_uses_two_selects_and_never_queries_legacy_templates(self):
         statements = []

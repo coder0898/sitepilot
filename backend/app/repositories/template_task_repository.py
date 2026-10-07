@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.template_models import (
@@ -12,6 +12,7 @@ from app.template_models import (
     V2TemplateExternalGateTask,
     V2TemplateTask,
     V2TemplateTaskDependency,
+    V2TemplateTaskReferenceFile,
 )
 
 
@@ -170,6 +171,8 @@ class TemplateTaskRepository:
         return TaskBlockingReferences(dependencies=dependencies, gate_mappings=gate_mappings)
 
     def delete_task(self, task: V2TemplateTask) -> None:
+        # Reference links go with the task; the shared file rows stay.
+        self.db.execute(delete(V2TemplateTaskReferenceFile).where(V2TemplateTaskReferenceFile.template_task_id == task.id))
         self.db.delete(task)
         self.db.flush()
 

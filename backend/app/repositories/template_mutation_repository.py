@@ -16,8 +16,10 @@ from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
     V2TemplateExternalGateTask,
+    V2TemplateGateReferenceFile,
     V2TemplateTask,
     V2TemplateTaskDependency,
+    V2TemplateTaskReferenceFile,
     V2TemplateVersion,
 )
 
@@ -170,6 +172,7 @@ class TemplateMutationRepository:
                 task_class=source.task_class,
                 task_kind=source.task_kind,
                 evidence_required=source.evidence_required,
+                evidence_instructions=source.evidence_instructions,
                 duration_days=source.duration_days,
             )
             self.db.add(clone)
@@ -221,6 +224,7 @@ class TemplateMutationRepository:
                 required_by_type=source.required_by_type,
                 required_by_value=source.required_by_value,
                 impact=source.impact,
+                evidence_instructions=source.evidence_instructions,
                 mapping_classification=source.mapping_classification,
                 broad_mapping_text=source.broad_mapping_text,
                 requires_configuration=source.requires_configuration,
@@ -254,6 +258,41 @@ class TemplateMutationRepository:
             clones.append(clone)
         self.db.flush()
         return clones
+
+    def clone_reference_files(
+        self,
+        *,
+        task_map: dict[uuid.UUID, V2TemplateTask],
+        gate_map: dict[uuid.UUID, V2TemplateExternalGate],
+    ) -> int:
+        """Link the clone's tasks and gates to the SAME file rows as the source.
+        A file is never modified in place, so sharing is safe and no bytes are
+        copied."""
+        count = 0
+        if task_map:
+            for link in self.db.scalars(
+                select(V2TemplateTaskReferenceFile)
+                .where(V2TemplateTaskReferenceFile.template_task_id.in_(list(task_map)))
+                .order_by(V2TemplateTaskReferenceFile.created_at, V2TemplateTaskReferenceFile.id)
+            ):
+                self.db.add(V2TemplateTaskReferenceFile(
+                    template_task_id=task_map[link.template_task_id].id, file_id=link.file_id,
+                    description=link.description, created_by=link.created_by,
+                ))
+                count += 1
+        if gate_map:
+            for link in self.db.scalars(
+                select(V2TemplateGateReferenceFile)
+                .where(V2TemplateGateReferenceFile.gate_id.in_(list(gate_map)))
+                .order_by(V2TemplateGateReferenceFile.created_at, V2TemplateGateReferenceFile.id)
+            ):
+                self.db.add(V2TemplateGateReferenceFile(
+                    gate_id=gate_map[link.gate_id].id, file_id=link.file_id,
+                    description=link.description, created_by=link.created_by,
+                ))
+                count += 1
+        self.db.flush()
+        return count
 
     def touch(self, version: V2TemplateVersion) -> str:
         token = touch_version(version)

@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, fetchBinary } from "./client";
 
 function query(params = {}) {
   const search = new URLSearchParams();
@@ -27,6 +27,16 @@ export const templatesApi = {
   updateGate: (versionId, gateId, payload, options = {}) => api(`/api/v2/templates/versions/${versionId}/gates/${gateId}`, { ...options, method: "PATCH", body: JSON.stringify(payload) }),
   configureGateMappings: (versionId, gateId, payload, options = {}) => api(`/api/v2/templates/versions/${versionId}/gates/${gateId}/mappings`, { ...options, method: "PUT", body: JSON.stringify(payload) }),
   deleteGate: (versionId, gateId, revisionToken, options = {}) => api(`/api/v2/templates/versions/${versionId}/gates/${gateId}${query({ revision_token: revisionToken })}`, { ...options, method: "DELETE" }),
+  // Admin reference material on a draft task (kind "tasks") or approval (kind "gates").
+  addReferenceFile: (versionId, kind, ownerId, { file, description, revisionToken }, options = {}) => {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("revision_token", revisionToken);
+    if (description) body.append("description", description);
+    return api(`/api/v2/templates/versions/${versionId}/${kind}/${ownerId}/reference-files`, { ...options, method: "POST", body });
+  },
+  removeReferenceFile: (versionId, kind, ownerId, referenceId, revisionToken, options = {}) => api(`/api/v2/templates/versions/${versionId}/${kind}/${ownerId}/reference-files/${referenceId}${query({ revision_token: revisionToken })}`, { ...options, method: "DELETE" }),
+  downloadReferenceFile: (versionId, kind, ownerId, referenceId) => fetchBinary(`/api/v2/templates/versions/${versionId}/${kind}/${ownerId}/reference-files/${referenceId}`),
   validateVersion: (versionId, options = {}) => api(`/api/v2/templates/versions/${versionId}/validate`, { ...options, method: "POST" }),
   publishVersion: (versionId, payload, options = {}) => api(`/api/v2/templates/versions/${versionId}/publish`, { ...options, method: "POST", body: JSON.stringify(payload) }),
   archiveVersion: (versionId, payload, options = {}) => api(`/api/v2/templates/versions/${versionId}/archive`, { ...options, method: "POST", body: JSON.stringify(payload) }),

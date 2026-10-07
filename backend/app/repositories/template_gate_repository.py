@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.template_models import V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask
+from app.template_models import V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateGateReferenceFile, V2TemplateTask
 
 
 class TemplateGateRepository:
@@ -56,6 +56,8 @@ class TemplateGateRepository:
         self.db.flush()
 
     def delete_gate(self, gate: V2TemplateExternalGate) -> None:
+        # Reference links go with the gate; the shared file rows stay.
+        self.db.execute(delete(V2TemplateGateReferenceFile).where(V2TemplateGateReferenceFile.gate_id == gate.id))
         self.db.execute(
             delete(V2TemplateExternalGateTask).where(V2TemplateExternalGateTask.gate_id == gate.id)
         )

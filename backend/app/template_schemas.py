@@ -9,6 +9,29 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class TemplateReferenceFileItem(BaseModel):
+    """Admin-provided reference material (never execution evidence)."""
+
+    id: uuid.UUID
+    file_id: uuid.UUID
+    filename: str
+    mime_type: str
+    size_bytes: int
+    description: str | None
+    created_at: datetime | None = None
+
+
+class TemplateReferenceFileMutationResponse(BaseModel):
+    reference: TemplateReferenceFileItem
+    revision_token: str
+
+
+class TemplateReferenceFileDeleteResponse(BaseModel):
+    reference_id: uuid.UUID
+    deleted: bool
+    revision_token: str
+
+
 class TemplateListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -85,6 +108,8 @@ class TemplateTaskItem(BaseModel):
     task_class: str | None
     task_kind: str | None
     evidence_required: bool
+    evidence_instructions: str | None = None
+    reference_files: list[TemplateReferenceFileItem] = Field(default_factory=list)
     duration_days: int | None
     validation_state: Literal["valid", "invalid"]
     validation_issues: list[str]
@@ -154,6 +179,8 @@ class TemplateGateItem(BaseModel):
     required_by_type: str | None
     required_by_value: str | None
     impact: str | None
+    evidence_instructions: str | None = None
+    reference_files: list[TemplateReferenceFileItem] = Field(default_factory=list)
     mapping_classification: str
     requires_configuration: bool
     broad_mapping_text: str | None

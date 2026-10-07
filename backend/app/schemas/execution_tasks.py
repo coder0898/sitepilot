@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.execution_models import TASK_LIFECYCLE_STATUSES
+from app.template_schemas import TemplateReferenceFileItem
 from app.services.task_approval_metadata import ApprovalMetadataOut
 from app.services.task_delay_variance import DelayVariance
 from app.services.task_readiness import ReadinessReason, TaskReadiness, UnresolvedApproval
@@ -551,6 +552,9 @@ class TaskDetailOut(BaseModel):
     phase: str | None
     category: str | None
     evidence_required: bool
+    # From the template version this project is pinned to (Template Builder Phase 2).
+    evidence_instructions: str | None = None
+    reference_files: list[TemplateReferenceFileItem] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     approval: ApprovalMetadataOut

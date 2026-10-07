@@ -139,6 +139,8 @@ class V2TemplateTask(Base):
     task_class: Mapped[str | None] = mapped_column(Text)
     task_kind: Mapped[str | None] = mapped_column(Text)
     evidence_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # "What proof is needed?" - guidance for whoever does the work, not a rule.
+    evidence_instructions: Mapped[str | None] = mapped_column(Text)
     duration_days: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
@@ -245,6 +247,8 @@ class V2TemplateExternalGate(Base):
     required_by_type: Mapped[str | None] = mapped_column(Text)
     required_by_value: Mapped[str | None] = mapped_column(Text)
     impact: Mapped[str | None] = mapped_column(Text)
+    # Guidance only: approval submission is never blocked on proof (Phase 2, D1).
+    evidence_instructions: Mapped[str | None] = mapped_column(Text)
     mapping_classification: Mapped[str] = mapped_column(Text, nullable=False)
     broad_mapping_text: Mapped[str | None] = mapped_column(Text)
     requires_configuration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -280,3 +284,58 @@ class V2TemplateExternalGateTask(Base):
 
     gate: Mapped[V2TemplateExternalGate] = relationship(back_populates="task_links")
     template_task: Mapped[V2TemplateTask] = relationship(back_populates="gate_links")
+
+
+class V2TemplateTaskReferenceFile(Base):
+    """Admin-provided reference material for a template task - never execution
+    evidence. Shares file_objects rows across cloned versions (no byte copy)."""
+
+    __tablename__ = "v2_template_task_reference_files"
+    __table_args__ = (
+        UniqueConstraint("template_task_id", "file_id", name="uq_v2_template_task_reference_files_task_file"),
+        Index("ix_v2_template_task_reference_files_task", "template_task_id"),
+        Index("ix_v2_template_task_reference_files_file", "file_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.v2_template_tasks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class V2TemplateGateReferenceFile(Base):
+    """Admin-provided reference material for a template prerequisite approval."""
+
+    __tablename__ = "v2_template_gate_reference_files"
+    __table_args__ = (
+        UniqueConstraint("gate_id", "file_id", name="uq_v2_template_gate_reference_files_gate_file"),
+        Index("ix_v2_template_gate_reference_files_gate", "gate_id"),
+        Index("ix_v2_template_gate_reference_files_file", "file_id"),
+        {"schema": V2_SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    gate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.v2_template_external_gates.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{V2_SCHEMA}.file_objects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

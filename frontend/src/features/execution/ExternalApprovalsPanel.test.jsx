@@ -7,7 +7,7 @@ import { ExternalApprovalsPanel } from "./components/ExternalApprovalsPanel";
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
   listExternalApprovals: vi.fn(), decideExternalApproval: vi.fn(),
   assignExternalApproval: vi.fn(), reassignExternalApproval: vi.fn(), unassignExternalApproval: vi.fn(),
-  submitExternalApprovalEvidence: vi.fn(), downloadExternalApprovalEvidence: vi.fn(),
+  submitExternalApprovalEvidence: vi.fn(), downloadExternalApprovalEvidence: vi.fn(), downloadApprovalReference: vi.fn(),
   list: vi.fn(), detail: vi.fn(),
 } }));
 vi.mock("../../api/projectsApi", () => ({ projectsApi: { detail: vi.fn(), externalGates: vi.fn() } }));
@@ -528,5 +528,24 @@ describe("ExternalApprovalsPanel", () => {
     await openApproval("FIRE-NOC");
     const summary = screen.getByText("Due date").parentElement;
     expect(within(summary).getByText("—")).toBeInTheDocument();
+  });
+});
+
+describe("approval reference material", () => {
+  it("shows what proof is needed and downloads the reference files from the review drawer", async () => {
+    taskExecutionApi.listExternalApprovals.mockResolvedValue([{
+      ...baseApproval,
+      evidence_instructions: "Stamped NOC copy.",
+      reference_files: [{ id: "r9", file_id: "f9", filename: "noc-form.pdf", mime_type: "application/pdf", size_bytes: 1024, description: "Application form" }],
+    }]);
+    taskExecutionApi.downloadApprovalReference.mockResolvedValue({ blob: new Blob(["%PDF"]), filename: "noc-form.pdf" });
+    URL.createObjectURL = vi.fn(() => "blob:ref");
+    URL.revokeObjectURL = vi.fn();
+    renderPanel(admin);
+    await openApproval(baseApproval.gate_code);
+    expect(await screen.findByText("Stamped NOC copy.")).toBeInTheDocument();
+    expect(screen.getByText("Application form")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /download noc-form.pdf/i }));
+    await waitFor(() => expect(taskExecutionApi.downloadApprovalReference).toHaveBeenCalledWith("p1", "a1", "r9"));
   });
 });

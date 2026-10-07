@@ -43,6 +43,7 @@ from app.project_models import (
 )
 from app.routes.execution_tasks_v2 import router as execution_tasks_router
 from app.routes.projects_v2 import router as projects_router
+from tests.template_reference_tables import TEMPLATE_REFERENCE_LINK_TABLES
 from app.template_models import V2Template, V2TemplateExternalGate, V2TemplateExternalGateTask, V2TemplateTask, V2TemplateTaskDependency, V2TemplateVersion
 from tests.project_dates import pin_project_creation_today
 
@@ -98,7 +99,7 @@ class ExecutionTasksReadApiTests(unittest.TestCase):
             ProjectExternalApprovalTask.__table__,
             TaskDependency.__table__,
             TaskProgressUpdate.__table__,
-            FileObject.__table__,
+            FileObject.__table__, *TEMPLATE_REFERENCE_LINK_TABLES,
             TaskEvidence.__table__,
             TaskVerification.__table__,
             TaskApprovalDecision.__table__,

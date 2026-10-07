@@ -175,6 +175,7 @@ class TemplateCommandService:
                     gate_map=gate_map,
                     task_map=task_map,
                 )
+                reference_count = self.repository.clone_reference_files(task_map=task_map, gate_map=gate_map)
 
                 after_json = {
                     "template_id": str(owner.id),
@@ -185,6 +186,7 @@ class TemplateCommandService:
                     "dependency_count": len(dependencies),
                     "gate_count": len(gate_map),
                     "exact_mapping_count": len(links),
+                    "reference_file_count": reference_count,
                 }
                 if payload.new_template is not None:
                     after_json.update(new_template=True, template_code=owner.code, template_name=owner.name)
