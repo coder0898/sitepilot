@@ -8,3 +8,6 @@ TEMPLATE_REFERENCE_TABLES = (
     V2TemplateTaskReferenceFile.__table__,
     V2TemplateGateReferenceFile.__table__,
 )
+
+# For test databases that already create file_objects themselves.
+TEMPLATE_REFERENCE_LINK_TABLES = TEMPLATE_REFERENCE_TABLES[1:]

@@ -71,6 +71,7 @@ from app.execution_models import (
 from app.models import EmployeeProfile, User, UserRole
 from app.project_models import V2AuditEvent, V2Project, V2ProjectExternalGate, V2ProjectMembership
 from app.services.outbox import OutboxService
+from app.services.project_reference_material import NO_MATERIAL, material_for_gates
 
 GATE_DECISIONS = ("approved", "rejected")
 """The subset of `EXTERNAL_APPROVAL_STATUSES` a human may write - `pending` is
@@ -132,6 +133,8 @@ class ExternalApprovalView:
     # The deadline set when the gate was assigned (or resolved from a manual
     # gate's day rule). None for gates that never had one.
     due_at: date | None = None
+    evidence_instructions: str | None = None
+    reference_files: tuple[dict, ...] = ()
 
 
 class ProjectGateDecisionService:
@@ -350,7 +353,9 @@ class ProjectGateDecisionService:
         decided_by_name: str | None,
         assigned_to_name: str | None,
         submissions: tuple[GateSubmissionView, ...],
+        material: dict | None = None,
     ) -> ExternalApprovalView:
+        material = material or NO_MATERIAL
         return ExternalApprovalView(
             id=approval.id,
             project_id=approval.project_id,
@@ -372,6 +377,8 @@ class ProjectGateDecisionService:
             decided_at=approval.decided_at,
             submissions=submissions,
             due_at=approval.due_at,
+            evidence_instructions=material["evidence_instructions"],
+            reference_files=tuple(material["reference_files"]),
         )
 
     def _submissions_for_approvals(
@@ -459,7 +466,8 @@ class ProjectGateDecisionService:
             if approval.assigned_to_user_id else None
         )
         submissions = self._submissions_for_approvals([approval.id]).get(approval.id, ())
-        return self._view(approval, gate, covered_task_ids, decided_by_name, assigned_to_name, submissions)
+        material = material_for_gates(self.db, [gate]).get(gate.id) if gate else None
+        return self._view(approval, gate, covered_task_ids, decided_by_name, assigned_to_name, submissions, material)
 
     def list_for_project(self, project_id: uuid.UUID, actor: User) -> list[ExternalApprovalView]:
         """Every execution-layer approval on one project, with the gate's
@@ -512,6 +520,7 @@ class ProjectGateDecisionService:
             }
 
         submissions_by_approval = self._submissions_for_approvals([approval.id for approval, _ in rows])
+        material_by_gate = material_for_gates(self.db, [gate for _, gate in rows])
 
         return [
             self._view(
@@ -521,6 +530,7 @@ class ProjectGateDecisionService:
                 user_names.get(approval.decided_by) if approval.decided_by else None,
                 user_names.get(approval.assigned_to_user_id) if approval.assigned_to_user_id else None,
                 submissions_by_approval.get(approval.id, ()),
+                material_by_gate.get(gate.id),
             )
             for approval, gate in rows
         ]

@@ -13,6 +13,8 @@ held up.
 
 import uuid
 from datetime import date, datetime
+
+from app.template_schemas import TemplateReferenceFileItem
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -80,6 +82,9 @@ class ProjectExternalApprovalOut(BaseModel):
     decided_at: datetime | None
     submissions: list[ProjectGateSubmissionSummaryOut] = Field(default_factory=list)
     due_at: date | None = None
+    # From the template version this project is pinned to (Template Builder Phase 2).
+    evidence_instructions: str | None = None
+    reference_files: list[TemplateReferenceFileItem] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

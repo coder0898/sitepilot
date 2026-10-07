@@ -25,6 +25,7 @@ import zipfile
 from pathlib import PurePosixPath
 
 from fastapi import HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -118,6 +119,20 @@ def read_reference_bytes(file_object: FileObject) -> bytes:
     if data is None:
         raise HTTPException(404, "The reference file is no longer available.")
     return data
+
+
+def reference_file_response(file_object: FileObject, content: bytes) -> StreamingResponse:
+    """Always an attachment with sniffing off, like evidence downloads."""
+    # Drop quotes, backslashes and line breaks so the header cannot be split.
+    safe_filename = "".join(ch for ch in file_object.original_filename if ch not in ('"', chr(92), chr(10), chr(13)))
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=file_object.mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 class TemplateReferenceFileService:
