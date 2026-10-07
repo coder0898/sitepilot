@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarDays, Save } from "lucide-react";
+import { AlertTriangle, CalendarDays, Save, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Field, Input, Modal, Select, Textarea } from "../../../components/ui";
 import { APPROVED_CATEGORIES, APPROVED_PHASES, LEGACY_PHASES, TASK_CLASS_OPTIONS, TASK_KIND_LABELS } from "./templateAuthoringOptions";
@@ -8,20 +8,58 @@ const emptyTask = { code:"", sequence_no:"", title:"", description:"", schedule_
 const asForm = (task, nextSequence, suggestedCode) => task ? Object.fromEntries(Object.keys(emptyTask).map(key => [key, task[key] ?? (key === "evidence_required" ? false : "")])) : { ...emptyTask, sequence_no:nextSequence ?? "", code:suggestedCode ?? "" };
 const optional = value => String(value ?? "").trim() || null;
 function derivedDuration(form){ if(form.schedule_classification!=="execution") return form.duration_days; const start=Number(form.planned_start_day), end=Number(form.planned_end_day); return Number.isInteger(start)&&Number.isInteger(end)&&end>=start ? end-start+1 : ""; }
-function errorCopy(error) { const detail=error?.details?.detail; if(detail?.code==="stale_template_version")return "This draft changed in another session. Refresh it before retrying."; return detail?.message||error?.message||"The task could not be saved."; }
+function errorCopy(error) { const detail=error?.details?.detail; if(detail?.code==="stale_template_version")return "This draft changed in another session. Refresh it before retrying.";if(detail?.code==="template_dependency_cycle")return "That would make tasks wait for each other in a loop."; return detail?.message||error?.message||"The task could not be saved."; }
 
 const APPLICABILITY_OPTIONS = [
   { value:"mandatory", label:"Yes, every project", detail:"The task is always part of the project plan." },
   { value:"conditional", label:"No, only when it applies", detail:"The PM can remove it from a project before the project starts." },
 ];
 
+// A plain "can't start until" link is finish-first and blocking; anything else
+// is an advanced link, managed in the full dependency list.
+const isSimpleLink = dependency => dependency.dependency_type === "finish_to_start" && dependency.blocking;
+const taskLabel = task => `${task.code} · ${task.title}`;
+
+/** Tasks that already wait on `taskId`, directly or through other tasks - picking one would form a loop. */
+function tasksWaitingOn(taskId, dependencies) {
+  const found = new Set(), queue = [taskId];
+  while (queue.length) {
+    const current = queue.shift();
+    dependencies.forEach(dependency => {
+      const next = dependency.successor?.id;
+      if (dependency.predecessor?.id === current && next && !found.has(next)) { found.add(next); queue.push(next); }
+    });
+  }
+  return found;
+}
+
+function WaitsForSection({ task, tasks, waitFor, advancedLinks, blocked, onAdd, onRemove }) {
+  const byId = new Map(tasks.map(item => [item.id, item]));
+  const choices = tasks.filter(item => item.id !== task?.id && !waitFor.includes(item.id) && !blocked.has(item.id));
+  return <div role="group" aria-label="Can't start until" className="grid gap-3">
+    <p className="text-xs font-semibold text-slate-600">This task can't start until each task below is finished.</p>
+    {waitFor.length === 0 && advancedLinks.length === 0 && <p className="text-sm font-semibold text-slate-500">It can start on its planned day.</p>}
+    {waitFor.length > 0 && <ul className="flex flex-wrap gap-2">{waitFor.map(id => { const item = byId.get(id); return item && <li key={id} className="flex items-center gap-2 rounded-full border border-slate-200 bg-white py-1 pl-3 pr-1 text-xs font-bold text-slate-800">{taskLabel(item)}<Button size="icon" variant="ghost" className="size-7" aria-label={`Remove ${item.code}`} onClick={() => onRemove(id)}><X size={14}/></Button></li>; })}</ul>}
+    {advancedLinks.map(dependency => <p key={dependency.id} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+      {dependency.dependency_type === "start_to_start" ? `Can start once ${taskLabel(dependency.predecessor)} has started` : `Should follow ${taskLabel(dependency.predecessor)} (not enforced)`} · change it under Dependencies
+    </p>)}
+    <Field label="Add a task it waits for"><Select aria-label="Add a task it waits for" value="" onChange={event => event.target.value && onAdd(event.target.value)}><option value="">Choose a task…</option>{choices.map(item => <option key={item.id} value={item.id}>{taskLabel(item)}</option>)}</Select></Field>
+  </div>;
+}
+
 function Section({ title, children }) {
   return <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5"><h3 className="text-xs font-black uppercase tracking-[.16em] text-slate-500">{title}</h3>{children}</section>;
 }
 
-export function TemplateTaskEditorModal({ task, tasks=[], durationDays, revisionToken, nextSequence, suggestedCode, onClose, onSaved, onDirtyChange }) {
+export function TemplateTaskEditorModal({ task, tasks=[], dependencies=[], durationDays, revisionToken, nextSequence, suggestedCode, onClose, onSaved, onDirtyChange }) {
   const [form,setForm]=useState(()=>asForm(task,nextSequence,suggestedCode)); const [errors,setErrors]=useState({}); const [requestError,setRequestError]=useState(""); const [saving,setSaving]=useState(false);
-  const initial=useMemo(()=>JSON.stringify(asForm(task,nextSequence,suggestedCode)),[nextSequence,suggestedCode,task]); const dirty=JSON.stringify(form)!==initial;
+  const initial=useMemo(()=>JSON.stringify(asForm(task,nextSequence,suggestedCode)),[nextSequence,suggestedCode,task]); const taskChanged=JSON.stringify(form)!==initial;
+  const ownLinks=useMemo(()=>task?dependencies.filter(dependency=>dependency.successor?.id===task.id):[],[dependencies,task]);
+  const savedWaitFor=useMemo(()=>ownLinks.filter(isSimpleLink).map(dependency=>dependency.predecessor.id),[ownLinks]);
+  const [waitFor,setWaitFor]=useState(savedWaitFor);
+  const blocked=useMemo(()=>task?tasksWaitingOn(task.id,dependencies):new Set(),[dependencies,task]);
+  const linksChanged=[...waitFor].sort().join("|")!==[...savedWaitFor].sort().join("|");
+  const dirty=taskChanged||linksChanged;
   // Retired options stay visible only on a task that already uses them, so legacy data still reads truthfully.
   const phaseOptions=useMemo(()=>{
     const values=new Set([...APPROVED_PHASES,...tasks.map(item=>item.phase).filter(Boolean)].filter(value=>!LEGACY_PHASES.includes(value)));
@@ -37,7 +75,14 @@ export function TemplateTaskEditorModal({ task, tasks=[], durationDays, revision
   function change(name,value){setForm(current=>{const next={...current,[name]:value};if(name==="planned_start_day"&&next.planned_end_day==="")next.planned_end_day=value;next.duration_days=derivedDuration(next);return next});setErrors(current=>({...current,[name]:""}));setRequestError("");}
   function scheduleOnProjectDays(){setForm(current=>({...current,schedule_classification:"execution",phase:LEGACY_PHASES.includes(current.phase)?"":current.phase}));}
   function validate(){const next={};const sequence=Number(form.sequence_no),start=form.planned_start_day===""?null:Number(form.planned_start_day),end=form.planned_end_day===""?null:Number(form.planned_end_day);if(!form.code.trim())next.code="Task code is required.";if(!form.title.trim())next.title="Give the task a name.";if(!Number.isInteger(sequence)||sequence<1)next.sequence_no="Enter a positive sequence.";if(!preActivation){if(!Number.isInteger(start))next.planned_start_day="Enter the day it starts.";if(!Number.isInteger(end))next.planned_end_day="Enter the day it ends.";if(Number.isInteger(start)&&(start<1||start>durationDays))next.planned_start_day=`Use Day 1-${durationDays}.`;if(Number.isInteger(end)&&(end<1||end>durationDays))next.planned_end_day=`Use Day 1-${durationDays}.`;if(Number.isInteger(start)&&Number.isInteger(end)&&start>end)next.planned_end_day="End day cannot precede start day.";}setErrors(next);return !Object.keys(next).length;}
-  async function submit(event){event.preventDefault();if(saving||!validate())return;setSaving(true);setRequestError("");const duration=preActivation?(form.duration_days===""?null:Number(form.duration_days)):Number(derivedDuration(form));try{await onSaved({code:form.code.trim(),sequence_no:Number(form.sequence_no),title:form.title.trim(),description:optional(form.description),schedule_classification:form.schedule_classification,planned_start_day:preActivation?null:Number(form.planned_start_day),planned_end_day:preActivation?null:Number(form.planned_end_day),phase:optional(form.phase),category:optional(form.category),applicability:form.applicability,task_class:nonWork?null:optional(form.task_class),task_kind:optional(form.task_kind),evidence_required:Boolean(form.evidence_required),duration_days:Number.isInteger(duration)?duration:null,revision_token:revisionToken},task)}catch(error){setRequestError(errorCopy(error));setSaving(false)}}
+  function linkChanges(){
+    return {
+      taskChanged:!task||taskChanged,
+      addPredecessorIds:waitFor.filter(id=>!savedWaitFor.includes(id)),
+      removeDependencyIds:ownLinks.filter(dependency=>isSimpleLink(dependency)&&!waitFor.includes(dependency.predecessor.id)).map(dependency=>dependency.id),
+    };
+  }
+  async function submit(event){event.preventDefault();if(saving)return;if(task&&!dirty){onClose();return;}if(!validate())return;setSaving(true);setRequestError("");const duration=preActivation?(form.duration_days===""?null:Number(form.duration_days)):Number(derivedDuration(form));try{await onSaved({code:form.code.trim(),sequence_no:Number(form.sequence_no),title:form.title.trim(),description:optional(form.description),schedule_classification:form.schedule_classification,planned_start_day:preActivation?null:Number(form.planned_start_day),planned_end_day:preActivation?null:Number(form.planned_end_day),phase:optional(form.phase),category:optional(form.category),applicability:form.applicability,task_class:nonWork?null:optional(form.task_class),task_kind:optional(form.task_kind),evidence_required:Boolean(form.evidence_required),duration_days:Number.isInteger(duration)?duration:null,revision_token:revisionToken},task,linkChanges())}catch(error){setRequestError(errorCopy(error));setSaving(false)}}
   function close(){if(!dirty||window.confirm("Discard unsaved task changes?"))onClose();}
   return <Modal title={task?"Edit task":"Add task"} subtitle="Changes apply to projects created after this version is published." onClose={close} className="sm:max-w-4xl"><form className="grid gap-5" onSubmit={submit} noValidate>
     {requestError&&<Alert tone="danger" role="alert"><AlertTriangle size={18}/><div><strong>Task was not saved</strong><span className="mt-1 block">{requestError}</span></div></Alert>}
@@ -64,6 +109,10 @@ export function TemplateTaskEditorModal({ task, tasks=[], durationDays, revision
     </Section>
     <Section title="Proof">
       <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm"><input aria-label="Proof required to finish" type="checkbox" checked={form.evidence_required} onChange={e=>change("evidence_required",e.target.checked)} className="mt-1 size-4 accent-blue-700"/><span><strong className="block text-slate-950">Proof required to finish</strong><span className="mt-1 block text-xs font-semibold text-slate-600">The person doing the work must attach a photo or document before submitting it for checking.</span></span></label>
+    </Section>
+    <Section title="Can't start until">
+      <WaitsForSection task={task} tasks={tasks} waitFor={waitFor} advancedLinks={ownLinks.filter(dependency=>!isSimpleLink(dependency))} blocked={blocked}
+        onAdd={id=>{setWaitFor(current=>[...current,id]);setRequestError("");}} onRemove={id=>{setWaitFor(current=>current.filter(item=>item!==id));setRequestError("");}}/>
     </Section>
     <details className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
       <summary className="cursor-pointer text-sm font-black text-slate-700">Advanced</summary>

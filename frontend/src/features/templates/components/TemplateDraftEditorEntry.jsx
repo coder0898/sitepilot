@@ -21,6 +21,13 @@ function apiMessage(error) {
   return "The draft could not be updated.";
 }
 
+function linkErrorCopy(error) {
+  const code = error?.details?.detail?.code;
+  if (code === "template_dependency_cycle") return "that would make tasks wait for each other in a loop.";
+  if (code === "template_dependency_exists") return "that link already exists.";
+  return apiMessage(error);
+}
+
 async function loadEveryDependency(versionId) {
   const first = await templatesApi.listDependencies(versionId, { page:1, page_size:100 });
   if ((first.pagination?.total_pages || 1) <= 1) return first.items;
@@ -212,11 +219,43 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   function openAdd(){setEditorTask(null);setEditorOpen(true);}
   function openEdit(task){setEditorTask(task);setEditorOpen(true);}
 
-  async function saveTask(payload,task) {
-    const response=task ? await templatesApi.updateTask(summary.version_id,task.id,payload) : await templatesApi.createTask(summary.version_id,payload);
-    setSummary(current=>({...current,revision_token:response.revision_token}));
+  // Saves the task, then its "can't start until" links, each call carrying the
+  // revision the previous one returned. A link that fails after the task was
+  // saved is reported on the page; when only links changed, the error stays
+  // in the dialog.
+  async function saveTask(payload,task,links={}) {
+    const { taskChanged=true, addPredecessorIds=[], removeDependencyIds=[] }=links;
+    let token=summary.revision_token, saved=task, taskSaved=false, linkFailure=null;
+    if(taskChanged){
+      const response=task ? await templatesApi.updateTask(summary.version_id,task.id,payload) : await templatesApi.createTask(summary.version_id,payload);
+      token=response.revision_token; saved=response.task||task; taskSaved=true;
+      setSummary(current=>({...current,revision_token:token}));
+    }
+    const byId=new Map(tasks.map(item=>[item.id,item]));
+    let nextSequence=Math.max(0,...dependencies.map(dependency=>dependency.sequence_no||0));
+    try {
+      for(const predecessorId of addPredecessorIds){
+        nextSequence+=1;
+        const response=await templatesApi.createDependency(summary.version_id,{
+          predecessor_task_id:predecessorId, successor_task_id:saved.id, dependency_type:"finish_to_start", blocking:true,
+          rule_text:`${saved.code} can't start until ${byId.get(predecessorId)?.code} is finished.`, sequence_no:nextSequence, revision_token:token,
+        });
+        token=response.revision_token;
+      }
+      for(const dependencyId of removeDependencyIds){
+        const response=await templatesApi.deleteDependency(summary.version_id,dependencyId,token);
+        token=response.revision_token;
+      }
+    } catch(error) {
+      if(!taskSaved) throw error;
+      linkFailure={message:`The task was saved, but its "can't start until" links were not all saved: ${linkErrorCopy(error)}`};
+    } finally {
+      setSummary(current=>({...current,revision_token:token}));
+    }
     setEditorOpen(false);setFormDirty(false);
     await refresh();
+    // After the refresh, which clears page errors.
+    if(linkFailure) setMutationError(linkFailure);
   }
 
   async function confirmDelete() {
@@ -329,7 +368,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     </> : null}
     <div className={activeEditorTab === "validation" ? "block" : "hidden"} aria-hidden={activeEditorTab !== "validation"}><TemplateValidationPublishPanel summary={summary} onNavigate={setActiveEditorTab} onRefresh={refresh} onPublished={onPublished}/></div>
 
-    {editorOpen && <TemplateTaskEditorModal task={editorTask} tasks={tasks} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={tasks.length+1} suggestedCode={nextStructuredCode(tasks, "T")} onClose={()=>{setEditorOpen(false);setFormDirty(false);}} onSaved={saveTask} onDirtyChange={setFormDirty}/>}
+    {editorOpen && <TemplateTaskEditorModal task={editorTask} tasks={tasks} dependencies={dependencies} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={tasks.length+1} suggestedCode={nextStructuredCode(tasks, "T")} onClose={()=>{setEditorOpen(false);setFormDirty(false);}} onSaved={saveTask} onDirtyChange={setFormDirty}/>}
     {deleteTask && <DeleteTaskModal task={deleteTask} busy={deleting} error={deleteError} onClose={()=>{setDeleteTask(null);setDeleteError(null);}} onConfirm={confirmDelete}/>}
     {dependencyEditorOpen && <TemplateDependencyEditorModal dependency={editorDependency} tasks={tasks} revisionToken={summary.revision_token} nextSequence={dependencies.length+1} onClose={()=>{setDependencyEditorOpen(false);setFormDirty(false);}} onSaved={saveDependency} onDirtyChange={setFormDirty}/>} 
     {deleteDependency && <DeleteDependencyModal dependency={deleteDependency} busy={deletingDependency} error={dependencyDeleteError} onClose={()=>{setDeleteDependency(null);setDependencyDeleteError(null);}} onConfirm={confirmDependencyDelete}/>} 

@@ -25,13 +25,14 @@ describe("Template task class", () => {
     expect(within(group).getByText(/then a different PM or Admin approves/)).toBeInTheDocument();
     fireEvent.click(classA);
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: "class_a", task_kind: null }), expect.anything()));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: "class_a", task_kind: null }), expect.anything(), expect.anything()));
   });
 
-  it("keeps an untouched task's class exactly as stored", async () => {
+  it("keeps a task's class exactly as stored when other fields change", async () => {
     const onSaved = renderEditor(task({ task_class: null }));
+    fireEvent.change(screen.getByLabelText("Task name"), { target: { value: "Pressure test 2" } });
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: null }), expect.anything()));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: null }), expect.anything(), expect.anything()));
   });
 
   it("hides the task type for ordinary tasks", () => {
@@ -43,8 +44,9 @@ describe("Template task class", () => {
     const onSaved = renderEditor(task({ task_kind: "approval_gate", task_class: null }));
     expect(screen.getByLabelText("Task type")).toHaveValue("approval_gate");
     expect(screen.queryByRole("radiogroup", { name: "Task class" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task name"), { target: { value: "Get approval" } });
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: null, task_kind: "approval_gate" }), expect.anything()));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: null, task_kind: "approval_gate" }), expect.anything(), expect.anything()));
   });
 
   it("can turn a legacy approval task back into ordinary work", async () => {
@@ -52,7 +54,7 @@ describe("Template task class", () => {
     fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("radio", { name: /class a/i }));
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: "class_a", task_kind: null }), expect.anything()));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: "class_a", task_kind: null }), expect.anything(), expect.anything()));
   });
 });
 
@@ -74,7 +76,7 @@ describe("Template task schedule", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({
       schedule_classification: "execution", planned_start_day: 3, planned_end_day: 4, duration_days: 2,
-    }), expect.anything()));
+    }), expect.anything(), expect.anything()));
   });
 
   it("asks in plain words whether the task is required on every project", async () => {
@@ -82,6 +84,6 @@ describe("Template task schedule", () => {
     const group = screen.getByRole("radiogroup", { name: "Required on every project?" });
     fireEvent.click(within(group).getByRole("radio", { name: /no/i }));
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ applicability: "conditional" }), expect.anything()));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ applicability: "conditional" }), expect.anything(), expect.anything()));
   });
 });
