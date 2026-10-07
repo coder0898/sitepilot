@@ -2,6 +2,7 @@ import { Copy, FilePlus2, Info } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { templatesApi } from "../../../api/templatesApi";
 import { Alert, Button, Field, Input, Modal, Textarea } from "../../../components/ui";
+import { TemplateChoiceGroup } from "./TemplateChoiceGroup";
 
 const emptyCreate = {
   code: "",
@@ -33,6 +34,26 @@ function validateCreate(values) {
   return errors;
 }
 
+function validateClone(values, cloneMode) {
+  const errors = {};
+  if (cloneMode === "template") {
+    if (!values.name.trim()) errors.name = "Give the new template a name.";
+    if (!values.code.trim()) errors.code = "Template code is required.";
+  }
+  if (!values.change_note.trim()) errors.change_note = "A change note is required for the new draft.";
+  return errors;
+}
+
+function clonePayload(values, cloneMode) {
+  const payload = { change_note: values.change_note.trim() };
+  if (cloneMode === "template") {
+    payload.new_template = { code: values.code.trim(), name: values.name.trim() };
+    if (values.description.trim()) payload.new_template.description = values.description.trim();
+  }
+  return payload;
+}
+
+
 function requireNewDraftResponse(response, { isClone, sourceVersionId }) {
   const versionId = typeof response?.version_id === "string" ? response.version_id.trim() : "";
   if (!versionId || response?.status !== "draft") {
@@ -48,6 +69,7 @@ function requireNewDraftResponse(response, { isClone, sourceVersionId }) {
 
 export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
   const isClone = mode === "clone";
+  const [cloneMode, setCloneMode] = useState("version");
   const [values, setValues] = useState(emptyCreate);
   const [errors, setErrors] = useState({});
   const [requestError, setRequestError] = useState("");
@@ -55,10 +77,12 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
   const submittingRef = useRef(false);
 
   useEffect(() => {
-    setValues(isClone ? { ...emptyCreate, change_note: "" } : { ...emptyCreate });
+    // A clone keeps the source's duration, so the suggested code uses it too.
+    setValues(isClone ? { ...emptyCreate, duration_days: String(source?.duration_days ?? ""), change_note: "" } : { ...emptyCreate });
+    setCloneMode("version");
     setErrors({});
     setRequestError("");
-  }, [isClone, source?.version_id, source?.version_no]);
+  }, [isClone, source?.version_id, source?.version_no, source?.duration_days]);
 
   function update(field, value) {
     setValues(current => {
@@ -76,9 +100,7 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
 
   async function submit(event) {
     event.preventDefault();
-    const nextErrors = isClone
-      ? (!values.change_note.trim() ? { change_note: "A change note is required for the new draft." } : {})
-      : validateCreate(values);
+    const nextErrors = isClone ? validateClone(values, cloneMode) : validateCreate(values);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
 
@@ -86,7 +108,7 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
     setRequestError("");
     try {
       const response = isClone
-        ? await templatesApi.cloneVersion(source.version_id, { change_note: values.change_note.trim() })
+        ? await templatesApi.cloneVersion(source.version_id, clonePayload(values, cloneMode))
         : await templatesApi.create({
             code: values.code.trim(),
             name: values.name.trim(),
@@ -107,10 +129,10 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
   }
 
   return <Modal
-    title={isClone ? "Clone version as draft" : "Create template"}
+    title={isClone ? "Clone template" : "Create template"}
     subtitle={isClone
-      ? "Create a separate working version while keeping the source unchanged."
-      : "Create a stable template identity with its first governed draft."}
+      ? "Start an editable draft from this version. The original is not changed."
+      : "Name the template and start its first draft."}
     onClose={submitting ? undefined : onClose}
     className="sm:max-w-3xl"
   >
@@ -136,6 +158,23 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
 
       {requestError && <Alert tone="danger"><div><strong className="block">{isClone ? "Draft could not be created" : "Template could not be created"}</strong><span className="mt-1 block font-medium">{requestError}</span></div></Alert>}
 
+      {isClone && <TemplateChoiceGroup label="What do you want to create?" name="clone-mode" value={cloneMode} onChange={setCloneMode} options={[
+        { value:"version", label:"New version", detail:`The next version of "${source.template_name}". Same name; projects use it once published.` },
+        { value:"template", label:"New template", detail:`A separate template with its own name. "${source.template_name}" is not changed.` },
+      ]}/>}
+
+      {isClone && cloneMode === "template" && <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Template name" error={errors.name} className="sm:col-span-2">
+          <Input aria-label="New template name" autoFocus value={values.name} onChange={event => update("name", event.target.value)} aria-invalid={Boolean(errors.name)} placeholder="Fitout - Retail"/>
+        </Field>
+        <Field label="Template code" error={errors.code} hint={!errors.code ? "Suggested from the name. Must be unique." : undefined}>
+          <Input aria-label="New template code" value={values.code} onChange={event => update("code", event.target.value)} aria-invalid={Boolean(errors.code)}/>
+        </Field>
+        <Field label="Description (optional)" hint="Left empty, the original template's description is used.">
+          <Input aria-label="New template description" value={values.description} onChange={event => update("description", event.target.value)}/>
+        </Field>
+      </div>}
+
       {!isClone && <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Template code" error={errors.code} hint={!errors.code ? "Suggested from name and duration; review before creation." : undefined}>
           <Input aria-label="Template code" autoFocus value={values.code} onChange={event => update("code", event.target.value)} aria-invalid={Boolean(errors.code)} placeholder="COMMERCIAL-INTERIOR-45"/>
@@ -147,14 +186,14 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
           <Input aria-label="Template name" value={values.name} onChange={event => update("name", event.target.value)} aria-invalid={Boolean(errors.name)} placeholder="Commercial Interior Delivery"/>
         </Field>
         <Field label="Description" className="sm:col-span-2" hint="Describe the intended project type and delivery scope.">
-          <Textarea aria-label="Description" value={values.description} onChange={event => update("description", event.target.value)} placeholder="A controlled delivery template for..."/>
+          <Textarea aria-label="Description" value={values.description} onChange={event => update("description", event.target.value)} placeholder="A delivery template for..."/>
         </Field>
       </div>}
 
       <Field
         label={isClone ? "Change note" : "Initial change note"}
         error={errors.change_note}
-        hint={!errors.change_note ? (isClone ? "Required: explain why this new draft is needed." : "Optional context for the initial draft.") : undefined}
+        hint={!errors.change_note ? (isClone ? "Required: a short note on what this draft changes." : "Optional context for the initial draft.") : undefined}
       >
         <Textarea
           aria-label={isClone ? "Change note" : "Initial change note"}
@@ -166,12 +205,12 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
         />
       </Field>
 
-      {isClone && <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-900"><Info className="mt-0.5 shrink-0" size={16}/>Tasks, dependencies, gates and approved exact mappings will be copied into new records. Broad mapping text will remain unchanged.</div>}
+      {isClone && <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-900"><Info className="mt-0.5 shrink-0" size={16}/>All tasks, dependencies and prerequisite approvals are copied into the draft. Existing projects are not affected.</div>}
 
       <div className="sticky bottom-0 -mx-4 -mb-4 grid gap-2 border-t border-slate-100 bg-white/95 p-4 backdrop-blur sm:-mx-6 sm:-mb-6 sm:grid-cols-[auto_1fr] sm:p-6">
         <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
         <Button type="submit" loading={submitting} className="sm:justify-self-end">
-          {isClone ? <><Copy size={17}/> Clone as Draft</> : <><FilePlus2 size={17}/> Create Template</>}
+          {isClone ? <><Copy size={17}/> Create Draft</> : <><FilePlus2 size={17}/> Create Template</>}
         </Button>
       </div>
     </form>

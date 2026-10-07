@@ -90,16 +90,16 @@ describe("Template dependency details", () => {
     expect(within(metrics).getAllByText("38")).toHaveLength(2);
     expect(within(metrics).getByText("36")).toBeInTheDocument();
     expect(within(metrics).getByText("2")).toBeInTheDocument();
-    expect(metrics).toHaveTextContent("Finish-to-Start");
-    expect(metrics).toHaveTextContent("Start-to-Start");
-    expect(metrics).toHaveTextContent("Blocking");
+    expect(metrics).toHaveTextContent("Finish first");
+    expect(metrics).toHaveTextContent("Start together");
+    expect(metrics).toHaveTextContent("Enforced");
     expect(metrics).toHaveTextContent("Validation issues");
-    expect(screen.getByText("Predecessor")).toBeInTheDocument();
-    expect(screen.getByText("Successor")).toBeInTheDocument();
+    expect(screen.getByText("First")).toBeInTheDocument();
+    expect(screen.getByText("Then")).toBeInTheDocument();
     expect(screen.getAllByText("T001").length).toBeGreaterThan(0);
     expect(screen.getAllByText("T008").length).toBeGreaterThan(0);
     expect(screen.getByTestId("dependency-row-dep-1")).toBeInTheDocument();
-    expect(screen.getByTestId("dependency-card-dep-1")).toHaveTextContent("Finish-to-Start");
+    expect(screen.getByTestId("dependency-card-dep-1")).toHaveTextContent("Finish first");
     expect(screen.queryByRole("button", { name: /fix/i })).not.toBeInTheDocument();
   });
 
@@ -129,7 +129,7 @@ describe("Template dependency details", () => {
     render(<Harness initialTab="dependencies"/>);
     expect(await screen.findByText(/1 relationship require review/i)).toBeInTheDocument();
     expect(screen.getByTestId("dependency-card-dep-invalid")).toHaveTextContent("cross version reference");
-    expect(screen.getByText(/No automatic repair or Fix action is available/i)).toBeInTheDocument();
+    expect(screen.getByText(/Shown exactly as saved/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /fix/i })).not.toBeInTheDocument();
   });
 

@@ -23,19 +23,19 @@ beforeEach(()=>{ vi.clearAllMocks(); templatesApi.getVersion.mockResolvedValue(s
 describe("External Gates review",()=>{
   it("renders 32 gates, exact mappings, broad text and configuration warning", async()=>{
     render(<Harness/>);
-    expect(await screen.findByRole("heading", { name: "External gates" }, {timeout:3000})).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Prerequisite approvals" }, {timeout:3000})).toBeInTheDocument();
     const metrics=screen.getByLabelText("External gate summary");
     expect(within(metrics).getByText("32")).toBeInTheDocument();
     expect(screen.getAllByText("E001").length).toBeGreaterThan(0);
     expect(screen.getAllByText("E006").length).toBeGreaterThan(0);
-    fireEvent.click(within(screen.getByTestId("gate-card-g6")).getByText("View gate details"));
+    fireEvent.click(within(screen.getByTestId("gate-card-g6")).getByText("View details"));
     expect(screen.getAllByText("T008 onwards").length).toBeGreaterThan(0);
-    expect(within(screen.getByTestId("gate-card-g6")).getByText(/No mapping has been assumed/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId("gate-card-g6")).getByText(/no link has been assumed/i)).toBeInTheDocument();
     expect(screen.queryByText(/External gates arrive/i)).not.toBeInTheDocument();
   });
 
   it("sends all supported filters and clears them", async()=>{
-    render(<Harness/>); await screen.findByRole("heading", { name: "External gates" });
+    render(<Harness/>); await screen.findByRole("heading", { name: "Prerequisite approvals" });
     fireEvent.change(screen.getByLabelText("Search external gates"),{target:{value:" E006 "}});
     fireEvent.change(screen.getByLabelText("Filter gate mapping"),{target:{value:"broad_text"}});
     fireEvent.change(screen.getByLabelText("Filter gate configuration"),{target:{value:"true"}});
@@ -58,8 +58,8 @@ describe("External Gates review",()=>{
   });
 
   it("opens exact mapped tasks in Tasks without losing the version", async()=>{
-    render(<Harness/>); await screen.findByRole("heading", { name: "External gates" });
-    fireEvent.click(within(screen.getByTestId("gate-card-g1")).getByText("View gate details"));
+    render(<Harness/>); await screen.findByRole("heading", { name: "Prerequisite approvals" });
+    fireEvent.click(within(screen.getByTestId("gate-card-g1")).getByText("View details"));
     fireEvent.click(within(screen.getByTestId("gate-card-g1")).getByTitle("Open T008 in Tasks"));
     expect(await screen.findByLabelText("Search template tasks")).toHaveValue("T008");
     await waitFor(()=>expect(templatesApi.listTasks.mock.calls.at(-1)[0]).toBe("version-1"));

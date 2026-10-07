@@ -139,16 +139,17 @@ describe("Phase 2 template authoring entry", () => {
       duration_days: 60,
       change_note: "Initial authoring",
     }));
-    expect(await screen.findByText("New controlled template")).toBeInTheDocument();
+    // A new draft opens straight in the editor - no stop on the read-only details page.
+    expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
+    expect(container.querySelector("[data-template-view]")).toHaveAttribute("data-template-view", "editor");
     expect(container.querySelector("[data-template-view]")).toHaveAttribute("data-selected-version-id", "version-draft");
-    expect(screen.getByRole("button", { name: /open draft editor/i })).toBeInTheDocument();
   });
 
   it("shows clone only to Super Admin and keeps a published source view-only", async () => {
     renderPage("super_admin");
     await openPublishedDetails();
-    expect(screen.getByRole("button", { name: /clone as draft/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /open draft editor/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^clone$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /edit draft/i })).not.toBeInTheDocument();
     expect(screen.getByText("Published version is view-only")).toBeInTheDocument();
   });
 
@@ -173,17 +174,51 @@ describe("Phase 2 template authoring entry", () => {
 
     renderPage();
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
-    const dialog = screen.getByRole("dialog", { name: /clone version as draft/i });
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
+    const dialog = screen.getByRole("dialog", { name: /clone template/i });
     expect(within(dialog).getByText("Source remains unchanged")).toBeInTheDocument();
     expect(within(dialog).getByText("Separate draft")).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
     expect(await within(dialog).findByText("A change note is required for the new draft.")).toBeInTheDocument();
 
     fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: " Rework sequencing " } });
-    fireEvent.click(within(dialog).getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
     await waitFor(() => expect(templatesApi.cloneVersion).toHaveBeenCalledWith("version-published", { change_note: "Rework sequencing" }));
-    expect(await screen.findByRole("button", { name: /open draft editor/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
+  });
+
+  it("clones into a new template with its own name and code, leaving the source alone", async () => {
+    templatesApi.cloneVersion.mockResolvedValue({
+      source_version_id: published.version_id,
+      template_id: "template-retail",
+      template_code: "FITOUT-RETAIL-45",
+      template_name: "Fitout - Retail",
+      version_id: draft.version_id,
+      version_no: 1,
+      status: "draft",
+      duration_days: 45,
+    });
+    renderPage("admin");
+    await openPublishedDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
+    const dialog = screen.getByRole("dialog", { name: /clone template/i });
+    expect(within(dialog).queryByLabelText("New template name")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("radio", { name: /new template/i }));
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
+    expect(await within(dialog).findByText("Give the new template a name.")).toBeInTheDocument();
+    expect(templatesApi.cloneVersion).not.toHaveBeenCalled();
+
+    fireEvent.change(within(dialog).getByLabelText("New template name"), { target: { value: " Fitout - Retail " } });
+    // The code is suggested from the name and the source's duration.
+    expect(within(dialog).getByLabelText("New template code")).toHaveValue("FITOUT-RETAIL-45");
+    fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: " Retail variant " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
+
+    await waitFor(() => expect(templatesApi.cloneVersion).toHaveBeenCalledWith("version-published", {
+      change_note: "Retail variant",
+      new_template: { code: "FITOUT-RETAIL-45", name: "Fitout - Retail" },
+    }));
   });
 
   it("opens the draft editor entry without exposing mutation controls on published versions", async () => {
@@ -192,9 +227,9 @@ describe("Phase 2 template authoring entry", () => {
     renderPage();
     const card = await screen.findByTestId("template-card-version-draft");
     fireEvent.click(within(card).getByRole("button", { name: /view details/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /open draft editor/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /edit draft/i }));
     expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
-    expect(screen.getByText("Draft task authoring")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: draft.template_name })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /back to draft details/i })).toBeInTheDocument();
   });
 
@@ -204,7 +239,7 @@ describe("Phase 2 template authoring entry", () => {
     const view = render(<TemplatesPage user={{ id: "user-1", role: "super_admin" }} debounceMs={0}/>);
     const card = await screen.findByTestId("template-card-version-draft");
     fireEvent.click(within(card).getByRole("button", { name: /view details/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /open draft editor/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /edit draft/i }));
     await screen.findByTestId("template-draft-editor");
 
     view.rerender(<TemplatesPage user={{ id: "user-1", role: "project_manager" }} debounceMs={0}/>);
@@ -215,8 +250,8 @@ describe("Phase 2 template authoring entry", () => {
   it.each(["project_manager"])("keeps %s details fully read-only", async role => {
     renderPage(role);
     await openPublishedDetails();
-    expect(screen.queryByRole("button", { name: /clone as draft/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /open draft editor/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^clone$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /edit draft/i })).not.toBeInTheDocument();
     expect(screen.getByText("Published version is view-only")).toBeInTheDocument();
   });
 
@@ -248,10 +283,10 @@ describe("Phase 2 template authoring entry", () => {
     });
     renderPage();
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
-    const dialog = screen.getByRole("dialog", { name: /clone version as draft/i });
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
+    const dialog = screen.getByRole("dialog", { name: /clone template/i });
     fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: "Separate revision" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
 
     expect(await within(dialog).findByText("The server did not return a separate cloned draft. The source remains unchanged.")).toBeInTheDocument();
     expect(screen.getByText("Published version is view-only")).toBeInTheDocument();
@@ -289,10 +324,10 @@ describe("Phase 2 template authoring entry", () => {
 
     const { container } = renderPage();
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
-    const dialog = screen.getByRole("dialog", { name: /clone version as draft/i });
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
+    const dialog = screen.getByRole("dialog", { name: /clone template/i });
     fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: "Locked clone" } });
-    const submit = within(dialog).getByRole("button", { name: /clone as draft/i });
+    const submit = within(dialog).getByRole("button", { name: /create draft/i });
     fireEvent.click(submit);
     fireEvent.click(submit);
 
@@ -304,7 +339,7 @@ describe("Phase 2 template authoring entry", () => {
       version_no: 2,
       status: "draft",
     });
-    expect(await screen.findByRole("button", { name: /open draft editor/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
     expect(container.querySelector("[data-template-view]")).toHaveAttribute("data-selected-version-id", draft.version_id);
   });
 

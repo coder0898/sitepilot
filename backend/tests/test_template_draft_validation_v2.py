@@ -80,6 +80,68 @@ class TemplateValidationPureTests(unittest.TestCase):
         for code in ("task_code_duplicate", "task_sequence_duplicate", "task_applicability_invalid", "task_exceeds_version_duration"):
             self.assertIn(code, codes)
 
+    def test_unknown_task_class_and_kind_block_publication(self):
+        a = valid_aggregate()
+        a.tasks[1].task_class = "gold"
+        a.tasks[0].task_kind = "execution"
+        result = validate_aggregate(a)
+        blocking = {i.code for i in result.issues if i.blocking}
+        self.assertIn("task_class_invalid", blocking)
+        self.assertIn("task_kind_invalid", blocking)
+        self.assertFalse(result.can_publish)
+
+    def test_known_task_class_and_kind_pass(self):
+        a = valid_aggregate()
+        a.tasks[1].task_class, a.tasks[1].task_kind = "class_a", "work"
+        a.tasks[0].task_class, a.tasks[0].task_kind = None, "milestone"
+        codes = self.codes(a)
+        self.assertNotIn("task_class_invalid", codes)
+        self.assertNotIn("task_kind_invalid", codes)
+
+    def gate_issues(self, aggregate):
+        return {(i.code, i.blocking) for i in validate_aggregate(aggregate).issues if i.group == "gates"}
+
+    def test_supported_due_date_rules_raise_no_due_date_issue(self):
+        # Day 1 and Day 45 (the version's duration) are the inclusive boundaries.
+        for rule in (("project_day", "10"), ("project_day", "1"), ("project_day", "45"),
+                     ("before_linked_tasks", None), ("date", "2026-10-14")):
+            with self.subTest(rule=rule):
+                a = valid_aggregate()
+                a.gates[0].required_by_type, a.gates[0].required_by_value = rule
+                self.assertEqual(self.gate_issues(a), set())
+
+    def test_a_gate_without_a_usable_due_date_rule_is_a_warning_not_a_blocker(self):
+        # Imported gates keep their original wording as a "source_text" rule.
+        # A "date" rule whose value is not an ISO date gives no date at activation.
+        for rule in ((None, None), ("source_text", "Before civil works"), ("before_task", "T002"),
+                     ("date", "not-a-date"), ("date", None)):
+            with self.subTest(rule=rule):
+                a = valid_aggregate()
+                a.gates[0].required_by_type, a.gates[0].required_by_value = rule
+                result = validate_aggregate(a)
+                self.assertIn(("gate_due_date_missing", False), self.gate_issues(a))
+                self.assertTrue(result.can_publish)
+                missing = next(i for i in result.issues if i.code == "gate_due_date_missing")
+                self.assertIn("overdue reminders will not apply", missing.message)
+
+    def test_a_due_date_rule_that_cannot_work_blocks_publication(self):
+        for rule in (("project_day", "0"), ("project_day", "46"), ("project_day", "soon")):
+            with self.subTest(rule=rule):
+                a = valid_aggregate()
+                a.gates[0].required_by_type, a.gates[0].required_by_value = rule
+                self.assertIn(("gate_required_by_invalid", True), self.gate_issues(a))
+        a = valid_aggregate()
+        a.gates[0].required_by_type, a.gates[0].required_by_value = "before_linked_tasks", None
+        a.gates[0].mapping_classification, a.gates[0].requires_configuration = "unmapped", True
+        a.mappings.clear()
+        self.assertIn(("gate_required_by_invalid", True), self.gate_issues(a))
+
+    def test_before_linked_tasks_whose_tasks_have_no_start_day_warns(self):
+        a = valid_aggregate()
+        a.gates[0].required_by_type, a.gates[0].required_by_value = "before_linked_tasks", None
+        a.mappings[0].template_task_id = a.tasks[0].id  # the pre-activation task, no start day
+        self.assertIn(("gate_due_date_missing", False), self.gate_issues(a))
+
     def test_dependency_defects_are_reported(self):
         a = valid_aggregate()
         a.dependencies.append(obj(id=uuid.uuid4(), predecessor_task_id=a.tasks[1].id,

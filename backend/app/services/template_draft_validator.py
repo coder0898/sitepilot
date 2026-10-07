@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter, defaultdict, deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.execution_models import TASK_CLASSES, TASK_KINDS
 from app.models import User
 from app.repositories.template_validation_repository import TemplateValidationAggregate, TemplateValidationRepository
 from app.services.template_mutation_access import concurrency_token, require_template_mutation_access, stable_template_version_not_found
@@ -42,6 +43,44 @@ def _issue(issues: list[TemplateValidationIssue], code: str, group: str, entity_
         message=message,
         details=details,
     ))
+
+
+NO_DUE_DATE_MESSAGE = "This approval has no due date. Date-based overdue reminders will not apply."
+
+
+def _is_iso_date(value: Any) -> bool:
+    """Same parse resolve_gate_due_at uses for a "date" rule."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _check_gate_due_date(issues, gate, links, task_by_id, duration_days, p: str) -> None:
+    """Mirror of project_gate_due_date.resolve_gate_due_at: a rule that can
+    never produce a date blocks publication; a gate with no usable rule
+    (including imported "source_text" wording) only warns - the Admin can
+    still set a due date when assigning it on a project."""
+    rule, value = getattr(gate, "required_by_type", None), getattr(gate, "required_by_value", None)
+    if rule == "project_day":
+        day = int(value) if isinstance(value, str) and value.strip().isdigit() else None
+        if day is None or not 1 <= day <= duration_days:
+            _issue(issues, "gate_required_by_invalid", "gates", "gate", f"{p}.required_by_value",
+                   f"Needed-by day must be between Day 1 and Day {duration_days}.", entity_id=gate.id, value=value)
+    elif rule == "before_linked_tasks":
+        if gate.mapping_classification != "exact" or not links:
+            _issue(issues, "gate_required_by_invalid", "gates", "gate", f"{p}.required_by_type",
+                   "Needed before its tasks, but no tasks are linked to this approval.", entity_id=gate.id)
+        elif not any(getattr(task_by_id.get(link.template_task_id), "planned_start_day", None) for link in links):
+            _issue(issues, "gate_due_date_missing", "gates", "gate", f"{p}.required_by_type",
+                   "None of the linked tasks has a start day, so this approval gets no due date. "
+                   "Date-based overdue reminders will not apply.", blocking=False, entity_id=gate.id)
+    elif rule != "date" or not _is_iso_date(value):
+        _issue(issues, "gate_due_date_missing", "gates", "gate", f"{p}.required_by_type",
+               NO_DUE_DATE_MESSAGE, blocking=False, entity_id=gate.id, value=rule)
 
 
 def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime | None = None) -> TemplateValidationResponse:
@@ -78,6 +117,11 @@ def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime
                 _issue(issues, "task_schedule_invalid", "tasks", "task", p, "Execution task schedule must satisfy 1 <= start <= end.", entity_id=task.id)
             elif task.planned_end_day > v.duration_days:
                 _issue(issues, "task_exceeds_version_duration", "schedule", "task", f"{p}.planned_end_day", "Task schedule exceeds the version duration.", entity_id=task.id, planned_end_day=task.planned_end_day, duration_days=v.duration_days)
+        task_class, task_kind = getattr(task, "task_class", None), getattr(task, "task_kind", None)
+        if task_class is not None and task_class not in TASK_CLASSES:
+            _issue(issues, "task_class_invalid", "tasks", "task", f"{p}.task_class", "Task class must be Standard or Class A.", entity_id=task.id, value=task_class)
+        if task_kind is not None and task_kind not in TASK_KINDS:
+            _issue(issues, "task_kind_invalid", "tasks", "task", f"{p}.task_kind", "Task type is not supported.", entity_id=task.id, value=task_kind)
         if task.duration_days is not None and task.duration_days <= 0:
             _issue(issues, "task_duration_invalid", "tasks", "task", f"{p}.duration_days", "Task duration must be positive.", entity_id=task.id)
 
@@ -103,6 +147,7 @@ def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime
     if visited != len(indegree):
         _issue(issues, "dependency_cycle", "dependencies", "version", "dependencies", "Dependency graph must remain acyclic.", entity_id=v.id, involved_task_ids=sorted(str(x) for x,d in indegree.items() if d>0))
 
+    task_by_id = {x.id: x for x in a.tasks}
     gate_ids = {g.id for g in a.gates}
     gate_code_counts = Counter(g.code.strip().upper() if isinstance(g.code, str) else g.code for g in a.gates)
     gate_seq_counts = Counter(g.sequence_no for g in a.gates)
@@ -116,6 +161,7 @@ def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime
         if _blank(gate.approval_name): _issue(issues, "gate_name_required", "gates", "gate", f"{p}.approval_name", "Gate approval name is required.", entity_id=gate.id)
         if not isinstance(gate.sequence_no,int) or gate.sequence_no<=0: _issue(issues, "gate_sequence_invalid", "gates", "gate", f"{p}.sequence_no", "Gate sequence must be positive.", entity_id=gate.id)
         if gate_seq_counts[gate.sequence_no] > 1: _issue(issues, "gate_sequence_duplicate", "gates", "gate", f"{p}.sequence_no", "Gate sequence must be unique within the version.", entity_id=gate.id)
+        _check_gate_due_date(issues, gate, links, task_by_id, v.duration_days, p)
         if gate.mapping_classification not in SUPPORTED_GATE_CLASSIFICATION:
             _issue(issues, "gate_classification_invalid", "gates", "gate", f"{p}.mapping_classification", "Gate mapping classification is unsupported.", entity_id=gate.id); continue
         if gate.mapping_classification == "exact":

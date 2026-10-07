@@ -270,7 +270,7 @@ class TemplateGateApiTests(unittest.TestCase):
             approval_name=" ",
             external_party=None,
             required_by_type="",
-            required_by_value=None,
+            required_by_value="Before Day 1",
             mapping_classification="unsupported",
             broad_mapping_text=None,
             requires_configuration=False,
@@ -306,6 +306,79 @@ class TemplateGateApiTests(unittest.TestCase):
         self.assertIn("requires_configuration_missing", broad_issues)
         unmapped = SimpleNamespace(**{**exact.__dict__, "mapping_classification": "unmapped", "requires_configuration": True})
         self.assertIn("unmapped_gate", _gate_validation_issues(unmapped, []))
+        # "Before the linked tasks" takes its date from those tasks, so it needs no value.
+        linked_rule = SimpleNamespace(**{**exact.__dict__, "required_by_type": "before_linked_tasks", "required_by_value": None})
+        linked_task = SimpleNamespace(id=uuid.uuid4(), template_version_id=version_id)
+        self.assertNotIn("invalid_required_by", _gate_validation_issues(
+            linked_rule, [(SimpleNamespace(template_task_id=linked_task.id), linked_task)]))
+        # "No due date" (both blank) is a warning-only choice, not invalid.
+        no_due_date = SimpleNamespace(**{**exact.__dict__, "required_by_type": None, "required_by_value": None})
+        self.assertNotIn("invalid_required_by", _gate_validation_issues(
+            no_due_date, [(SimpleNamespace(template_task_id=linked_task.id), linked_task)]))
+        type_without_value = SimpleNamespace(**{**exact.__dict__, "required_by_type": "source_text", "required_by_value": " "})
+        self.assertIn("invalid_required_by", _gate_validation_issues(
+            type_without_value, [(SimpleNamespace(template_task_id=linked_task.id), linked_task)]))
+
+    def test_validation_state_filter_matches_due_date_rule(self):
+        with self.Session.begin() as session:
+            template = V2Template(code="due-date-filter", name="Due Date Filter")
+            session.add(template)
+            session.flush()
+            version = V2TemplateVersion(
+                template_id=template.id,
+                version_no=1,
+                status="draft",
+                duration_days=45,
+                content_hash="due-date-filter",
+                is_current_published=False,
+                created_by=ACTOR_ID,
+            )
+            session.add(version)
+            session.flush()
+            task = V2TemplateTask(
+                template_version_id=version.id,
+                code="T001",
+                sequence_no=1,
+                title="Linked task",
+                schedule_classification="execution",
+                planned_start_day=1,
+                planned_end_day=2,
+                applicability="mandatory",
+            )
+            session.add(task)
+            session.flush()
+            rules = [
+                ("G1", "before_linked_tasks", None),
+                ("G2", None, None),
+                ("G3", "source_text", "Before Day 1"),
+                ("G4", "source_text", None),
+                ("G5", None, "Before Day 1"),
+            ]
+            for index, (code, rule_type, rule_value) in enumerate(rules, start=1):
+                gate = V2TemplateExternalGate(
+                    template_version_id=version.id,
+                    code=code,
+                    approval_name=f"Approval {code}",
+                    external_party="Party",
+                    required_by_type=rule_type,
+                    required_by_value=rule_value,
+                    mapping_classification="exact",
+                    requires_configuration=False,
+                    sequence_no=index,
+                )
+                session.add(gate)
+                session.flush()
+                session.add(V2TemplateExternalGateTask(gate_id=gate.id, template_task_id=task.id))
+            version_id = version.id
+        with self.Session() as session:
+            service = self.service(session)
+            valid = service.list_gates(UserRole.admin, version_id, validation_state="valid", page_size=100)
+            invalid = service.list_gates(UserRole.admin, version_id, validation_state="invalid", page_size=100)
+            everything = service.list_gates(UserRole.admin, version_id, page_size=100)
+        self.assertEqual([item.code for item in valid.items], ["G1", "G2", "G3"])
+        self.assertEqual([item.code for item in invalid.items], ["G4", "G5"])
+        states = {item.code: item.validation_state for item in everything.items}
+        self.assertEqual(states, {"G1": "valid", "G2": "valid", "G3": "valid", "G4": "invalid", "G5": "invalid"})
 
     def test_gate_endpoint_uses_constant_queries_without_n_plus_one(self):
         statements = []

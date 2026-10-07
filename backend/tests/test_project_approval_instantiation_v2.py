@@ -125,7 +125,7 @@ class ProjectApprovalInstantiationTests(unittest.TestCase):
         self.db.flush()
         return baseline
 
-    def _task_pair(self) -> tuple[V2ProjectTask, Task]:
+    def _task_pair(self, planned_start_date: date | None = None) -> tuple[V2ProjectTask, Task]:
         """A planning task and the execution task instantiated from it."""
         self._sequence += 1
         code = f"T{self._sequence:03d}"
@@ -151,14 +151,14 @@ class ProjectApprovalInstantiationTests(unittest.TestCase):
             baseline_task_id=baseline_task.id, original_code=code,
             template_sequence=self._sequence, title=f"Task {code}",
             schedule_classification="execution", applicability="mandatory",
-            lifecycle_status="planned",
+            lifecycle_status="planned", planned_start_date=planned_start_date,
         )
         self.db.add(execution)
         self.db.flush()
         return planning, execution
 
     def _gate(self, classification="exact", *, applicability="applicable",
-              blocking=True, broad_text=None) -> V2ProjectExternalGate:
+              blocking=True, broad_text=None, required_by_type=None) -> V2ProjectExternalGate:
         self._sequence += 1
         gate = V2ProjectExternalGate(
             id=uuid.uuid4(), project_id=self.project.id,
@@ -166,7 +166,7 @@ class ProjectApprovalInstantiationTests(unittest.TestCase):
             approval_name=f"Approval {self._sequence}",
             mapping_classification=classification, broad_mapping_text=broad_text,
             applicability_state=applicability, blocking=blocking, accountable_pm_user_id=self.pm_id,
-            source_type="project_manual",
+            source_type="project_manual", required_by_type=required_by_type,
         )
         self.db.add(gate)
         self.db.flush()
@@ -288,6 +288,47 @@ class ProjectApprovalInstantiationTests(unittest.TestCase):
         self._gate(blocking=True)
         self.service.instantiate_for_project(self.project)
         self.assertTrue(self._approvals()[0].blocking)
+
+    # ---- due date from linked tasks --------------------------------------
+
+    def test_before_linked_tasks_is_due_the_day_before_the_earliest_linked_task(self):
+        planning_a, _ = self._task_pair(planned_start_date=date(2026, 10, 20))
+        planning_b, _ = self._task_pair(planned_start_date=date(2026, 10, 15))
+        gate = self._gate("exact", required_by_type="before_linked_tasks")
+        self._cover(gate, planning_a)
+        self._cover(gate, planning_b)
+
+        self.service.instantiate_for_project(self.project)
+        self.assertEqual(self._approvals()[0].due_at, date(2026, 10, 14))
+
+    def test_before_linked_tasks_ignores_tasks_excluded_from_the_project(self):
+        included, _ = self._task_pair(planned_start_date=date(2026, 10, 20))
+        excluded = V2ProjectTask(
+            id=uuid.uuid4(), project_id=self.project.id, original_code="TX",
+            template_sequence=999, title="Excluded", schedule_classification="execution",
+            applicability="conditional", source_type="project_manual", included=False,
+            decision_state="excluded",
+            template_version_id=self.template_version_id,
+        )
+        self.db.add(excluded)
+        self.db.flush()
+        gate = self._gate("exact", required_by_type="before_linked_tasks")
+        self._cover(gate, included)
+        self._cover(gate, excluded)
+
+        self.service.instantiate_for_project(self.project)
+        self.assertEqual(self._approvals()[0].due_at, date(2026, 10, 19))
+
+    def test_before_linked_tasks_with_no_dated_linked_task_has_no_due_date(self):
+        planning, _ = self._task_pair(planned_start_date=None)
+        gate = self._gate("exact", required_by_type="before_linked_tasks")
+        self._cover(gate, planning)
+        unlinked = self._gate("unmapped", required_by_type="before_linked_tasks")
+
+        self.service.instantiate_for_project(self.project)
+        by_gate = {a.project_gate_id: a for a in self._approvals()}
+        self.assertIsNone(by_gate[gate.id].due_at)
+        self.assertIsNone(by_gate[unlinked.id].due_at)
 
     # ---- re-running ------------------------------------------------------
 

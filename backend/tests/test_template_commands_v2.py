@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -473,12 +474,117 @@ class TemplateCommandApiTests(unittest.TestCase):
             },
         )
 
+    def test_clone_into_new_template_gets_its_own_identity(self):
+        response = self.post(
+            f"/api/v2/templates/versions/{self.source_version_id}/clone",
+            {
+                "change_note": "Retail variant.",
+                "new_template": {"code": " retail fitout 45 ", "name": "Fitout - Retail"},
+            },
+            UserRole.admin,
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        payload = response.json()
+        self.assertEqual(payload["template_code"], "RETAIL-FITOUT-45")
+        self.assertEqual(payload["template_name"], "Fitout - Retail")
+        self.assertNotEqual(payload["template_id"], str(self.template_id))
+        self.assertEqual(payload["version_no"], 1)
+        self.assertEqual(payload["status"], "draft")
+        self.assertEqual(payload["source_version_id"], str(self.source_version_id))
+        self.assertEqual(
+            (payload["task_count"], payload["dependency_count"], payload["gate_count"], payload["exact_mapping_count"]),
+            (2, 1, 2, 1),
+        )
+
+        new_template_id = uuid.UUID(payload["template_id"])
+        target_id = uuid.UUID(payload["version_id"])
+        with self.Session() as session:
+            source_template = session.get(V2Template, self.template_id)
+            self.assertEqual((source_template.code, source_template.name), ("WORKVED-45", "Workved 45 Day"))
+            source = session.get(V2TemplateVersion, self.source_version_id)
+            self.assertTrue(source.is_current_published)
+            self.assertEqual(
+                session.scalar(select(func.count()).select_from(V2TemplateVersion).where(
+                    V2TemplateVersion.template_id == self.template_id)),
+                2,
+            )
+            new_template = session.get(V2Template, new_template_id)
+            # No description supplied: the source template's is carried over.
+            self.assertEqual(new_template.description, "Published source.")
+            target = session.get(V2TemplateVersion, target_id)
+            self.assertEqual((target.template_id, target.change_note), (new_template_id, "Retail variant."))
+            target_tasks = {t.id for t in session.scalars(
+                select(V2TemplateTask).where(V2TemplateTask.template_version_id == target_id))}
+            self.assertTrue(target_tasks.isdisjoint(self.source_task_ids))
+            links = list(session.scalars(select(V2TemplateExternalGateTask).join(
+                V2TemplateExternalGate, V2TemplateExternalGate.id == V2TemplateExternalGateTask.gate_id
+            ).where(V2TemplateExternalGate.template_version_id == target_id)))
+            self.assertEqual(len(links), 1)
+            self.assertIn(links[0].template_task_id, target_tasks)
+
+        audit = self.audit_writer.call_args.args[1]
+        self.assertEqual(audit.action, "template_version_cloned")
+        self.assertTrue(audit.after_json["new_template"])
+        self.assertEqual(audit.after_json["template_code"], "RETAIL-FITOUT-45")
+
+    def test_clone_into_new_template_rejects_duplicate_code_and_blank_name(self):
+        duplicate = self.post(
+            f"/api/v2/templates/versions/{self.source_version_id}/clone",
+            {"new_template": {"code": "workved-45", "name": "Copy"}},
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertEqual(duplicate.json()["detail"]["code"], "template_code_exists")
+        blank = self.post(
+            f"/api/v2/templates/versions/{self.source_version_id}/clone",
+            {"new_template": {"code": "NEW-01", "name": "   "}},
+        )
+        self.assertEqual(blank.status_code, 422)
+        with self.Session() as session:
+            self.assertEqual(session.scalar(select(func.count()).select_from(V2Template)), 1)
+        self.audit_writer.assert_not_called()
+
+    def test_clone_into_new_template_stores_an_explicit_description(self):
+        response = self.post(
+            f"/api/v2/templates/versions/{self.source_version_id}/clone",
+            {"new_template": {"code": "DESC-01", "name": "Described", "description": "Own words."}},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        with self.Session() as session:
+            created = session.get(V2Template, uuid.UUID(response.json()["template_id"]))
+            self.assertEqual(created.description, "Own words.")
+
     def test_archived_source_is_not_cloneable(self):
         response = self.post(
             f"/api/v2/templates/versions/{self.archived_version_id}/clone", {}
         )
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "Template version not found.")
+
+    def test_archived_source_is_not_cloneable_into_a_new_template(self):
+        response = self.post(
+            f"/api/v2/templates/versions/{self.archived_version_id}/clone",
+            {"new_template": {"code": "FROM-ARCHIVED", "name": "From archived"}},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Template version not found.")
+        with self.Session() as session:
+            self.assertIsNone(
+                session.scalar(select(V2Template).where(V2Template.code == "FROM-ARCHIVED"))
+            )
+
+    def test_concurrent_duplicate_code_on_new_template_clone_is_a_code_conflict(self):
+        with patch.object(
+            TemplateMutationRepository,
+            "create_template",
+            side_effect=IntegrityError("INSERT", {}, Exception("duplicate code")),
+        ):
+            response = self.post(
+                f"/api/v2/templates/versions/{self.source_version_id}/clone",
+                {"new_template": {"code": " race code ", "name": "Race"}},
+            )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "template_code_exists")
+        self.audit_writer.assert_not_called()
 
     def test_create_failure_rolls_back_template_and_version(self):
         with patch.object(

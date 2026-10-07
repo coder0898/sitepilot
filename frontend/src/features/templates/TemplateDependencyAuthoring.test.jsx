@@ -33,7 +33,7 @@ beforeEach(()=>{
 async function openDependencies(){
   view();
   await screen.findByTestId("draft-task-T001");
-  fireEvent.click(screen.getByRole("button",{name:/dependencies \(1\)/i}));
+  fireEvent.click(screen.getByRole("button",{name:/dependencies · advanced \(1\)/i}));
   return screen.findByTestId("draft-dependency-dep-1");
 }
 
@@ -47,60 +47,58 @@ describe("draft dependency authoring",()=>{
 
   it("creates a relationship using only current draft task options",async()=>{
     await openDependencies();
-    fireEvent.click(screen.getByRole("button",{name:/add relationship/i}));
-    const dialog=screen.getByRole("dialog",{name:/add draft dependency/i});
-    const predecessor=within(dialog).getByLabelText("Predecessor task");
-    const successor=within(dialog).getByLabelText("Successor task");
+    fireEvent.click(screen.getByRole("button",{name:/add link/i}));
+    const dialog=screen.getByRole("dialog",{name:/add link/i});
+    const predecessor=within(dialog).getByLabelText("First task");
+    const successor=within(dialog).getByLabelText("Then this task");
     expect(within(predecessor).getAllByRole("option").map(o=>o.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("T001"),expect.stringContaining("T002"),expect.stringContaining("T003")]));
     fireEvent.change(predecessor,{target:{value:"task-2"}});
     expect(within(successor).getByRole("option",{name:/T002/})).toBeDisabled();
     fireEvent.change(successor,{target:{value:"task-3"}});
-    fireEvent.change(within(dialog).getByLabelText("Dependency rule text"),{target:{value:"Start after execution begins"}});
-    fireEvent.change(within(dialog).getByLabelText("Dependency sequence number"),{target:{value:"2"}});
-    fireEvent.click(within(dialog).getByRole("button",{name:/add relationship/i}));
+    fireEvent.change(within(dialog).getByLabelText("Note"),{target:{value:"Start after execution begins"}});
+    fireEvent.click(within(dialog).getByRole("button",{name:/add link/i}));
     await waitFor(()=>expect(templatesApi.createDependency).toHaveBeenCalledWith("draft-1",expect.objectContaining({predecessor_task_id:"task-2",successor_task_id:"task-3",dependency_type:"finish_to_start",blocking:true,rule_text:"Start after execution begins",sequence_no:2,revision_token:"rev-1"})));
   });
 
   it("prevents the same task on both sides before calling the API",async()=>{
     await openDependencies();
-    fireEvent.click(screen.getByRole("button",{name:/add relationship/i}));
-    const dialog=screen.getByRole("dialog",{name:/add draft dependency/i});
-    fireEvent.change(within(dialog).getByLabelText("Predecessor task"),{target:{value:"task-1"}});
+    fireEvent.click(screen.getByRole("button",{name:/add link/i}));
+    const dialog=screen.getByRole("dialog",{name:/add link/i});
+    fireEvent.change(within(dialog).getByLabelText("First task"),{target:{value:"task-1"}});
     // Disabled options prevent normal same-task selection; force the state through a crafted change event.
-    fireEvent.change(within(dialog).getByLabelText("Successor task"),{target:{value:"task-1"}});
-    fireEvent.change(within(dialog).getByLabelText("Dependency rule text"),{target:{value:"Invalid self edge"}});
-    fireEvent.click(within(dialog).getByRole("button",{name:/add relationship/i}));
-    expect(await within(dialog).findByText(/must be different tasks/i)).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Then this task"),{target:{value:"task-1"}});
+    fireEvent.change(within(dialog).getByLabelText("Note"),{target:{value:"Invalid self edge"}});
+    fireEvent.click(within(dialog).getByRole("button",{name:/add link/i}));
+    expect(await within(dialog).findByText(/two different tasks/i)).toBeInTheDocument();
     expect(templatesApi.createDependency).not.toHaveBeenCalled();
   });
 
   it("edits and deletes a relationship",async()=>{
     await openDependencies();
     fireEvent.click(screen.getByRole("button",{name:/edit dependency 1/i}));
-    const dialog=screen.getByRole("dialog",{name:/edit draft dependency/i});
-    fireEvent.change(within(dialog).getByLabelText("Dependency type"),{target:{value:"start_to_start"}});
-    fireEvent.click(within(dialog).getByRole("button",{name:/save dependency/i}));
+    const dialog=screen.getByRole("dialog",{name:/edit link/i});
+    fireEvent.change(within(dialog).getByLabelText("Link type"),{target:{value:"start_to_start"}});
+    fireEvent.click(within(dialog).getByRole("button",{name:/save link/i}));
     await waitFor(()=>expect(templatesApi.updateDependency).toHaveBeenCalledWith("draft-1","dep-1",expect.objectContaining({dependency_type:"start_to_start",revision_token:"rev-1"})));
 
-    await waitFor(()=>expect(screen.queryByRole("dialog",{name:/edit draft dependency/i})).not.toBeInTheDocument());
+    await waitFor(()=>expect(screen.queryByRole("dialog",{name:/edit link/i})).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button",{name:/delete dependency 1/i}));
-    const deleteDialog=screen.getByRole("dialog",{name:/delete dependency/i}); fireEvent.click(within(deleteDialog).getByRole("button",{name:/^delete dependency$/i}));
+    const deleteDialog=screen.getByRole("dialog",{name:/delete this link/i}); fireEvent.click(within(deleteDialog).getByRole("button",{name:/^delete link$/i}));
     await waitFor(()=>expect(templatesApi.deleteDependency).toHaveBeenCalledWith("draft-1","dep-1","rev-1"));
   });
 
   it.each([
-    ["template_dependency_cycle","The dependency would create a cycle in the draft graph."],
-    ["template_dependency_exists","The predecessor, successor and dependency type already exist."],
-  ])("renders backend %s errors without repair",async(code,message)=>{
+    ["template_dependency_cycle","That would make tasks wait for each other in a loop."],
+    ["template_dependency_exists","These two tasks are already linked this way."],
+  ])("renders backend %s errors in plain words without repair",async(code,message)=>{
     templatesApi.createDependency.mockRejectedValue({status:409,details:{detail:{code,message}}});
     await openDependencies();
-    fireEvent.click(screen.getByRole("button",{name:/add relationship/i}));
-    const dialog=screen.getByRole("dialog",{name:/add draft dependency/i});
-    fireEvent.change(within(dialog).getByLabelText("Predecessor task"),{target:{value:"task-2"}});
-    fireEvent.change(within(dialog).getByLabelText("Successor task"),{target:{value:"task-3"}});
-    fireEvent.change(within(dialog).getByLabelText("Dependency rule text"),{target:{value:"Test relationship"}});
-    fireEvent.change(within(dialog).getByLabelText("Dependency sequence number"),{target:{value:"2"}});
-    fireEvent.click(within(dialog).getByRole("button",{name:/add relationship/i}));
+    fireEvent.click(screen.getByRole("button",{name:/add link/i}));
+    const dialog=screen.getByRole("dialog",{name:/add link/i});
+    fireEvent.change(within(dialog).getByLabelText("First task"),{target:{value:"task-2"}});
+    fireEvent.change(within(dialog).getByLabelText("Then this task"),{target:{value:"task-3"}});
+    fireEvent.change(within(dialog).getByLabelText("Note"),{target:{value:"Test relationship"}});
+    fireEvent.click(within(dialog).getByRole("button",{name:/add link/i}));
     expect(await within(dialog).findByText(message)).toBeInTheDocument();
     expect(within(dialog).queryByRole("button",{name:/repair/i})).not.toBeInTheDocument();
   });
@@ -110,7 +108,7 @@ describe("draft dependency authoring",()=>{
     templatesApi.getVersion.mockResolvedValue(published);
     view("super_admin",published);
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
-    expect(screen.queryByRole("button",{name:/add relationship/i})).not.toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:/add link/i})).not.toBeInTheDocument();
 
     cleanup();
     templatesApi.getVersion.mockResolvedValue(summary);
@@ -120,10 +118,10 @@ describe("draft dependency authoring",()=>{
 
   it("uses mobile-friendly full-width actions",async()=>{
     await openDependencies();
-    const add=screen.getByRole("button",{name:/add relationship/i});
+    const add=screen.getByRole("button",{name:/add link/i});
     expect(add).toHaveClass("w-full");
     fireEvent.click(add);
-    const dialog=screen.getByRole("dialog",{name:/add draft dependency/i});
-    expect(within(dialog).getByRole("button",{name:/add relationship/i})).toHaveClass("w-full");
+    const dialog=screen.getByRole("dialog",{name:/add link/i});
+    expect(within(dialog).getByRole("button",{name:/add link/i})).toHaveClass("w-full");
   });
 });

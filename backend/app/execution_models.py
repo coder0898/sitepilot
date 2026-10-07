@@ -69,6 +69,10 @@ def is_work_task_kind(task_kind: str | None) -> bool:
 # against this before a bad value can reach activation.
 TASK_CLASSES = ("standard", "class_a")
 
+# The only non-null task_kind values baseline_tasks/tasks accept
+# (ck_v2_*_task_kind); null is ordinary work (see is_work_task_kind).
+TASK_KINDS = ("work", "approval_gate", "milestone")
+
 
 class ProjectBaseline(Base):
     __tablename__ = "project_baselines"

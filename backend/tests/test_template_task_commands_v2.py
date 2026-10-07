@@ -305,6 +305,41 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
         with self.Session() as session:
             self.assertEqual(session.get(V2TemplateTask, self.task_two_id).task_class, "class_a")
 
+    def test_task_kind_accepts_known_values_only(self):
+        for code, sequence, task_kind in (("T004", 4, None), ("T005", 5, "work"), ("T006", 6, "milestone")):
+            response = self.client.post(
+                f"/api/v2/templates/versions/{self.draft_id}/tasks",
+                json=self.create_payload(code=code, sequence_no=sequence, task_kind=task_kind),
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(response.json()["task"]["task_kind"], task_kind)
+
+        # Baseline and execution tasks only accept these kinds, so anything
+        # else would only surface as a failed project activation.
+        for bad in ("execution", "Work", "gate"):
+            response = self.client.post(
+                f"/api/v2/templates/versions/{self.draft_id}/tasks",
+                json=self.create_payload(code="T007", sequence_no=7, task_kind=bad),
+            )
+            self.assertEqual(response.status_code, 422, bad)
+            self.assertEqual(response.json()["detail"]["code"], "invalid_template_task")
+
+        rejected = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks/{self.task_one_id}",
+            json={"revision_token": self.revision(), "task_kind": "execution"},
+        )
+        self.assertEqual(rejected.status_code, 422)
+
+    def test_legacy_task_kind_does_not_block_other_edits(self):
+        # T002's fixture kind ("execution") predates the kind check; editing
+        # another field must still work - publish validation reports it.
+        update = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks/{self.task_two_id}",
+            json={"revision_token": self.revision(), "title": "Renamed execution task"},
+        )
+        self.assertEqual(update.status_code, 200, update.text)
+        self.assertEqual(update.json()["task"]["task_kind"], "execution")
+
     def test_task_class_is_rejected_on_approval_gates(self):
         response = self.client.post(
             f"/api/v2/templates/versions/{self.draft_id}/tasks",

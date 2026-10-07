@@ -133,9 +133,23 @@ class TemplateCommandService:
                     # Archived versions intentionally share the same non-disclosing response.
                     raise stable_template_version_not_found()
 
-                version_no = self.repository.next_version_number(source.template.id)
+                if payload.new_template is None:
+                    owner = source.template
+                    version_no = self.repository.next_version_number(owner.id)
+                else:
+                    # A separate template: the source template, its name and
+                    # its current-published version are never touched.
+                    new_code = normalize_template_code(payload.new_template.code)
+                    if self.repository.find_template_by_normalized_code(new_code) is not None:
+                        raise _duplicate_code_conflict(new_code)
+                    owner = self.repository.create_template(
+                        code=new_code,
+                        name=payload.new_template.name,
+                        description=payload.new_template.description or source.template.description,
+                    )
+                    version_no = 1
                 target = self.repository.create_draft_version(
-                    template_id=source.template.id,
+                    template_id=owner.id,
                     version_no=version_no,
                     duration_days=source.version.duration_days,
                     change_note=payload.change_note
@@ -162,6 +176,18 @@ class TemplateCommandService:
                     task_map=task_map,
                 )
 
+                after_json = {
+                    "template_id": str(owner.id),
+                    "version_id": str(target.id),
+                    "version_no": target.version_no,
+                    "status": target.status,
+                    "task_count": len(task_map),
+                    "dependency_count": len(dependencies),
+                    "gate_count": len(gate_map),
+                    "exact_mapping_count": len(links),
+                }
+                if payload.new_template is not None:
+                    after_json.update(new_template=True, template_code=owner.code, template_name=owner.name)
                 write_template_audit_event(
                     self.db,
                     TemplateAuditWrite(
@@ -175,23 +201,14 @@ class TemplateCommandService:
                             "source_version_no": source.version.version_no,
                             "source_status": source.version.status,
                         },
-                        after_json={
-                            "template_id": str(source.template.id),
-                            "version_id": str(target.id),
-                            "version_no": target.version_no,
-                            "status": target.status,
-                            "task_count": len(task_map),
-                            "dependency_count": len(dependencies),
-                            "gate_count": len(gate_map),
-                            "exact_mapping_count": len(links),
-                        },
+                        after_json=after_json,
                     ),
                 )
                 result = TemplateCloneMutationResponse(
                     source_version_id=source.version.id,
-                    template_id=source.template.id,
-                    template_code=source.template.code,
-                    template_name=source.template.name,
+                    template_id=owner.id,
+                    template_code=owner.code,
+                    template_name=owner.name,
                     version_id=target.id,
                     version_no=target.version_no,
                     status=target.status,
@@ -207,6 +224,12 @@ class TemplateCommandService:
         except ValueError as exc:
             raise _clone_conflict(str(exc)) from exc
         except IntegrityError as exc:
+            if payload.new_template is not None:
+                # A concurrent clone took the same code between the pre-check
+                # and the insert; a fresh template has no other unique clash.
+                raise _duplicate_code_conflict(
+                    normalize_template_code(payload.new_template.code)
+                ) from exc
             raise _clone_conflict(
                 "The new draft version could not be created because the template changed concurrently. Retry the clone."
             ) from exc

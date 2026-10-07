@@ -75,7 +75,7 @@ function Tabs({ active, onChange, summary }) {
   const tabs = [
     { key: "tasks", label: "Tasks", count: summary.task_count, icon: ListChecks },
     { key: "dependencies", label: "Dependencies", count: summary.dependency_count, icon: GitBranch },
-    { key: "gates", label: "External gates", count: summary.gate_count, icon: ShieldCheck },
+    { key: "gates", label: "Prerequisite approvals", count: summary.gate_count, icon: ShieldCheck },
   ];
   return <nav aria-label="Template detail tabs" className="flex gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">{tabs.map(tab => {
     const Icon = tab.icon;
@@ -94,10 +94,10 @@ function GateSummary({ gates }) {
     invalid: gates.filter(gate => gate.validation_state === "invalid").length,
   }), [gates]);
   const cards = [
-    { label: "Total gates", value: counts.total, icon: ShieldCheck, tone: "blue" },
-    { label: "Exact mapped", value: counts.exact, icon: Link2, tone: "cyan" },
-    { label: "Broad text", value: counts.broad, icon: Layers3, tone: "amber" },
-    { label: "Requires configuration", value: counts.configuration, icon: ShieldAlert, tone: "rose" },
+    { label: "Approvals", value: counts.total, icon: ShieldCheck, tone: "blue" },
+    { label: "Linked to tasks", value: counts.exact, icon: Link2, tone: "cyan" },
+    { label: "Imported wording only", value: counts.broad, icon: Layers3, tone: "amber" },
+    { label: "Need tasks linked", value: counts.configuration, icon: ShieldAlert, tone: "rose" },
     { label: "Validation issues", value: counts.invalid, icon: AlertTriangle, tone: "amber" },
   ];
   return <section aria-label="External gate summary" className="grid grid-cols-2 gap-3 lg:grid-cols-5">{cards.map(card => <SummaryMetric key={card.label} {...card}/>)}</section>;
@@ -105,10 +105,10 @@ function GateSummary({ gates }) {
 
 function DependencySummary({ counts }) {
   const cards = [
-    { label: "Total relationships", value: counts.total, icon: GitBranch, tone: "blue" },
-    { label: "Finish-to-Start", value: counts.finishToStart, icon: Link2, tone: "cyan" },
-    { label: "Start-to-Start", value: counts.startToStart, icon: Layers3, tone: "emerald" },
-    { label: "Blocking", value: counts.blocking, icon: ShieldCheck, tone: "rose" },
+    { label: "Links", value: counts.total, icon: GitBranch, tone: "blue" },
+    { label: "Finish first", value: counts.finishToStart, icon: Link2, tone: "cyan" },
+    { label: "Start together", value: counts.startToStart, icon: Layers3, tone: "emerald" },
+    { label: "Enforced", value: counts.blocking, icon: ShieldCheck, tone: "rose" },
     { label: "Validation issues", value: counts.invalid, icon: ShieldAlert, tone: "amber" },
   ];
   return <section aria-label="Dependency summary" className="grid grid-cols-2 gap-3 lg:grid-cols-5">{cards.map(card => <SummaryMetric key={card.label} {...card}/>)}</section>;
@@ -314,20 +314,20 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
           <Button variant="ghost" className="-ml-3 w-fit text-slate-300 hover:bg-white/10 hover:text-white" onClick={onBack}><ArrowLeft size={17}/> Back to Templates</Button>
           <div className="grid gap-2 sm:flex sm:flex-wrap sm:justify-end" aria-label="Template version actions">
             <RefreshButton className="border-white/15 bg-white/10 text-white hover:bg-white/15" loading={isRefreshing} onClick={refreshAll}/>
-            {onClone && summary.status !== "archived" && <Button variant="secondary" className="border-white/15 bg-white/10 text-white hover:bg-white/15" onClick={() => onClone(summary)}><Copy size={17}/> Clone as Draft</Button>}
+            {onClone && summary.status !== "archived" && <Button variant="secondary" className="border-white/15 bg-white/10 text-white hover:bg-white/15" onClick={() => onClone(summary)}><Copy size={17}/> Clone</Button>}
             {onArchive && summary.status === "published" && <Button className="bg-amber-500 text-slate-950 hover:bg-amber-400" onClick={() => onArchive(summary)}><Archive size={17}/> Archive Version</Button>}
-            {summary.status === "draft" && onOpenDraftEditor && <Button className="bg-blue-600 hover:bg-blue-500" onClick={() => onOpenDraftEditor(summary)}><PencilLine size={17}/> Open Draft Editor</Button>}
+            {summary.status === "draft" && onOpenDraftEditor && <Button className="bg-blue-600 hover:bg-blue-500" onClick={() => onOpenDraftEditor(summary)}><PencilLine size={17}/> Edit draft</Button>}
             {summary.status === "draft" && onDeleteDraft && <Button variant="secondary" className="border-rose-300/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/25" onClick={() => onDeleteDraft(summary)}><Trash2 size={17}/> Delete Draft</Button>}
           </div>
         </div>
         <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[11px] font-black uppercase tracking-[.18em] text-blue-300">{summary.template_code}</span><Pill tone={statusTone(summary.status)}>{summary.status}</Pill>{summary.is_current_published && <span className="inline-flex items-center gap-1 text-xs font-black text-emerald-300"><CheckCircle2 size={15}/> Current published</span>}</div><h2 className="mt-3 max-w-3xl text-2xl font-black tracking-[-.04em] sm:text-4xl">{summary.template_name}</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">{summary.template_description || "Governed project execution schedule."}</p></div>
-          <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:flex"><span className="rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3"><b className="block text-white">Version {summary.version_no}</b><small className="text-slate-400">Controlled release</small></span><span className="rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3"><b className="block text-white">{summary.duration_days} days</b><small className="text-slate-400">Planned duration</small></span><span className="col-span-2 rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3 sm:col-span-1"><b className="block text-white">{formatTemplateDate(summary.published_at)}</b><small className="text-slate-400">Published</small></span></div>
+          <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:flex"><span className="rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3"><b className="block text-white">Version {summary.version_no}</b><small className="text-slate-400">Template version</small></span><span className="rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3"><b className="block text-white">{summary.duration_days} days</b><small className="text-slate-400">Planned duration</small></span><span className="col-span-2 rounded-xl border border-white/10 bg-white/[.07] px-3.5 py-3 sm:col-span-1"><b className="block text-white">{formatTemplateDate(summary.published_at)}</b><small className="text-slate-400">Published</small></span></div>
         </div>
       </div>
     </header>
 
-    <section aria-label="Template summary" className="grid grid-cols-2 gap-3 lg:grid-cols-4"><SummaryMetric icon={ListChecks} label="Template tasks" value={summary.task_count} tone="blue"/><SummaryMetric icon={GitBranch} label="Dependencies" value={summary.dependency_count} tone="cyan"/><SummaryMetric icon={ShieldCheck} label="External gates" value={summary.gate_count} tone="amber"/><SummaryMetric icon={Clock3} label="Schedule duration" value={`${summary.duration_days}d`} tone="emerald"/></section>
+    <section aria-label="Template summary" className="grid grid-cols-2 gap-3 lg:grid-cols-4"><SummaryMetric icon={ListChecks} label="Template tasks" value={summary.task_count} tone="blue"/><SummaryMetric icon={GitBranch} label="Dependencies" value={summary.dependency_count} tone="cyan"/><SummaryMetric icon={ShieldCheck} label="Prerequisite approvals" value={summary.gate_count} tone="amber"/><SummaryMetric icon={Clock3} label="Schedule duration" value={`${summary.duration_days}d`} tone="emerald"/></section>
 
     <Tabs active={activeTemplateTab} onChange={onTabChange} summary={summary}/>
 
@@ -346,8 +346,8 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
       {invalidCount > 0 && <Alert tone="warning"><div><strong>{invalidCount} loaded task{invalidCount === 1 ? "" : "s"} require validation</strong><span className="mt-1 block font-medium">Source records are reported exactly as stored and were not repaired.</span></div></Alert>}
 
       {tasksLoading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading template tasks..."/></div> : taskError ? <Alert tone="danger" className="items-center"><div><strong className="block">{accessError(taskError).title}</strong><span className="mt-1 block font-medium">{accessError(taskError).description}</span></div><Button size="sm" variant="secondary" onClick={() => setTaskRetry(value => value + 1)}><RefreshCw size={15}/> Retry</Button></Alert> : !taskResult.items.length ? <EmptyState className="min-h-64 bg-white" icon={hasTaskFilters ? <Search size={21}/> : <DatabaseZap size={21}/>} title={hasTaskFilters ? "No tasks match these filters" : "No tasks stored for this version"} description={hasTaskFilters ? "Clear one or more filters and try again." : "Tasks will appear after this template version receives governed task records."} action={hasTaskFilters ? <Button variant="secondary" onClick={clearTaskFilters}><FilterX size={16}/> Clear filters</Button> : null}/> : <div className="grid gap-7">
-        <TaskGroup eyebrow="Activation gate" title="Pre-Activation" description="Prerequisites completed before the 45-day execution clock begins." tasks={preActivationTasks}/>
-        <TaskGroup eyebrow="Controlled programme" title="Day 1-45 Execution" description="Work sequence shown in the exact order returned by the approved backend." tasks={executionTasks}/>
+        <TaskGroup eyebrow="Before the project starts" title="Pre-Activation" description="Prerequisites completed before the 45-day execution clock begins." tasks={preActivationTasks}/>
+        <TaskGroup eyebrow="Project schedule" title="Day 1-45 Execution" description="Tasks in schedule order." tasks={executionTasks}/>
       </div>}
 
       {!tasksLoading && !taskError && taskResult.items.length > 0 && <footer className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between"><span className="px-2 text-xs font-bold text-slate-500">Showing {taskResult.items.length} of {taskResult.pagination.total} tasks</span>{taskResult.pagination.page < taskResult.pagination.total_pages && <Button variant="secondary" loading={loadingMore} onClick={() => setTaskPage(value => value + 1)}><Layers3 size={16}/> Load more tasks</Button>}</footer>}
@@ -357,18 +357,18 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
       <DependencySummary counts={dependencyCounts}/>
       <section className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,.05)]">
         <div className="grid gap-3 xl:grid-cols-[minmax(260px,1.5fr)_repeat(3,minmax(170px,.7fr))_auto]">
-          <label className="relative"><Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17}/><Input aria-label="Search template dependencies" value={dependencySearch} onChange={event => setDependencySearch(event.target.value)} className="min-h-11 pl-10" placeholder="Search predecessor or successor"/></label>
-          <Select aria-label="Filter dependency type" value={dependencyType} onChange={event => setDependencyType(event.target.value)}><option value="">All dependency types</option><option value="finish_to_start">Finish-to-Start</option><option value="start_to_start">Start-to-Start</option></Select>
-          <Select aria-label="Filter dependency blocking" value={dependencyBlocking} onChange={event => setDependencyBlocking(event.target.value)}><option value="">All blocking states</option><option value="true">Blocking</option><option value="false">Non-blocking</option></Select>
+          <label className="relative"><Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17}/><Input aria-label="Search template dependencies" value={dependencySearch} onChange={event => setDependencySearch(event.target.value)} className="min-h-11 pl-10" placeholder="Search tasks"/></label>
+          <Select aria-label="Filter dependency type" value={dependencyType} onChange={event => setDependencyType(event.target.value)}><option value="">All link types</option><option value="finish_to_start">Finish first</option><option value="start_to_start">Start together</option></Select>
+          <Select aria-label="Filter dependency blocking" value={dependencyBlocking} onChange={event => setDependencyBlocking(event.target.value)}><option value="">Enforced and advisory</option><option value="true">Enforced</option><option value="false">Advisory only</option></Select>
           <Select aria-label="Filter dependency validation" value={dependencyValidation} onChange={event => setDependencyValidation(event.target.value)}><option value="">All validation states</option><option value="valid">Valid</option><option value="invalid">Issues only</option></Select>
           {hasDependencyFilters && <Button variant="ghost" onClick={clearDependencyFilters}><FilterX size={16}/> Clear</Button>}
         </div>
       </section>
 
-      {invalidDependencyCount > 0 && <Alert tone="warning"><AlertTriangle className="shrink-0" size={19}/><div><strong>{invalidDependencyCount} relationship{invalidDependencyCount === 1 ? "" : "s"} require review</strong><span className="mt-1 block font-medium">Warnings reflect stored source data. No automatic repair or Fix action is available.</span></div></Alert>}
+      {invalidDependencyCount > 0 && <Alert tone="warning"><AlertTriangle className="shrink-0" size={19}/><div><strong>{invalidDependencyCount} relationship{invalidDependencyCount === 1 ? "" : "s"} require review</strong><span className="mt-1 block font-medium">Warnings reflect stored source data. Shown exactly as saved.</span></div></Alert>}
 
       {dependenciesLoading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading template dependencies..."/></div> : dependencyError ? <Alert tone="danger" className="items-center"><div><strong className="block">{accessError(dependencyError).title}</strong><span className="mt-1 block font-medium">{accessError(dependencyError).description}</span></div><Button size="sm" variant="secondary" onClick={() => setDependencyRetry(value => value + 1)}><RefreshCw size={15}/> Retry</Button></Alert> : !dependencyResult.items.length ? <EmptyState className="min-h-64 bg-white" icon={hasDependencyFilters ? <Search size={21}/> : <GitBranch size={21}/>} title={hasDependencyFilters ? "No dependencies match these filters" : "No dependencies stored for this version"} description={hasDependencyFilters ? "Clear one or more filters and try again." : "Relationships will appear after this template version receives dependency records."} action={hasDependencyFilters ? <Button variant="secondary" onClick={clearDependencyFilters}><FilterX size={16}/> Clear filters</Button> : null}/> : <section className="grid gap-3">
-        <div className="flex flex-col gap-1 px-1 sm:flex-row sm:items-end sm:justify-between"><div><span className="text-[10px] font-black uppercase tracking-[.18em] text-cyan-700">Read-only sequence logic</span><h3 className="mt-1 text-lg font-black tracking-[-.02em] text-slate-950">Task relationships</h3><p className="mt-1 text-xs font-medium text-slate-500">Select a task code to inspect that task in context.</p></div><span className="text-xs font-bold text-slate-500">Showing {dependencyResult.items.length} of {dependencyResult.pagination.total}</span></div>
+        <div className="flex flex-col gap-1 px-1 sm:flex-row sm:items-end sm:justify-between"><div><span className="text-[10px] font-black uppercase tracking-[.18em] text-cyan-700">Read-only</span><h3 className="mt-1 text-lg font-black tracking-[-.02em] text-slate-950">Task relationships</h3><p className="mt-1 text-xs font-medium text-slate-500">Select a task code to inspect that task in context.</p></div><span className="text-xs font-bold text-slate-500">Showing {dependencyResult.items.length} of {dependencyResult.pagination.total}</span></div>
         <TemplateDependencyTable dependencies={dependencyResult.items} onFocusTask={focusTask}/>
         <div className="grid gap-3 lg:hidden">{dependencyResult.items.map(dependency => <TemplateDependencyCard key={dependency.id} dependency={dependency} onFocusTask={focusTask}/>)}</div>
       </section>}
@@ -379,18 +379,18 @@ export function TemplateDetails({ versionId, user, onBack, onClone, onArchive, o
       <section className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,.05)]">
         <div className="grid gap-3 xl:grid-cols-[minmax(240px,1.4fr)_repeat(4,minmax(150px,.7fr))_auto]">
           <label className="relative"><Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17}/><Input aria-label="Search external gates" value={gateSearch} onChange={event => setGateSearch(event.target.value)} className="min-h-11 pl-10" placeholder="Search code, approval or party"/></label>
-          <Select aria-label="Filter gate mapping" value={gateMapping} onChange={event => setGateMapping(event.target.value)}><option value="">All mappings</option><option value="exact">Exact mapping</option><option value="broad_text">Broad text</option><option value="unmapped">Unmapped</option></Select>
-          <Select aria-label="Filter gate configuration" value={gateConfiguration} onChange={event => setGateConfiguration(event.target.value)}><option value="">All configuration states</option><option value="true">Requires configuration</option><option value="false">Configured</option></Select>
-          <Input aria-label="Filter external party" value={gateParty} onChange={event => setGateParty(event.target.value)} placeholder="External party"/>
+          <Select aria-label="Filter gate mapping" value={gateMapping} onChange={event => setGateMapping(event.target.value)}><option value="">All</option><option value="exact">Linked to tasks</option><option value="broad_text">Imported wording</option><option value="unmapped">Not linked</option></Select>
+          <Select aria-label="Filter gate configuration" value={gateConfiguration} onChange={event => setGateConfiguration(event.target.value)}><option value="">Linked or not</option><option value="true">Needs tasks linked</option><option value="false">Linked</option></Select>
+          <Input aria-label="Filter external party" value={gateParty} onChange={event => setGateParty(event.target.value)} placeholder="Who approves"/>
           <Select aria-label="Filter gate validation" value={gateValidation} onChange={event => setGateValidation(event.target.value)}><option value="">All validation states</option><option value="valid">Valid</option><option value="invalid">Issues only</option></Select>
           {hasGateFilters && <Button variant="ghost" onClick={clearGateFilters}><FilterX size={16}/> Clear</Button>}
         </div>
       </section>
 
-      {invalidGateCount > 0 && <Alert tone="warning"><AlertTriangle className="shrink-0" size={19}/><div><strong>{invalidGateCount} gate{invalidGateCount === 1 ? "" : "s"} require review</strong><span className="mt-1 block font-medium">Warnings describe stored source data. No automatic mapping or repair has been applied.</span></div></Alert>}
+      {invalidGateCount > 0 && <Alert tone="warning"><AlertTriangle className="shrink-0" size={19}/><div><strong>{invalidGateCount} gate{invalidGateCount === 1 ? "" : "s"} require review</strong><span className="mt-1 block font-medium">Shown exactly as saved. Nothing has been changed automatically.</span></div></Alert>}
 
       {gatesLoading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading external gates..."/></div> : gateError ? <Alert tone="danger" className="items-center"><div><strong className="block">{accessError(gateError).title}</strong><span className="mt-1 block font-medium">{accessError(gateError).description}</span></div><Button size="sm" variant="secondary" onClick={() => setGateRetry(value => value + 1)}><RefreshCw size={15}/> Retry</Button></Alert> : !gateResult.items.length ? <EmptyState className="min-h-64 bg-white" icon={hasGateFilters ? <Search size={21}/> : <ShieldCheck size={21}/>} title={hasGateFilters ? "No external gates match these filters" : "No external gates stored for this version"} description={hasGateFilters ? "Clear one or more filters and try again." : "Gate records will appear when this version has external approvals."} action={hasGateFilters ? <Button variant="secondary" onClick={clearGateFilters}><FilterX size={16}/> Clear filters</Button> : null}/> : <section className="grid gap-3">
-        <div className="flex flex-col gap-1 px-1 sm:flex-row sm:items-end sm:justify-between"><div><span className="text-[10px] font-black uppercase tracking-[.18em] text-amber-700">Read-only approval controls</span><h3 className="mt-1 text-lg font-black tracking-[-.02em] text-slate-950">External gates</h3><p className="mt-1 text-xs font-medium text-slate-500">Broad mappings remain textual; no task relationships are inferred.</p></div><span className="text-xs font-bold text-slate-500">Showing {gateResult.items.length} of {gateResult.pagination.total}</span></div>
+        <div className="flex flex-col gap-1 px-1 sm:flex-row sm:items-end sm:justify-between"><div><span className="text-[10px] font-black uppercase tracking-[.18em] text-amber-700">Read-only</span><h3 className="mt-1 text-lg font-black tracking-[-.02em] text-slate-950">Prerequisite approvals</h3><p className="mt-1 text-xs font-medium text-slate-500">Each approval lists the tasks it is required before.</p></div><span className="text-xs font-bold text-slate-500">Showing {gateResult.items.length} of {gateResult.pagination.total}</span></div>
         <TemplateGateTable gates={gateResult.items} onFocusTask={focusTask}/>
         <div className="grid gap-3 lg:hidden">{gateResult.items.map(gate => <TemplateGateCard key={gate.id} gate={gate} onFocusTask={focusTask}/>)}</div>
       </section>}

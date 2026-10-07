@@ -296,6 +296,13 @@ class ProjectApprovalInstantiationService:
 
         for gate in pending_gates:
             resolved = gate.mapping_classification == "exact"
+            # Linked tasks in this project's plan - for coverage and for a
+            # `before_linked_tasks` due date.
+            linked_tasks = [
+                task for link in (links_by_gate.get(gate.id, []) if resolved else [])
+                if (task := task_by_project_task_id.get(link.project_task_id)) is not None
+            ]
+            linked_starts = [task.planned_start_date for task in linked_tasks if task.planned_start_date]
             approval = ProjectExternalApproval(
                 project_id=project.id,
                 project_gate_id=gate.id,
@@ -311,7 +318,10 @@ class ProjectApprovalInstantiationService:
                 # resolver used for Task.planned_start_date/end_date above.
                 # None (never invented) when the gate carries no rule, or a
                 # project_day rule with no project.start_date yet.
-                due_at=resolve_gate_due_at(gate.required_by_type, gate.required_by_value, project.start_date),
+                due_at=resolve_gate_due_at(
+                    gate.required_by_type, gate.required_by_value, project.start_date,
+                    earliest_linked_start=min(linked_starts, default=None),
+                ),
             )
             self.db.add(approval)
             self.db.flush()
@@ -320,14 +330,11 @@ class ProjectApprovalInstantiationService:
                 report["unresolved_count"] += 1
                 continue
 
-            for link in links_by_gate.get(gate.id, []):
-                task = task_by_project_task_id.get(link.project_task_id)
-                if task is None:
-                    # The named task was excluded from the baseline, so it has
-                    # no execution row to block. Coverage stays `exact`: the
-                    # template was explicit and nothing is being guessed - the
-                    # task simply is not part of this project's plan.
-                    continue
+            # A named task excluded from the baseline has no execution row to
+            # block, so it is absent from linked_tasks. Coverage stays `exact`:
+            # the template was explicit and nothing is being guessed - the task
+            # simply is not part of this project's plan.
+            for task in linked_tasks:
                 self.db.add(ProjectExternalApprovalTask(
                     project_id=project.id,
                     approval_id=approval.id,

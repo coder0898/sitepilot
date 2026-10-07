@@ -83,6 +83,17 @@ class ResolveGateDueAtTests(unittest.TestCase):
     def test_a_malformed_project_day_string_resolves_to_none_rather_than_raising(self):
         self.assertIsNone(resolve_gate_due_at("project_day", "not-a-number", self.START))
 
+    def test_before_linked_tasks_is_due_the_day_before_the_earliest_linked_start(self):
+        # Fire Piping starts 15 October, so the Fire NOC is needed by the 14th.
+        due_at = resolve_gate_due_at(
+            "before_linked_tasks", None, self.START, earliest_linked_start=date(2026, 10, 15),
+        )
+        self.assertEqual(due_at, date(2026, 10, 14))
+
+    def test_before_linked_tasks_without_a_linked_start_date_is_never_invented(self):
+        self.assertIsNone(resolve_gate_due_at("before_linked_tasks", None, self.START))
+        self.assertIsNone(resolve_gate_due_at("before_linked_tasks", None, self.START, earliest_linked_start=None))
+
 
 class ProjectGateDueDateIntegrationTests(unittest.TestCase):
     """Activation (via `ProjectApprovalInstantiationService`) and the
