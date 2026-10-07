@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.execution_models import TASK_CLASSES, TASK_KINDS
 from app.models import User
 from app.repositories.template_validation_repository import TemplateValidationAggregate, TemplateValidationRepository
 from app.services.template_mutation_access import concurrency_token, require_template_mutation_access, stable_template_version_not_found
@@ -78,6 +79,11 @@ def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime
                 _issue(issues, "task_schedule_invalid", "tasks", "task", p, "Execution task schedule must satisfy 1 <= start <= end.", entity_id=task.id)
             elif task.planned_end_day > v.duration_days:
                 _issue(issues, "task_exceeds_version_duration", "schedule", "task", f"{p}.planned_end_day", "Task schedule exceeds the version duration.", entity_id=task.id, planned_end_day=task.planned_end_day, duration_days=v.duration_days)
+        task_class, task_kind = getattr(task, "task_class", None), getattr(task, "task_kind", None)
+        if task_class is not None and task_class not in TASK_CLASSES:
+            _issue(issues, "task_class_invalid", "tasks", "task", f"{p}.task_class", "Task class must be Standard or Class A.", entity_id=task.id, value=task_class)
+        if task_kind is not None and task_kind not in TASK_KINDS:
+            _issue(issues, "task_kind_invalid", "tasks", "task", f"{p}.task_kind", "Task type is not supported.", entity_id=task.id, value=task_kind)
         if task.duration_days is not None and task.duration_days <= 0:
             _issue(issues, "task_duration_invalid", "tasks", "task", f"{p}.duration_days", "Task duration must be positive.", entity_id=task.id)
 

@@ -8,7 +8,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.execution_models import TASK_CLASSES, is_work_task_kind
+from app.execution_models import TASK_CLASSES, TASK_KINDS, is_work_task_kind
 from app.models import User
 from app.repositories.template_mutation_repository import TemplateMutationRepository
 from app.repositories.template_task_repository import TemplateTaskRepository
@@ -87,7 +87,7 @@ def _audit_snapshot(task: V2TemplateTask) -> dict[str, Any]:
     }
 
 
-def _validate_task(values: dict[str, Any], *, duration_days: int) -> None:
+def _validate_task(values: dict[str, Any], *, duration_days: int, check_kind: bool = True) -> None:
     code = _normalize_code(values.get("code") or "")
     title = (values.get("title") or "").strip()
     if not code:
@@ -127,6 +127,9 @@ def _validate_task(values: dict[str, Any], *, duration_days: int) -> None:
             )
     else:
         raise _invalid_task("Unsupported schedule classification.")
+
+    if check_kind and values.get("task_kind") is not None and values["task_kind"] not in TASK_KINDS:
+        raise _invalid_task("Task type is not supported.", task_kind=values["task_kind"])
 
     if values.get("applicability") not in {"mandatory", "conditional"}:
         raise _invalid_task("Applicability must be mandatory or conditional.")
@@ -269,7 +272,9 @@ class TemplateTaskCommandService:
                         "Task update does not contain an effective change.",
                         task_id=str(task.id),
                     )
-                _validate_task(candidate, duration_days=version.duration_days)
+                # A legacy kind is only checked when this edit sets it, so it never
+                # blocks unrelated edits; publish validation reports it instead.
+                _validate_task(candidate, duration_days=version.duration_days, check_kind="task_kind" in changes)
                 self._require_unique(
                     version.id,
                     code=candidate["code"],

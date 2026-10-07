@@ -80,6 +80,24 @@ class TemplateValidationPureTests(unittest.TestCase):
         for code in ("task_code_duplicate", "task_sequence_duplicate", "task_applicability_invalid", "task_exceeds_version_duration"):
             self.assertIn(code, codes)
 
+    def test_unknown_task_class_and_kind_block_publication(self):
+        a = valid_aggregate()
+        a.tasks[1].task_class = "gold"
+        a.tasks[0].task_kind = "execution"
+        result = validate_aggregate(a)
+        blocking = {i.code for i in result.issues if i.blocking}
+        self.assertIn("task_class_invalid", blocking)
+        self.assertIn("task_kind_invalid", blocking)
+        self.assertFalse(result.can_publish)
+
+    def test_known_task_class_and_kind_pass(self):
+        a = valid_aggregate()
+        a.tasks[1].task_class, a.tasks[1].task_kind = "class_a", "work"
+        a.tasks[0].task_class, a.tasks[0].task_kind = None, "milestone"
+        codes = self.codes(a)
+        self.assertNotIn("task_class_invalid", codes)
+        self.assertNotIn("task_kind_invalid", codes)
+
     def test_dependency_defects_are_reported(self):
         a = valid_aggregate()
         a.dependencies.append(obj(id=uuid.uuid4(), predecessor_task_id=a.tasks[1].id,
