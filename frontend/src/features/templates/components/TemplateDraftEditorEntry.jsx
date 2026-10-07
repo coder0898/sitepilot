@@ -332,6 +332,15 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   }
 
 
+  // Review "Fix": open the task or approval an issue is about, else its tab.
+  function fixIssue(issue){
+    const task=issue.entity_type==="task"&&tasks.find(item=>item.id===issue.entity_id);
+    if(task){setActiveEditorTab("tasks");openEdit(task);return;}
+    const gate=issue.entity_type==="gate"&&gates.find(item=>item.id===issue.entity_id);
+    if(gate){setActiveEditorTab("gates");openEditGate(gate);return;}
+    setActiveEditorTab(issue.group==="dependencies"?"dependencies":issue.group==="gates"||issue.group==="mappings"?"gates":"tasks");
+  }
+
   function openAddGate(){setEditorGate(null);setGateEditorOpen(true);}
   function openEditGate(gate){setEditorGate(gate);setGateEditorOpen(true);}
   async function saveGate(payload,gate,initialJson){
@@ -369,7 +378,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
       <Button variant={activeEditorTab === "tasks" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("tasks")}><BookOpenCheck size={17}/> Tasks ({tasks.length})</Button>
       <Button variant={activeEditorTab === "dependencies" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("dependencies")}><GitBranch size={17}/> Dependencies ({dependencies.length})</Button>
       <Button variant={activeEditorTab === "gates" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("gates")}><ShieldAlert size={17}/> Prerequisite approvals ({gates.length})</Button>
-      <Button variant={activeEditorTab === "validation" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("validation")}><Rocket size={17}/> Validate & Publish</Button>
+      <Button variant={activeEditorTab === "validation" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("validation")}><Rocket size={17}/> Review & publish</Button>
     </nav>
 
     {activeEditorTab === "tasks" ? <>
@@ -391,7 +400,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
       <div className="flex flex-col gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><ShieldAlert className="mt-0.5 shrink-0 text-violet-700" size={19}/><div><strong className="text-violet-950">Prerequisite approvals</strong><p className="mt-1 text-xs font-semibold leading-5 text-violet-800">Outside approvals, such as a Fire NOC, that related work needs first. Link each one to the tasks it is required before.</p></div></div><Button className="w-full sm:w-auto" onClick={openAddGate}><Plus size={17}/> Add approval</Button></div>
       {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading prerequisite approvals..."/></div> : loadError ? <Alert tone="danger"><strong>Prerequisite approvals unavailable</strong><span>{apiMessage(loadError)}</span></Alert> : gates.length===0 ? <EmptyState className="min-h-64 bg-white" title="No prerequisite approvals yet" description="Add an outside approval that related work needs first." action={<Button onClick={openAddGate}><Plus size={16}/> Add first approval</Button>}/> : <div className="grid gap-3">{gates.map(gate=><GateRow key={gate.id} gate={gate} onEdit={openEditGate} onDelete={item=>{setDeleteGate(item);setGateDeleteError(null)}}/>)}</div>}
     </> : null}
-    <div className={activeEditorTab === "validation" ? "block" : "hidden"} aria-hidden={activeEditorTab !== "validation"}><TemplateValidationPublishPanel summary={summary} onNavigate={setActiveEditorTab} onRefresh={refresh} onPublished={onPublished}/></div>
+    <div className={activeEditorTab === "validation" ? "block" : "hidden"} aria-hidden={activeEditorTab !== "validation"}><TemplateValidationPublishPanel summary={summary} active={activeEditorTab === "validation"} tasks={tasks} gates={gates} onFix={fixIssue} onRefresh={refresh} onPublished={onPublished}/></div>
 
     {editorOpen && <TemplateTaskEditorModal task={editorTask} tasks={tasks} dependencies={dependencies} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={tasks.length+1} suggestedCode={nextStructuredCode(tasks, "T")} onClose={()=>{setEditorOpen(false);setFormDirty(false);}} onSaved={saveTask} onDirtyChange={setFormDirty}/>}
     {deleteTask && <DeleteTaskModal task={deleteTask} busy={deleting} error={deleteError} onClose={()=>{setDeleteTask(null);setDeleteError(null);}} onConfirm={confirmDelete}/>}
