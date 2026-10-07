@@ -16,8 +16,10 @@ from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
     V2TemplateExternalGateTask,
+    V2TemplateGateReferenceFile,
     V2TemplateTask,
     V2TemplateTaskDependency,
+    V2TemplateTaskReferenceFile,
     V2TemplateVersion,
 )
 
@@ -256,6 +258,41 @@ class TemplateMutationRepository:
             clones.append(clone)
         self.db.flush()
         return clones
+
+    def clone_reference_files(
+        self,
+        *,
+        task_map: dict[uuid.UUID, V2TemplateTask],
+        gate_map: dict[uuid.UUID, V2TemplateExternalGate],
+    ) -> int:
+        """Link the clone's tasks and gates to the SAME file rows as the source.
+        A file is never modified in place, so sharing is safe and no bytes are
+        copied."""
+        count = 0
+        if task_map:
+            for link in self.db.scalars(
+                select(V2TemplateTaskReferenceFile)
+                .where(V2TemplateTaskReferenceFile.template_task_id.in_(list(task_map)))
+                .order_by(V2TemplateTaskReferenceFile.created_at, V2TemplateTaskReferenceFile.id)
+            ):
+                self.db.add(V2TemplateTaskReferenceFile(
+                    template_task_id=task_map[link.template_task_id].id, file_id=link.file_id,
+                    description=link.description, created_by=link.created_by,
+                ))
+                count += 1
+        if gate_map:
+            for link in self.db.scalars(
+                select(V2TemplateGateReferenceFile)
+                .where(V2TemplateGateReferenceFile.gate_id.in_(list(gate_map)))
+                .order_by(V2TemplateGateReferenceFile.created_at, V2TemplateGateReferenceFile.id)
+            ):
+                self.db.add(V2TemplateGateReferenceFile(
+                    gate_id=gate_map[link.gate_id].id, file_id=link.file_id,
+                    description=link.description, created_by=link.created_by,
+                ))
+                count += 1
+        self.db.flush()
+        return count
 
     def touch(self, version: V2TemplateVersion) -> str:
         token = touch_version(version)

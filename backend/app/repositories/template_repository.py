@@ -6,13 +6,14 @@ template tables are intentionally not imported into this module.
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
 from sqlalchemy import Select, String, and_, case, cast, false, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models import UserRole
+from app.repositories.template_reference_repository import reference_files_by_owner
 from app.services.template_access import effective_template_statuses
 from app.template_models import (
     V2Template,
@@ -90,6 +91,7 @@ class TemplateTaskSummary:
     duration_days: int | None
     validation_state: str
     validation_issues: list[str]
+    reference_files: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -185,6 +187,7 @@ class TemplateGateSummary:
     affected_tasks: list[TemplateGateTaskReference]
     validation_state: str
     validation_issues: list[str]
+    reference_files: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -581,8 +584,10 @@ class TemplateRepository:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
+        rows = self.session.execute(statement).all()
+        references = reference_files_by_owner(self.session, "task", [row[0].id for row in rows])
         items: list[TemplateTaskSummary] = []
-        for row in self.session.execute(statement).all():
+        for row in rows:
             task = row[0]
             issues = _task_validation_issues(
                 task,
@@ -609,6 +614,7 @@ class TemplateRepository:
                     duration_days=task.duration_days,
                     validation_state="invalid" if issues else "valid",
                     validation_issues=issues,
+                    reference_files=references.get(task.id, []),
                 )
             )
         return TemplateTaskPage(items=items, total=total, page=page, page_size=page_size)
@@ -961,6 +967,7 @@ class TemplateRepository:
             for link, task in self.session.execute(mapping_statement).all():
                 mappings_by_gate.setdefault(link.gate_id, []).append((link, task))
 
+        references = reference_files_by_owner(self.session, "gate", [gate.id for gate in gates])
         items: list[TemplateGateSummary] = []
         for gate in gates:
             mappings = mappings_by_gate.get(gate.id, [])
@@ -996,6 +1003,7 @@ class TemplateRepository:
                     affected_tasks=affected_tasks,
                     validation_state="invalid" if issues else "valid",
                     validation_issues=issues,
+                    reference_files=references.get(gate.id, []),
                 )
             )
         return TemplateGatePage(

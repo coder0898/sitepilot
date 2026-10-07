@@ -19,6 +19,7 @@ from app.models import User, UserRole
 from app.repositories.template_validation_repository import TemplateValidationAggregate
 from app.routes.templates_v2 import router
 from app.services.template_draft_validator import validate_aggregate
+from tests.template_reference_tables import TEMPLATE_REFERENCE_TABLES
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -190,7 +191,7 @@ class TemplateValidationApiTests(unittest.TestCase):
         def attach(dbapi_connection, _):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
             dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
-        for table in (V2Template.__table__, V2TemplateVersion.__table__, V2TemplateTask.__table__, V2TemplateTaskDependency.__table__, V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__):
+        for table in (V2Template.__table__, V2TemplateVersion.__table__, V2TemplateTask.__table__, V2TemplateTaskDependency.__table__, V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__, *TEMPLATE_REFERENCE_TABLES):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         with self.Session.begin() as s:

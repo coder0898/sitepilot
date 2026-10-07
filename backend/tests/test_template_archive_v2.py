@@ -26,6 +26,7 @@ from app.models import User, UserRole
 from app.routes.projects_v2 import router as projects_router
 from app.routes.templates_v2 import router as templates_router
 from app.services.template_mutation_access import concurrency_token
+from tests.template_reference_tables import TEMPLATE_REFERENCE_TABLES
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -54,7 +55,7 @@ class TemplateArchiveTests(unittest.TestCase):
 
         for table in (
             V2Template.__table__, V2TemplateVersion.__table__, V2TemplateTask.__table__,
-            V2TemplateTaskDependency.__table__, V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__,
+            V2TemplateTaskDependency.__table__, V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__, *TEMPLATE_REFERENCE_TABLES,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)

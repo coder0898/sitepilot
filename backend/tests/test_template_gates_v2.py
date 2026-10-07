@@ -16,6 +16,7 @@ from app.models import User, UserRole
 from app.repositories.template_repository import _gate_validation_issues
 from app.routes.templates_v2 import list_template_gates
 from app.services.template_queries import TemplateQueryService
+from tests.template_reference_tables import TEMPLATE_REFERENCE_TABLES
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -65,7 +66,7 @@ class TemplateGateApiTests(unittest.TestCase):
             V2TemplateTask.__table__,
             V2TemplateTaskDependency.__table__,
             V2TemplateExternalGate.__table__,
-            V2TemplateExternalGateTask.__table__,
+            V2TemplateExternalGateTask.__table__, *TEMPLATE_REFERENCE_TABLES,
         ):
             table.create(cls.engine)
         cls.Session = sessionmaker(bind=cls.engine, expire_on_commit=False)
@@ -258,6 +259,7 @@ class TemplateGateApiTests(unittest.TestCase):
                 "external_party", "required_by_type", "required_by_value", "impact",
                 "evidence_instructions", "mapping_classification", "requires_configuration", "broad_mapping_text",
                 "affected_tasks", "validation_state", "validation_issues",
+                "reference_files",
             },
         )
         self.assertEqual(set(item["affected_tasks"][0]), {"id", "code", "title", "phase", "day"})
@@ -394,7 +396,8 @@ class TemplateGateApiTests(unittest.TestCase):
         finally:
             event.remove(self.engine, "before_cursor_execute", capture)
         self.assertEqual(len(result.items), 32)
-        self.assertEqual(len(statements), 4)
+        # One batched reference-file query per page (Phase 2) - still constant.
+        self.assertEqual(len(statements), 5)
         self.assertTrue(all("v2_template" in statement for statement in statements))
         self.assertTrue(all("execution_template" not in statement for statement in statements))
 

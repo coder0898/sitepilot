@@ -28,6 +28,8 @@ class TemplateAuditAction:
     TEMPLATE_VERSION_PUBLISHED = "template_version_published"
     TEMPLATE_VERSION_ARCHIVED = "template_version_archived"
     TEMPLATE_DRAFT_DELETED = "template_draft_deleted"
+    TEMPLATE_REFERENCE_FILE_ADDED = "template_reference_file_added"
+    TEMPLATE_REFERENCE_FILE_REMOVED = "template_reference_file_removed"
 
     ALL = frozenset(
         {
@@ -48,6 +50,8 @@ class TemplateAuditAction:
             TEMPLATE_VERSION_PUBLISHED,
             TEMPLATE_VERSION_ARCHIVED,
             TEMPLATE_DRAFT_DELETED,
+            TEMPLATE_REFERENCE_FILE_ADDED,
+            TEMPLATE_REFERENCE_FILE_REMOVED,
         }
     )
 

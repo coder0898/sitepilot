@@ -18,6 +18,7 @@ from app.repositories.template_task_repository import TemplateTaskRepository
 from app.routes.templates_v2 import router
 from app.services.template_audit import TemplateAuditAction
 from app.services.template_mutation_access import concurrency_token
+from tests.template_reference_tables import TEMPLATE_REFERENCE_TABLES
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -52,7 +53,7 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
             V2TemplateTask.__table__,
             V2TemplateTaskDependency.__table__,
             V2TemplateExternalGate.__table__,
-            V2TemplateExternalGateTask.__table__,
+            V2TemplateExternalGateTask.__table__, *TEMPLATE_REFERENCE_TABLES,
         ):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)

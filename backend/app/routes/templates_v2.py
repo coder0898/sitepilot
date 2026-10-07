@@ -1,10 +1,12 @@
 """V2 template query and controlled mutation APIs."""
 from __future__ import annotations
 
+import io
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -23,11 +25,14 @@ from app.services.template_mutation_access import (
     require_template_mutator,
 )
 from app.services.template_queries import TemplateQueryService
+from app.services.template_reference_files import TemplateReferenceFileService
 from app.template_schemas import (
     PaginationMetadata,
     TemplateDependencyListResponse,
     TemplateGateListResponse,
     TemplateListResponse,
+    TemplateReferenceFileDeleteResponse,
+    TemplateReferenceFileMutationResponse,
     TemplateTaskListResponse,
     TemplateVersionResponse,
 )
@@ -416,4 +421,87 @@ def list_template_gates(
         pagination=PaginationMetadata.from_result(
             page=result.page, page_size=result.page_size, total=result.total
         ),
+    )
+
+
+# ---- reference files (Admin-provided material, never execution evidence) ----
+
+_REFERENCE_TARGETS = {"tasks": "task", "gates": "gate"}
+
+
+def _reference_target(kind: str) -> str:
+    return _REFERENCE_TARGETS[kind]
+
+
+@router.post(
+    "/versions/{version_id}/{kind}/{owner_id}/reference-files",
+    response_model=TemplateReferenceFileMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_template_reference_file(
+    version_id: uuid.UUID,
+    kind: Literal["tasks", "gates"],
+    owner_id: uuid.UUID,
+    revision_token: str = Form(min_length=1, max_length=100),
+    description: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateReferenceFileMutationResponse:
+    # Read at most one byte past the cap so an oversized upload is refused
+    # without holding an arbitrarily large body in memory.
+    data = await file.read(10 * 1024 * 1024 + 1)
+    result = TemplateReferenceFileService(db).add(
+        actor, version_id, _reference_target(kind), owner_id,
+        data=data, filename=file.filename, content_type=file.content_type,
+        description=description, revision_token=revision_token,
+    )
+    return TemplateReferenceFileMutationResponse(**result)
+
+
+@router.delete(
+    "/versions/{version_id}/{kind}/{owner_id}/reference-files/{reference_id}",
+    response_model=TemplateReferenceFileDeleteResponse,
+)
+def remove_template_reference_file(
+    version_id: uuid.UUID,
+    kind: Literal["tasks", "gates"],
+    owner_id: uuid.UUID,
+    reference_id: uuid.UUID,
+    revision_token: str = Query(min_length=1, max_length=100),
+    actor: User = Depends(require_template_mutator),
+    db: Session = Depends(get_db),
+) -> TemplateReferenceFileDeleteResponse:
+    result = TemplateReferenceFileService(db).remove(
+        actor, version_id, _reference_target(kind), owner_id, reference_id, revision_token=revision_token,
+    )
+    return TemplateReferenceFileDeleteResponse(**result)
+
+
+@router.get("/versions/{version_id}/{kind}/{owner_id}/reference-files/{reference_id}")
+def download_template_reference_file(
+    version_id: uuid.UUID,
+    kind: Literal["tasks", "gates"],
+    owner_id: uuid.UUID,
+    reference_id: uuid.UUID,
+    actor: User = Depends(require_template_reader),
+    db: Session = Depends(get_db),
+):
+    file_object, content = TemplateReferenceFileService(db).download(
+        actor, version_id, _reference_target(kind), owner_id, reference_id,
+    )
+    return reference_file_response(file_object, content)
+
+
+def reference_file_response(file_object, content: bytes) -> StreamingResponse:
+    """Always an attachment with sniffing off, like evidence downloads."""
+    # Drop quotes, backslashes and line breaks so the header cannot be split.
+    safe_filename = "".join(ch for ch in file_object.original_filename if ch not in ('"', chr(92), chr(10), chr(13)))
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=file_object.mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )

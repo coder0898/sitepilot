@@ -19,6 +19,7 @@ from app.services.template_audit import TemplateAuditAction
 from app.services.template_mutation_access import concurrency_token
 from app.services.template_publish_service import compute_persisted_content_hash
 from app.repositories.template_validation_repository import TemplateValidationRepository
+from tests.template_reference_tables import TEMPLATE_REFERENCE_TABLES
 from app.template_models import (
     V2Template, V2TemplateTask, V2TemplateVersion,
     V2TemplateTaskDependency, V2TemplateExternalGate, V2TemplateExternalGateTask,
@@ -36,7 +37,7 @@ class TemplatePublishApiTests(unittest.TestCase):
             dbapi_connection.execute("ATTACH DATABASE ':memory:' AS siteops_v2")
             dbapi_connection.create_function("btrim", 1, lambda value: value.strip() if value is not None else None)
 
-        for table in (V2Template.__table__, V2TemplateVersion.__table__, V2TemplateTask.__table__, V2TemplateTaskDependency.__table__, V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__):
+        for table in (V2Template.__table__, V2TemplateVersion.__table__, V2TemplateTask.__table__, V2TemplateTaskDependency.__table__, V2TemplateExternalGate.__table__, V2TemplateExternalGateTask.__table__, *TEMPLATE_REFERENCE_TABLES):
             table.create(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         self._seed()

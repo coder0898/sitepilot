@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.repositories.template_reference_repository import reference_files_by_owner
 from app.template_models import (
     V2Template,
     V2TemplateExternalGate,
@@ -25,6 +26,8 @@ class TemplateValidationAggregate:
     dependencies: list[V2TemplateTaskDependency]
     gates: list[V2TemplateExternalGate]
     mappings: list[V2TemplateExternalGateTask]
+    # Reference files keyed by template task id or gate id.
+    reference_files: dict[uuid.UUID, list[dict]] = field(default_factory=dict)
 
 
 class TemplateValidationRepository:
@@ -59,4 +62,8 @@ class TemplateValidationRepository:
             .where(V2TemplateExternalGateTask.gate_id.in_(gate_ids))
             .order_by(V2TemplateExternalGateTask.gate_id, V2TemplateExternalGateTask.template_task_id, V2TemplateExternalGateTask.id)
         )) if gate_ids else []
-        return TemplateValidationAggregate(template, version, tasks, dependencies, gates, mappings)
+        reference_files = {
+            **reference_files_by_owner(self.db, "task", [task.id for task in tasks]),
+            **reference_files_by_owner(self.db, "gate", gate_ids),
+        }
+        return TemplateValidationAggregate(template, version, tasks, dependencies, gates, mappings, reference_files)

@@ -25,6 +25,14 @@ def _clean(value: Any) -> Any:
     return value
 
 
+def _reference_snapshot(aggregate: TemplateValidationAggregate, owner_id: uuid.UUID) -> list[list[Any]]:
+    """Reference files by content, so the locked version records exactly which files it carries."""
+    return sorted(
+        [ref["checksum"], _clean(ref["filename"]), _clean(ref["description"])]
+        for ref in aggregate.reference_files.get(owner_id, [])
+    )
+
+
 def normalized_content(aggregate: TemplateValidationAggregate) -> dict[str, Any]:
     """Build a stable semantic representation from persisted aggregate content."""
     task_by_id = {task.id: task.code.strip() for task in aggregate.tasks}
@@ -42,6 +50,7 @@ def normalized_content(aggregate: TemplateValidationAggregate) -> dict[str, Any]
             "task_class": _clean(t.task_class), "task_kind": _clean(t.task_kind),
             "evidence_required": t.evidence_required, "duration_days": t.duration_days,
             "evidence_instructions": _clean(t.evidence_instructions),
+            "reference_files": _reference_snapshot(aggregate, t.id),
         }
         for t in sorted(aggregate.tasks, key=lambda x: (x.sequence_no, x.code, str(x.id)))
     ]
@@ -61,6 +70,7 @@ def normalized_content(aggregate: TemplateValidationAggregate) -> dict[str, Any]
             "required_by_type": _clean(g.required_by_type), "required_by_value": _clean(g.required_by_value),
             "impact": _clean(g.impact), "mapping_classification": g.mapping_classification,
             "evidence_instructions": _clean(g.evidence_instructions),
+            "reference_files": _reference_snapshot(aggregate, g.id),
             "broad_mapping_text": _clean(g.broad_mapping_text),
             "requires_configuration": g.requires_configuration, "sequence_no": g.sequence_no,
             "exact_task_codes": sorted(mappings_by_gate.get(g.id, [])) if g.mapping_classification == "exact" else [],
