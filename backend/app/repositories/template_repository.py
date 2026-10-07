@@ -306,7 +306,11 @@ def _gate_validation_issues(
 
     required_type = gate.required_by_type
     required_value = gate.required_by_value
-    if (
+    # `before_linked_tasks` is complete without a value: the date comes from
+    # the linked tasks (project_gate_due_date.resolve_gate_due_at).
+    if required_type == "before_linked_tasks":
+        pass
+    elif (
         not isinstance(required_type, str)
         or not required_type.strip()
         or not isinstance(required_value, str)

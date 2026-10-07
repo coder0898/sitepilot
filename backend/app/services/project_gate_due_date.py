@@ -24,7 +24,7 @@ its source data does not support one (e.g. a manually-created gate with no
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -38,13 +38,23 @@ def resolve_gate_due_at(
     required_by_type: str | None,
     required_by_value: str | None,
     project_start_date: date | None,
+    *,
+    earliest_linked_start: date | None = None,
 ) -> date | None:
     """Resolve one gate's due-by rule into a calendar date, or None.
 
     Pure - takes plain values rather than a row - so it can be called both
     while `project_baseline.py` is still building an in-flight approval and
     from the backfill below, which joins back to already-persisted rows.
+
+    `before_linked_tasks` carries no value of its own: the gate is due the
+    day before the earliest planned start among the tasks it is required
+    before, which only the caller knows (`earliest_linked_start`). With no
+    such date - no linked task in this project, or none with a start date -
+    it resolves to None like every other unresolvable rule.
     """
+    if required_by_type == "before_linked_tasks":
+        return earliest_linked_start - timedelta(days=1) if earliest_linked_start else None
     if not required_by_type or not required_by_value:
         return None
     if required_by_type == "date":

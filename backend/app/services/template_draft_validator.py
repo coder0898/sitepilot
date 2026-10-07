@@ -45,6 +45,33 @@ def _issue(issues: list[TemplateValidationIssue], code: str, group: str, entity_
     ))
 
 
+NO_DUE_DATE_MESSAGE = "This approval has no due date. Date-based overdue reminders will not apply."
+
+
+def _check_gate_due_date(issues, gate, links, task_by_id, duration_days, p: str) -> None:
+    """Mirror of project_gate_due_date.resolve_gate_due_at: a rule that can
+    never produce a date blocks publication; a gate with no usable rule
+    (including imported "source_text" wording) only warns - the Admin can
+    still set a due date when assigning it on a project."""
+    rule, value = getattr(gate, "required_by_type", None), getattr(gate, "required_by_value", None)
+    if rule == "project_day":
+        day = int(value) if isinstance(value, str) and value.strip().isdigit() else None
+        if day is None or not 1 <= day <= duration_days:
+            _issue(issues, "gate_required_by_invalid", "gates", "gate", f"{p}.required_by_value",
+                   f"Needed-by day must be between Day 1 and Day {duration_days}.", entity_id=gate.id, value=value)
+    elif rule == "before_linked_tasks":
+        if gate.mapping_classification != "exact" or not links:
+            _issue(issues, "gate_required_by_invalid", "gates", "gate", f"{p}.required_by_type",
+                   "Needed before its tasks, but no tasks are linked to this approval.", entity_id=gate.id)
+        elif not any(getattr(task_by_id.get(link.template_task_id), "planned_start_day", None) for link in links):
+            _issue(issues, "gate_due_date_missing", "gates", "gate", f"{p}.required_by_type",
+                   "None of the linked tasks has a start day, so this approval gets no due date. "
+                   "Date-based overdue reminders will not apply.", blocking=False, entity_id=gate.id)
+    elif rule != "date":
+        _issue(issues, "gate_due_date_missing", "gates", "gate", f"{p}.required_by_type",
+               NO_DUE_DATE_MESSAGE, blocking=False, entity_id=gate.id, value=rule)
+
+
 def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime | None = None) -> TemplateValidationResponse:
     issues: list[TemplateValidationIssue] = []
     t, v = a.template, a.version
@@ -109,6 +136,7 @@ def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime
     if visited != len(indegree):
         _issue(issues, "dependency_cycle", "dependencies", "version", "dependencies", "Dependency graph must remain acyclic.", entity_id=v.id, involved_task_ids=sorted(str(x) for x,d in indegree.items() if d>0))
 
+    task_by_id = {x.id: x for x in a.tasks}
     gate_ids = {g.id for g in a.gates}
     gate_code_counts = Counter(g.code.strip().upper() if isinstance(g.code, str) else g.code for g in a.gates)
     gate_seq_counts = Counter(g.sequence_no for g in a.gates)
@@ -122,6 +150,7 @@ def validate_aggregate(a: TemplateValidationAggregate, *, validated_at: datetime
         if _blank(gate.approval_name): _issue(issues, "gate_name_required", "gates", "gate", f"{p}.approval_name", "Gate approval name is required.", entity_id=gate.id)
         if not isinstance(gate.sequence_no,int) or gate.sequence_no<=0: _issue(issues, "gate_sequence_invalid", "gates", "gate", f"{p}.sequence_no", "Gate sequence must be positive.", entity_id=gate.id)
         if gate_seq_counts[gate.sequence_no] > 1: _issue(issues, "gate_sequence_duplicate", "gates", "gate", f"{p}.sequence_no", "Gate sequence must be unique within the version.", entity_id=gate.id)
+        _check_gate_due_date(issues, gate, links, task_by_id, v.duration_days, p)
         if gate.mapping_classification not in SUPPORTED_GATE_CLASSIFICATION:
             _issue(issues, "gate_classification_invalid", "gates", "gate", f"{p}.mapping_classification", "Gate mapping classification is unsupported.", entity_id=gate.id); continue
         if gate.mapping_classification == "exact":

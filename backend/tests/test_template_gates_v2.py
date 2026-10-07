@@ -306,6 +306,11 @@ class TemplateGateApiTests(unittest.TestCase):
         self.assertIn("requires_configuration_missing", broad_issues)
         unmapped = SimpleNamespace(**{**exact.__dict__, "mapping_classification": "unmapped", "requires_configuration": True})
         self.assertIn("unmapped_gate", _gate_validation_issues(unmapped, []))
+        # "Before the linked tasks" takes its date from those tasks, so it needs no value.
+        linked_rule = SimpleNamespace(**{**exact.__dict__, "required_by_type": "before_linked_tasks", "required_by_value": None})
+        linked_task = SimpleNamespace(id=uuid.uuid4(), template_version_id=version_id)
+        self.assertNotIn("invalid_required_by", _gate_validation_issues(
+            linked_rule, [(SimpleNamespace(template_task_id=linked_task.id), linked_task)]))
 
     def test_gate_endpoint_uses_constant_queries_without_n_plus_one(self):
         statements = []
