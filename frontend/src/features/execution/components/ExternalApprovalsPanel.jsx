@@ -7,6 +7,7 @@ import { projectsApi } from "../../../api/projectsApi";
 import { taskExecutionApi } from "../../../api/taskExecutionApi";
 import { Button, EmptyState, Field, Input, LoadingSpinner, Modal, Pill, Select, Textarea } from "../../../components/ui";
 import { formatDateShort, initials } from "../../../utils/format";
+import { ReferenceMaterial } from "./ReferenceMaterial";
 
 // Plan: External Approval Gate Assignment & Evidence Lifecycle (U6), redesigned
 // as "External Approvals Control" - an Admin + Internal Employee workflow only
@@ -597,6 +598,8 @@ function ReviewPanel({ projectId, approval, mayManage, user, candidates, tasksBy
         <DueDate approval={approval}/>
       </div>
       <CoveredTasks approval={approval} tasksById={tasksById}/>
+      <ReferenceMaterial className="border-t border-slate-100 pt-3" instructions={approval.evidence_instructions} files={approval.reference_files}
+        onDownload={file => taskExecutionApi.downloadApprovalReference(projectId, approval.id, file.id)}/>
 
       {mayManage && <div className="mt-1 flex flex-wrap gap-2">
         {canAssign && <Button size="sm" onClick={() => onAssign(approval)}>Assign</Button>}

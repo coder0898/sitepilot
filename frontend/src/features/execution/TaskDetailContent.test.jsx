@@ -4,7 +4,7 @@ import { taskExecutionApi } from "../../api/taskExecutionApi";
 import { actorProjectRoles, TaskDetailContent } from "./components/TaskDetailContent";
 
 vi.mock("../../api/taskExecutionApi", () => ({ taskExecutionApi: {
-  detail: vi.fn(), listExternalApprovals: vi.fn(), transitionStatus: vi.fn(), submitProgress: vi.fn(), downloadEvidence: vi.fn(),
+  detail: vi.fn(), listExternalApprovals: vi.fn(), transitionStatus: vi.fn(), submitProgress: vi.fn(), downloadEvidence: vi.fn(), downloadTaskReference: vi.fn(),
   verify: vi.fn(), approve: vi.fn(), logBlocker: vi.fn(), resolveBlocker: vi.fn(), logDelay: vi.fn(),
   assignSupport: vi.fn(), endSupportAssignment: vi.fn(),
 } }));
@@ -61,6 +61,8 @@ describe("TaskDetailContent - Action Forms tab", () => {
   it("loads and shows the task's detail on mount", async () => {
     renderDetail({ activeTab: "overview" });
     expect(await screen.findByText("Set up the site office and hoarding.")).toBeInTheDocument();
+    // No proof instructions or reference material on this task: no empty block.
+    expect(screen.queryByText("Reference material")).not.toBeInTheDocument();
     expect(taskExecutionApi.detail).toHaveBeenCalledWith("p1", "t1");
   });
 
@@ -579,5 +581,32 @@ describe("TaskDetailContent - Activity Log tab", () => {
     expect(await screen.findByText("Status changed: Planned → Ready")).toBeInTheDocument();
     expect(screen.getByText("Progress update")).toBeInTheDocument();
     expect(screen.getByText("Member")).toBeInTheDocument(); // resolved from submitted_by via project.memberships
+  });
+});
+
+describe("reference material from the template", () => {
+  const withMaterial = {
+    ...detail,
+    evidence_instructions: "Photos of the levelled floor from two corners.",
+    reference_files: [{ id: "r1", file_id: "f1", filename: "flooring-spec.pdf", mime_type: "application/pdf", size_bytes: 2048, description: "Approved flooring spec" }],
+  };
+
+  it("shows what proof is needed and the reference files, separate from evidence", async () => {
+    taskExecutionApi.detail.mockResolvedValue(withMaterial);
+    renderDetail({ activeTab: "overview" });
+    expect(await screen.findByText("Photos of the levelled floor from two corners.")).toBeInTheDocument();
+    expect(screen.getByText("What proof is needed")).toBeInTheDocument();
+    expect(screen.getByText("Reference material")).toBeInTheDocument();
+    expect(screen.getByText("Approved flooring spec")).toBeInTheDocument();
+  });
+
+  it("downloads a reference file through the authenticated project route", async () => {
+    taskExecutionApi.detail.mockResolvedValue(withMaterial);
+    taskExecutionApi.downloadTaskReference.mockResolvedValue({ blob: new Blob(["%PDF"]), filename: "flooring-spec.pdf" });
+    URL.createObjectURL = vi.fn(() => "blob:ref");
+    URL.revokeObjectURL = vi.fn();
+    renderDetail({ activeTab: "overview" });
+    fireEvent.click(await screen.findByRole("button", { name: /download flooring-spec.pdf/i }));
+    await waitFor(() => expect(taskExecutionApi.downloadTaskReference).toHaveBeenCalledWith("p1", "t1", "r1"));
   });
 });
