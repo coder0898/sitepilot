@@ -48,20 +48,35 @@ describe("draft task authoring",()=>{
     denied.unmount();
   });
 
+  it("labels each task with its class and hides the approval-task filter when none exist",async()=>{
+    templatesApi.listTasks.mockResolvedValue(page([tasks[0],{...tasks[1],task_class:"class_a"}]));
+    view();
+    expect(within(await screen.findByTestId("draft-task-T002")).getByText("Class A")).toBeInTheDocument();
+    expect(within(screen.getByTestId("draft-task-T001")).getByText("Standard")).toBeInTheDocument();
+    expect(screen.queryByRole("tablist",{name:/filter tasks/i})).not.toBeInTheDocument();
+  });
+
+  it("keeps the approval-task filter while an older approval task exists",async()=>{
+    templatesApi.listTasks.mockResolvedValue(page([tasks[0],{...tasks[1],task_kind:"approval_gate"}]));
+    view();
+    expect(within(await screen.findByTestId("draft-task-T002")).getByText("Approval task")).toBeInTheDocument();
+    expect(screen.getByRole("tablist",{name:/filter tasks/i})).toBeInTheDocument();
+  });
+
   it("validates execution days and creates a task with the current revision",async()=>{
     view(); await screen.findByTestId("draft-task-T001");
     fireEvent.click(screen.getByRole("button",{name:/add task/i}));
-    const dialog=screen.getByRole("dialog",{name:/add draft task/i});
+    const dialog=screen.getByRole("dialog",{name:/add task/i});
     fireEvent.change(within(dialog).getByLabelText("Task code"),{target:{value:"T003"}});
-    fireEvent.change(within(dialog).getByLabelText("Task title"),{target:{value:"New task"}});
-    fireEvent.change(within(dialog).getByLabelText("Planned start day"),{target:{value:"46"}});
-    fireEvent.change(within(dialog).getByLabelText("Planned end day"),{target:{value:"44"}});
+    fireEvent.change(within(dialog).getByLabelText("Task name"),{target:{value:"New task"}});
+    fireEvent.change(within(dialog).getByLabelText("Starts on day"),{target:{value:"46"}});
+    fireEvent.change(within(dialog).getByLabelText("Ends on day"),{target:{value:"44"}});
     fireEvent.click(within(dialog).getByRole("button",{name:/add task/i}));
     expect(await within(dialog).findByText("Use Day 1-45.")).toBeInTheDocument();
     expect(within(dialog).getByText("End day cannot precede start day.")).toBeInTheDocument();
     expect(templatesApi.createTask).not.toHaveBeenCalled();
-    fireEvent.change(within(dialog).getByLabelText("Planned start day"),{target:{value:"2"}});
-    fireEvent.change(within(dialog).getByLabelText("Planned end day"),{target:{value:"3"}});
+    fireEvent.change(within(dialog).getByLabelText("Starts on day"),{target:{value:"2"}});
+    fireEvent.change(within(dialog).getByLabelText("Ends on day"),{target:{value:"3"}});
     fireEvent.click(within(dialog).getByRole("button",{name:/add task/i}));
     await waitFor(()=>expect(templatesApi.createTask).toHaveBeenCalledWith("draft-1",expect.objectContaining({code:"T003",sequence_no:3,planned_start_day:2,planned_end_day:3,revision_token:"rev-1"})));
   });
@@ -69,8 +84,8 @@ describe("draft task authoring",()=>{
   it("edits a task and sends the revision token",async()=>{
     view(); await screen.findByTestId("draft-task-T002");
     fireEvent.click(screen.getAllByRole("button",{name:"Edit T002"})[0]);
-    const dialog=screen.getByRole("dialog",{name:/edit draft task/i});
-    fireEvent.change(within(dialog).getByLabelText("Task title"),{target:{value:"Updated work"}});
+    const dialog=screen.getByRole("dialog",{name:/edit task/i});
+    fireEvent.change(within(dialog).getByLabelText("Task name"),{target:{value:"Updated work"}});
     fireEvent.click(within(dialog).getByRole("button",{name:/save task/i}));
     await waitFor(()=>expect(templatesApi.updateTask).toHaveBeenCalledWith("draft-1","task-2",expect.objectContaining({title:"Updated work",revision_token:"rev-1"})));
   });
@@ -97,8 +112,8 @@ describe("draft task authoring",()=>{
     templatesApi.updateTask.mockRejectedValue({status:409,message:"Conflict",details:{detail:{code:"stale_template_version"}}});
     view(); await screen.findByTestId("draft-task-T002");
     fireEvent.click(screen.getAllByRole("button",{name:"Edit T002"})[0]);
-    const dialog=screen.getByRole("dialog",{name:/edit draft task/i});
-    fireEvent.change(within(dialog).getByLabelText("Task title"),{target:{value:"Changed"}});
+    const dialog=screen.getByRole("dialog",{name:/edit task/i});
+    fireEvent.change(within(dialog).getByLabelText("Task name"),{target:{value:"Changed"}});
     fireEvent.click(within(dialog).getByRole("button",{name:/save task/i}));
     expect(await within(dialog).findByText(/changed in another session/i)).toBeInTheDocument();
     expect(dialog).toBeInTheDocument();
@@ -108,7 +123,7 @@ describe("draft task authoring",()=>{
     const confirm=vi.spyOn(window,"confirm").mockReturnValue(false);
     view(); await screen.findByTestId("draft-task-T001");
     fireEvent.click(screen.getByRole("button",{name:/add task/i}));
-    const dialog=screen.getByRole("dialog",{name:/add draft task/i});
+    const dialog=screen.getByRole("dialog",{name:/add task/i});
     fireEvent.change(within(dialog).getByLabelText("Task code"),{target:{value:"T004"}});
     fireEvent.click(within(dialog).getByRole("button",{name:/cancel/i}));
     expect(confirm).toHaveBeenCalledWith("Discard unsaved task changes?");

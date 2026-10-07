@@ -11,7 +11,7 @@ import { TemplateGateEditorModal } from "./TemplateGateEditorModal";
 import { gateMappingLabel } from "./TemplateGateCard";
 import { TemplateValidationPublishPanel } from "./TemplateValidationPublishPanel";
 import { ORG_ADMIN_ROLES } from "../../../utils/constants";
-import { nextStructuredCode } from "./templateAuthoringOptions";
+import { nextStructuredCode, TASK_KIND_LABELS } from "./templateAuthoringOptions";
 
 function apiMessage(error) {
   const detail = error?.details?.detail;
@@ -46,13 +46,18 @@ async function loadEveryTask(versionId) {
   return [first, ...pages].flatMap(page => page.items);
 }
 
+function taskTypeLabel(task) {
+  if (task.task_kind === "approval_gate" || task.task_kind === "milestone") return TASK_KIND_LABELS[task.task_kind];
+  return task.task_class === "class_a" ? "Class A" : "Standard";
+}
+
 function TaskRow({ task, index, count, disableMove, onEdit, onDelete, onMove }) {
-  const isGate = task.task_kind === "approval_gate";
+  const typeLabel = taskTypeLabel(task);
   return <article data-testid={"draft-task-" + task.code} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_28px_rgba(15,23,42,.05)]">
     <div className="flex items-start gap-3">
       <span className="mt-0.5 hidden text-slate-300 sm:block"><GripVertical size={18}/></span>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{task.code}</span><Pill tone={task.applicability === "conditional" ? "orange" : "blue"}>{task.applicability}</Pill><Pill tone={isGate ? "violet" : "gray"}>{isGate ? "External approval gate" : "Standard work"}</Pill><span className="text-xs font-bold text-slate-400">Sequence {index + 1}</span></div>
+        <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{task.code}</span><Pill tone={typeLabel === "Class A" ? "red" : typeLabel === "Standard" ? "gray" : "violet"}>{typeLabel}</Pill>{task.applicability === "conditional" && <Pill tone="orange">Only when it applies</Pill>}</div>
         <h3 className="mt-2 text-sm font-black leading-5 text-slate-950">{task.title}</h3>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-slate-500"><span>{formatPlannedDays(task)}</span><span>{task.phase || "No phase"}</span><span>{task.category || "No category"}</span></div>
       </div>
@@ -306,12 +311,13 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     {activeEditorTab === "tasks" ? <>
       <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><BookOpenCheck className="mt-0.5 shrink-0 text-amber-700" size={19}/><div><strong className="text-amber-950">Tasks · Draft authoring</strong><p className="mt-1 text-xs font-semibold leading-5 text-amber-800">Create, edit and order this working copy. Dependencies and gate references are never removed automatically.</p></div></div><Button className="w-full sm:w-auto" onClick={openAdd}><Plus size={17}/> Add task</Button></div>
       {mutationError && <Alert tone="danger" role="alert" className="items-center"><div><strong>Draft update failed</strong><span className="mt-1 block">{apiMessage(mutationError)}</span></div><Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={15}/> Refresh draft</Button></Alert>}
-      {tasks.length > 0 && <div className="grid grid-cols-1 gap-2 rounded-2xl border border-slate-200 bg-white p-2 sm:grid-cols-3" role="tablist" aria-label="Filter tasks by kind">
+      {/* Approval tasks are an older task type; the filter only appears while one exists. */}
+      {gateTaskCount > 0 && <div className="grid grid-cols-1 gap-2 rounded-2xl border border-slate-200 bg-white p-2 sm:grid-cols-3" role="tablist" aria-label="Filter tasks by type">
         <Button variant={taskKindFilter === "all" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("all")}>All ({tasks.length})</Button>
-        <Button variant={taskKindFilter === "work" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("work")}>Standard work ({standardTaskCount})</Button>
-        <Button variant={taskKindFilter === "approval_gate" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("approval_gate")}>External approval gate ({gateTaskCount})</Button>
+        <Button variant={taskKindFilter === "work" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("work")}>Site work ({standardTaskCount})</Button>
+        <Button variant={taskKindFilter === "approval_gate" ? "primary" : "ghost"} size="sm" onClick={() => setTaskKindFilter("approval_gate")}>Approval tasks ({gateTaskCount})</Button>
       </div>}
-      {tasks.length > 0 && taskKindFilter !== "all" && <p className="text-xs font-semibold text-slate-500">Reordering is only available from the "All" tab, since sequence spans both kinds.</p>}
+      {gateTaskCount > 0 && taskKindFilter !== "all" && <p className="text-xs font-semibold text-slate-500">Switch to "All" to change the task order.</p>}
       {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading draft tasks..."/></div> : loadError ? <Alert tone="danger" className="items-center"><div><strong>Draft tasks unavailable</strong><span className="mt-1 block">{apiMessage(loadError)}</span></div><Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={15}/> Retry</Button></Alert> : tasks.length===0 ? <EmptyState className="min-h-64 bg-white" title="This draft has no tasks" description="Add the first controlled task to begin authoring." action={<Button onClick={openAdd}><Plus size={16}/> Add first task</Button>}/> : visibleTasks.length===0 ? <EmptyState className="min-h-64 bg-white" title="No tasks of this kind yet" description="Switch tabs or add a task and set its kind."/> : <div className="grid gap-3">{visibleTasks.map(task=>{const index=tasks.indexOf(task);return <TaskRow key={task.id} task={task} index={index} count={tasks.length} disableMove={taskKindFilter !== "all"} onEdit={openEdit} onDelete={task=>{setDeleteTask(task);setDeleteError(null);}} onMove={move}/>;})}</div>}
       {!loading && tasks.length>0 && <footer className="sticky bottom-3 z-10 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-[0_18px_50px_rgba(15,23,42,.16)] backdrop-blur sm:flex-row sm:items-center sm:justify-between"><div className="px-1"><strong className="text-sm text-slate-950">{tasks.length} draft task{tasks.length===1?"":"s"}</strong><p className="mt-0.5 text-xs font-semibold text-slate-500">{reorderDirty ? "Order changed — save to create a new revision." : "Sequence is saved."}</p></div><div className="grid grid-cols-2 gap-2"><Button variant="secondary" disabled={!reorderDirty||savingOrder} onClick={()=>{const restored=savedOrder.map(id=>tasks.find(task=>task.id===id)).filter(Boolean);setTasks(restored);}}>Cancel order</Button><Button loading={savingOrder} disabled={!reorderDirty} onClick={saveOrder}><Save size={16}/> Save order</Button></div></footer>}
     </> : activeEditorTab === "dependencies" ? <>
