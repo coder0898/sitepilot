@@ -8,7 +8,6 @@ import { TemplateTaskEditorModal } from "./TemplateTaskEditorModal";
 import { TemplateDependencyEditorModal } from "./TemplateDependencyEditorModal";
 import { dependencyTypeLabel } from "./TemplateDependencyCard";
 import { TemplateGateEditorModal } from "./TemplateGateEditorModal";
-import { gateMappingLabel } from "./TemplateGateCard";
 import { TemplateValidationPublishPanel } from "./TemplateValidationPublishPanel";
 import { ORG_ADMIN_ROLES } from "../../../utils/constants";
 import { nextStructuredCode, TASK_KIND_LABELS } from "./templateAuthoringOptions";
@@ -133,11 +132,37 @@ function DeleteDependencyModal({ dependency, busy, error, onClose, onConfirm }) 
   </Modal>;
 }
 
-function GateRow({ gate, onEdit, onDelete }) {
- const broad=gate.mapping_classification==="broad_text";
- return <article data-testid={`draft-gate-${gate.id}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_28px_rgba(15,23,42,.05)]"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{gate.code}</span><Pill tone={gate.mapping_classification==="exact"?"blue":"orange"}>{gateMappingLabel(gate.mapping_classification)}</Pill>{gate.requires_configuration&&<Pill tone="orange">Requires configuration</Pill>}</div><h3 className="mt-2 text-sm font-black text-slate-950">{gate.approval_name}</h3><p className="mt-1 text-xs font-semibold text-slate-500">{gate.external_party||"External party not specified"}</p>{broad&&<div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><strong>Broad original text</strong><p className="mt-1 font-semibold">{gate.broad_mapping_text}</p><p className="mt-1">No exact links inferred.</p></div>}{gate.mapping_classification==="exact"&&<p className="mt-3 text-xs font-bold text-slate-600">{gate.affected_tasks?.length||gate.task_ids?.length||0} explicit task mapping(s)</p>}</div><div className="hidden gap-1 sm:flex"><Button size="icon" variant="secondary" aria-label={`Edit gate ${gate.code}`} onClick={()=>onEdit(gate)}><PencilLine size={16}/></Button><Button size="icon" variant="danger" aria-label={`Delete gate ${gate.code}`} onClick={()=>onDelete(gate)}><Trash2 size={16}/></Button></div></div><div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 sm:hidden"><Button size="sm" variant="secondary" aria-label={`Edit gate ${gate.code}`} onClick={()=>onEdit(gate)}><PencilLine size={15}/> Edit</Button><Button size="sm" variant="danger" aria-label={`Delete gate ${gate.code}`} onClick={()=>onDelete(gate)}><Trash2 size={15}/> Delete</Button></div></article>;
+function gateDueDateText(gate) {
+  if (gate.required_by_type === "before_linked_tasks") return "Due the day before the first of them starts";
+  if (gate.required_by_type === "project_day") return `Due by day ${gate.required_by_value}`;
+  return "No due date";
 }
-function DeleteGateModal({gate,busy,error,onClose,onConfirm}){return <Modal title={`Delete ${gate.code}?`} subtitle="Only this gate and its own mapping rows will be removed." onClose={onClose} className="sm:max-w-lg"><div className="grid gap-5">{error&&<Alert tone="danger" role="alert"><AlertTriangle size={18}/><div><strong>Gate was not deleted</strong><span className="mt-1 block">{apiMessage(error)}</span></div></Alert>}<Alert tone="warning"><ShieldAlert size={18}/><span>Tasks are not deleted or changed by this action.</span></Alert><p className="text-sm text-slate-600"><strong className="text-slate-950">{gate.approval_name}</strong></p><div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="secondary" onClick={onClose}>Cancel</Button><Button variant="danger" loading={busy} onClick={onConfirm}><Trash2 size={16}/> Delete gate</Button></div></div></Modal>}
+
+function GateRow({ gate, onEdit, onDelete }) {
+  const linkedCount = gate.mapping_classification === "exact" ? (gate.affected_tasks?.length || gate.task_ids?.length || 0) : 0;
+  const imported = gate.mapping_classification === "broad_text";
+  const noDueDate = gateDueDateText(gate) === "No due date";
+  const actions = size => <>
+    <Button size={size} variant="secondary" aria-label={`Edit approval ${gate.code}`} onClick={() => onEdit(gate)}><PencilLine size={15}/>{size === "sm" && " Edit"}</Button>
+    <Button size={size} variant="danger" aria-label={`Delete approval ${gate.code}`} onClick={() => onDelete(gate)}><Trash2 size={15}/>{size === "sm" && " Delete"}</Button>
+  </>;
+  return <article data-testid={`draft-gate-${gate.id}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_28px_rgba(15,23,42,.05)]">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <h3 className="text-sm font-black text-slate-950">{gate.approval_name}</h3>
+        <p className="mt-1 text-xs font-semibold text-slate-500">{gate.external_party ? `Approved by ${gate.external_party}` : "Who approves is not set"}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {linkedCount > 0 ? <Pill tone="blue">Required before {linkedCount} task{linkedCount === 1 ? "" : "s"}</Pill> : <Pill tone="orange">Not linked to any task</Pill>}
+          <Pill tone={noDueDate ? "orange" : "gray"}>{gateDueDateText(gate)}</Pill>
+        </div>
+        {imported && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><strong>Imported wording</strong><p className="mt-1 font-semibold">{gate.broad_mapping_text}</p></div>}
+      </div>
+      <div className="hidden gap-1 sm:flex">{actions("icon")}</div>
+    </div>
+    <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 sm:hidden">{actions("sm")}</div>
+  </article>;
+}
+function DeleteGateModal({gate,busy,error,onClose,onConfirm}){return <Modal title={`Delete ${gate.code}?`} subtitle="Only this prerequisite approval is removed." onClose={onClose} className="sm:max-w-lg"><div className="grid gap-5">{error&&<Alert tone="danger" role="alert"><AlertTriangle size={18}/><div><strong>Approval was not deleted</strong><span className="mt-1 block">{apiMessage(error)}</span></div></Alert>}<Alert tone="warning"><ShieldAlert size={18}/><span>Tasks are not deleted or changed by this action.</span></Alert><p className="text-sm text-slate-600"><strong className="text-slate-950">{gate.approval_name}</strong></p><div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="secondary" onClick={onClose}>Cancel</Button><Button variant="danger" loading={busy} onClick={onConfirm}><Trash2 size={16}/> Delete approval</Button></div></div></Modal>}
 
 export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack, onPublished }) {
   const [summary, setSummary] = useState(initialSummary);
@@ -343,7 +368,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     <nav aria-label="Draft editor sections" className="grid grid-cols-1 gap-2 rounded-2xl sm:grid-cols-2 lg:grid-cols-4 border border-slate-200 bg-white p-2">
       <Button variant={activeEditorTab === "tasks" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("tasks")}><BookOpenCheck size={17}/> Tasks ({tasks.length})</Button>
       <Button variant={activeEditorTab === "dependencies" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("dependencies")}><GitBranch size={17}/> Dependencies ({dependencies.length})</Button>
-      <Button variant={activeEditorTab === "gates" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("gates")}><ShieldAlert size={17}/> External Gates ({gates.length})</Button>
+      <Button variant={activeEditorTab === "gates" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("gates")}><ShieldAlert size={17}/> Prerequisite approvals ({gates.length})</Button>
       <Button variant={activeEditorTab === "validation" ? "primary" : "ghost"} onClick={() => setActiveEditorTab("validation")}><Rocket size={17}/> Validate & Publish</Button>
     </nav>
 
@@ -363,8 +388,8 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
       <div className="flex flex-col gap-3 rounded-2xl border border-cyan-200 bg-cyan-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><GitBranch className="mt-0.5 shrink-0 text-cyan-700" size={19}/><div><strong className="text-cyan-950">Dependencies · Draft authoring</strong><p className="mt-1 text-xs font-semibold leading-5 text-cyan-800">Add explicit task relationships. Cycles and duplicate relationships are rejected by the backend.</p></div></div><Button className="w-full sm:w-auto" onClick={openAddDependency} disabled={tasks.length < 2}><Plus size={17}/> Add relationship</Button></div>
       {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading draft dependencies..."/></div> : loadError ? <Alert tone="danger" className="items-center"><div><strong>Draft dependencies unavailable</strong><span className="mt-1 block">{apiMessage(loadError)}</span></div><Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={15}/> Retry</Button></Alert> : dependencies.length===0 ? <EmptyState className="min-h-64 bg-white" title="This draft has no dependencies" description="Add the first controlled task relationship." action={tasks.length >= 2 ? <Button onClick={openAddDependency}><Plus size={16}/> Add first relationship</Button> : null}/> : <div className="grid gap-3">{dependencies.map(dependency => <DependencyRow key={dependency.id} dependency={dependency} onEdit={openEditDependency} onDelete={item=>{setDeleteDependency(item);setDependencyDeleteError(null);}}/>)}</div>}
        </> : activeEditorTab === "gates" ? <>
-      <div className="flex flex-col gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><ShieldAlert className="mt-0.5 shrink-0 text-violet-700" size={19}/><div><strong className="text-violet-950">External gates · Draft authoring</strong><p className="mt-1 text-xs font-semibold leading-5 text-violet-800">Configure exact mappings explicitly or preserve broad source wording without inferred task links.</p></div></div><Button className="w-full sm:w-auto" onClick={openAddGate}><Plus size={17}/> Add gate</Button></div>
-      {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading draft external gates..."/></div> : loadError ? <Alert tone="danger"><strong>Draft gates unavailable</strong><span>{apiMessage(loadError)}</span></Alert> : gates.length===0 ? <EmptyState className="min-h-64 bg-white" title="This draft has no external gates" description="Add the first approval or readiness gate." action={<Button onClick={openAddGate}><Plus size={16}/> Add first gate</Button>}/> : <div className="grid gap-3">{gates.map(gate=><GateRow key={gate.id} gate={gate} onEdit={openEditGate} onDelete={item=>{setDeleteGate(item);setGateDeleteError(null)}}/>)}</div>}
+      <div className="flex flex-col gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><ShieldAlert className="mt-0.5 shrink-0 text-violet-700" size={19}/><div><strong className="text-violet-950">Prerequisite approvals</strong><p className="mt-1 text-xs font-semibold leading-5 text-violet-800">Outside approvals, such as a Fire NOC, that related work needs first. Link each one to the tasks it is required before.</p></div></div><Button className="w-full sm:w-auto" onClick={openAddGate}><Plus size={17}/> Add approval</Button></div>
+      {loading ? <div className="grid min-h-64 place-items-center rounded-2xl border border-slate-200 bg-white"><LoadingSpinner label="Loading prerequisite approvals..."/></div> : loadError ? <Alert tone="danger"><strong>Prerequisite approvals unavailable</strong><span>{apiMessage(loadError)}</span></Alert> : gates.length===0 ? <EmptyState className="min-h-64 bg-white" title="No prerequisite approvals yet" description="Add an outside approval that related work needs first." action={<Button onClick={openAddGate}><Plus size={16}/> Add first approval</Button>}/> : <div className="grid gap-3">{gates.map(gate=><GateRow key={gate.id} gate={gate} onEdit={openEditGate} onDelete={item=>{setDeleteGate(item);setGateDeleteError(null)}}/>)}</div>}
     </> : null}
     <div className={activeEditorTab === "validation" ? "block" : "hidden"} aria-hidden={activeEditorTab !== "validation"}><TemplateValidationPublishPanel summary={summary} onNavigate={setActiveEditorTab} onRefresh={refresh} onPublished={onPublished}/></div>
 
@@ -372,7 +397,7 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
     {deleteTask && <DeleteTaskModal task={deleteTask} busy={deleting} error={deleteError} onClose={()=>{setDeleteTask(null);setDeleteError(null);}} onConfirm={confirmDelete}/>}
     {dependencyEditorOpen && <TemplateDependencyEditorModal dependency={editorDependency} tasks={tasks} revisionToken={summary.revision_token} nextSequence={dependencies.length+1} onClose={()=>{setDependencyEditorOpen(false);setFormDirty(false);}} onSaved={saveDependency} onDirtyChange={setFormDirty}/>} 
     {deleteDependency && <DeleteDependencyModal dependency={deleteDependency} busy={deletingDependency} error={dependencyDeleteError} onClose={()=>{setDeleteDependency(null);setDependencyDeleteError(null);}} onConfirm={confirmDependencyDelete}/>} 
-    {gateEditorOpen && <TemplateGateEditorModal gate={editorGate} gates={gates} tasks={tasks} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={gates.length+1} suggestedCode={nextStructuredCode(gates, "E")} onClose={()=>{setGateEditorOpen(false);setFormDirty(false)}} onSaved={saveGate} onDirtyChange={setFormDirty}/>} 
+    {gateEditorOpen && <TemplateGateEditorModal gate={editorGate} tasks={tasks} durationDays={summary.duration_days} revisionToken={summary.revision_token} nextSequence={gates.length+1} suggestedCode={nextStructuredCode(gates, "E")} onClose={()=>{setGateEditorOpen(false);setFormDirty(false)}} onSaved={saveGate} onDirtyChange={setFormDirty}/>} 
     {deleteGate && <DeleteGateModal gate={deleteGate} busy={deletingGate} error={gateDeleteError} onClose={()=>{setDeleteGate(null);setGateDeleteError(null)}} onConfirm={confirmGateDelete}/>} 
   </section>;
 }

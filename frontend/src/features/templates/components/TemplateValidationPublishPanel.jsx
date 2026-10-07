@@ -21,7 +21,7 @@ function issueTarget(issue) {
 
 function targetLabel(target) {
   if (target === "dependencies") return "Dependencies";
-  if (target === "gates") return "External Gates";
+  if (target === "gates") return "Prerequisite approvals";
   return "Tasks";
 }
 

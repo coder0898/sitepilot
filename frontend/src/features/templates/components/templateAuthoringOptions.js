@@ -23,14 +23,19 @@ export const TASK_CLASS_OPTIONS = [
 // Older task types, shown only on tasks that already use them.
 export const TASK_KIND_LABELS = { work:"Ordinary work", approval_gate:"Approval task", milestone:"Milestone" };
 
-export const REQUIRED_BY_TYPES = [
-  ["pre_activation","Pre-Activation"],
-  ["project_day","Project Day"],
-  ["before_task","Before Task"],
-  ["before_phase","Before Phase"],
-  ["before_milestone","Before Milestone"],
-  ["other","Other"]
+// Only rules that produce a real due date (project_gate_due_date.resolve_gate_due_at),
+// plus an honest "no due date". Imported rules show as "No due date" and are kept as-is.
+export const WHEN_NEEDED_OPTIONS = [
+  { value:"before_tasks", label:"Before the tasks it's required for", detail:"Due the day before the first of those tasks starts." },
+  { value:"project_day", label:"By a project day", detail:"Due on a fixed day of the project." },
+  { value:"none", label:"No due date", detail:"Set a date when assigning it on each project. Date-based overdue reminders won't apply until then." },
 ];
+
+export function whenNeededFor(requiredByType) {
+  if (requiredByType === "before_linked_tasks") return "before_tasks";
+  if (requiredByType === "project_day") return "project_day";
+  return "none";
+}
 
 export function nextStructuredCode(items, prefix) {
   const values = items

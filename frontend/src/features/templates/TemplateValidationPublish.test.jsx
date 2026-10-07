@@ -65,8 +65,8 @@ describe("template validation and publication", () => {
     fireEvent.click(screen.getByRole("button", { name:/open dependencies issues/i }));
     expect(screen.getByText("Dependencies · Draft authoring")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name:/validate & publish/i }));
-    fireEvent.click(screen.getByRole("button", { name:/open external gates issues/i }));
-    expect(screen.getByText("External gates · Draft authoring")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name:/open prerequisite approvals issues/i }));
+    expect(screen.getByRole("button", { name:/add approval/i })).toBeInTheDocument();
   });
 
   it("requires confirmation note and publishes the validated revision", async () => {
