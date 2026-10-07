@@ -59,6 +59,7 @@ class TemplateVersionResponse(BaseModel):
     status: Literal["draft", "published", "archived"]
     is_current_published: bool
     duration_days: int
+    change_note: str | None = None
     task_count: int
     dependency_count: int
     gate_count: int

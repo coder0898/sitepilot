@@ -82,10 +82,12 @@ export function TemplatesPage({ user, debounceMs = 350 }) {
       throw new Error("The new draft response was incomplete. The template list has not been left.");
     }
     setAuthoring(null);
-    setDraftEditorSummary(null);
+    // Go straight to editing. The editor loads the full draft itself, and
+    // its Back button still leads to this draft's details.
+    setDraftEditorSummary(response);
     setSelectedTemplateVersionId(response.version_id);
     setActiveTemplateTab("tasks");
-    setTemplateView("detail");
+    setTemplateView("editor");
     setRetryKey(value => value + 1);
   }
 

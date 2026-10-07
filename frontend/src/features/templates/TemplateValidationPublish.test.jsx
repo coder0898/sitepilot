@@ -85,6 +85,18 @@ describe("template validation and publication", () => {
     expect(onPublished).toHaveBeenCalledWith(expect.objectContaining({ status:"published", previous_current_version_id:"version-1" }));
   });
 
+  it("pre-fills the publication note with the draft's own change note", async () => {
+    templatesApi.getVersion.mockResolvedValue({ ...summary, change_note:"Retail variant." });
+    view({ summary:{ ...summary, change_note:"Retail variant." } }); await openValidation();
+    fireEvent.click(screen.getByRole("button", { name:/validate draft/i }));
+    expect(await screen.findByText("Validation passed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name:/publish version/i }));
+    const dialog = screen.getByRole("dialog", { name:/publish template version/i });
+    expect(within(dialog).getByLabelText("Publication change note")).toHaveValue("Retail variant.");
+    fireEvent.click(within(dialog).getByRole("button", { name:/publish immutable version/i }));
+    await waitFor(() => expect(templatesApi.publishVersion).toHaveBeenCalledWith("draft-1", { revision_token:"rev-1", change_note:"Retail variant." }));
+  });
+
   it("marks validation stale when the draft revision changes", async () => {
     const { rerender } = view(); await openValidation();
     fireEvent.click(screen.getByRole("button", { name:/validate draft/i }));

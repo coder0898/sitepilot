@@ -25,8 +25,9 @@ function targetLabel(target) {
   return "Tasks";
 }
 
-function PublishModal({ busy, error, onClose, onPublish }) {
-  const [changeNote, setChangeNote] = useState("");
+function PublishModal({ initialNote, busy, error, onClose, onPublish }) {
+  // Starts from the note written when the draft was created or cloned.
+  const [changeNote, setChangeNote] = useState(initialNote || "");
   const [localError, setLocalError] = useState("");
   function submit() {
     const note = changeNote.trim();
@@ -143,6 +144,6 @@ export function TemplateValidationPublishPanel({ summary, onNavigate, onRefresh,
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><strong className="text-sm text-slate-950">Publication readiness</strong><p className="mt-1 text-xs font-semibold text-slate-500">Publish is enabled only after the current revision passes with zero blocking errors.</p></div><Button className="w-full sm:w-auto" disabled={!canPublish} onClick={() => { setPublishError(null); setPublishOpen(true); }}><Rocket size={16}/> Publish Version</Button></div>
     </footer>
 
-    {publishOpen && <PublishModal busy={publishState === "running"} error={publishError} onClose={() => { if (publishState !== "running") setPublishOpen(false); }} onPublish={publish}/>} 
+    {publishOpen && <PublishModal initialNote={summary.change_note} busy={publishState === "running"} error={publishError} onClose={() => { if (publishState !== "running") setPublishOpen(false); }} onPublish={publish}/>} 
   </section>;
 }

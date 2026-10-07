@@ -94,6 +94,7 @@ class TemplateListApiTests(unittest.TestCase):
                 status="published",
                 duration_days=45,
                 content_hash="alpha-published",
+                change_note="Approved baseline.",
                 is_current_published=True,
                 created_by=ACTOR_ID,
                 published_by=ACTOR_ID,
@@ -305,6 +306,8 @@ class TemplateListApiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "published")
         self.assertTrue(payload["is_current_published"])
         self.assertEqual(payload["duration_days"], 45)
+        # The editor pre-fills the publish note from it.
+        self.assertEqual(payload["change_note"], "Approved baseline.")
         self.assertEqual(payload["task_count"], 99)
         self.assertEqual(payload["dependency_count"], 2)
         self.assertEqual(payload["gate_count"], 2)

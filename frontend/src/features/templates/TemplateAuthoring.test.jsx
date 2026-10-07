@@ -139,9 +139,10 @@ describe("Phase 2 template authoring entry", () => {
       duration_days: 60,
       change_note: "Initial authoring",
     }));
-    expect(await screen.findByText("New controlled template")).toBeInTheDocument();
+    // A new draft opens straight in the editor - no stop on the read-only details page.
+    expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
+    expect(container.querySelector("[data-template-view]")).toHaveAttribute("data-template-view", "editor");
     expect(container.querySelector("[data-template-view]")).toHaveAttribute("data-selected-version-id", "version-draft");
-    expect(screen.getByRole("button", { name: /open draft editor/i })).toBeInTheDocument();
   });
 
   it("shows clone only to Super Admin and keeps a published source view-only", async () => {
@@ -183,7 +184,7 @@ describe("Phase 2 template authoring entry", () => {
     fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: " Rework sequencing " } });
     fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
     await waitFor(() => expect(templatesApi.cloneVersion).toHaveBeenCalledWith("version-published", { change_note: "Rework sequencing" }));
-    expect(await screen.findByRole("button", { name: /open draft editor/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
   });
 
   it("clones into a new template with its own name and code, leaving the source alone", async () => {
@@ -228,7 +229,7 @@ describe("Phase 2 template authoring entry", () => {
     fireEvent.click(within(card).getByRole("button", { name: /view details/i }));
     fireEvent.click(await screen.findByRole("button", { name: /open draft editor/i }));
     expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
-    expect(screen.getByText("Draft task authoring")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: draft.template_name })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /back to draft details/i })).toBeInTheDocument();
   });
 
@@ -338,7 +339,7 @@ describe("Phase 2 template authoring entry", () => {
       version_no: 2,
       status: "draft",
     });
-    expect(await screen.findByRole("button", { name: /open draft editor/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
     expect(container.querySelector("[data-template-view]")).toHaveAttribute("data-selected-version-id", draft.version_id);
   });
 

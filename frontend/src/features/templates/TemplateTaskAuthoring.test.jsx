@@ -33,7 +33,7 @@ beforeEach(()=>{
 describe("draft task authoring",()=>{
   it("deduplicates the initial draft load under React StrictMode",async()=>{
     render(<StrictMode><TemplateDraftEditorEntry summary={summary} user={{role:"super_admin"}} onBack={vi.fn()}/></StrictMode>);
-    expect(await screen.findByText("Draft task authoring")).toBeInTheDocument();
+    expect(await screen.findByRole("heading",{name:"Test schedule"})).toBeInTheDocument();
     await screen.findByTestId("draft-task-T001");
     expect(templatesApi.getVersion).toHaveBeenCalledTimes(1);
     expect(templatesApi.listTasks).toHaveBeenCalledTimes(1);
@@ -41,7 +41,7 @@ describe("draft task authoring",()=>{
 
   it("shows authoring only for a Super Admin draft",async()=>{
     view();
-    expect(await screen.findByText("Draft task authoring")).toBeInTheDocument();
+    expect(await screen.findByRole("heading",{name:"Test schedule"})).toBeInTheDocument();
     expect(screen.getByRole("button",{name:/add task/i})).toBeInTheDocument();
     const denied=view("project_manager");
     expect(await screen.findByText("Draft authoring is unavailable")).toBeInTheDocument();
