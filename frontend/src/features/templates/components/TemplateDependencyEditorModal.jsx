@@ -101,7 +101,7 @@ export function TemplateDependencyEditorModal({ dependency, tasks, revisionToken
             <option value="start_to_start">Can start once the first has started</option>
           </Select>
         </Field>
-                <Field label="Note" error={errors.rule_text} className="sm:col-span-2"><Textarea aria-label="Dependency rule text" value={form.rule_text} onChange={event => change("rule_text", event.target.value)} placeholder="When the second task may begin."/></Field>
+        <Field label="Note" error={errors.rule_text} className="sm:col-span-2"><Textarea aria-label="Dependency rule text" value={form.rule_text} onChange={event => change("rule_text", event.target.value)} placeholder="When the second task may begin."/></Field>
         <label className="flex min-h-11 items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm sm:col-span-2"><input aria-label="Blocking dependency" type="checkbox" checked={form.blocking} onChange={event => change("blocking", event.target.checked)} className="size-4 accent-blue-700"/> Enforced: the second task can't start until this is met</label>
       </section>
       <footer className="sticky -bottom-4 -mx-4 flex flex-col-reverse gap-2 border-t border-slate-100 bg-white/95 px-4 py-4 backdrop-blur sm:-bottom-6 sm:-mx-6 sm:flex-row sm:justify-end sm:px-6">

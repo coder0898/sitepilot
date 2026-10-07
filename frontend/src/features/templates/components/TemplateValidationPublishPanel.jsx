@@ -76,10 +76,12 @@ export function TemplateValidationPublishPanel({ summary, active, tasks = [], ga
   const blocking = useMemo(() => (validation?.issues || []).filter(issue => issue.blocking), [validation]);
   const warnings = useMemo(() => (validation?.issues || []).filter(issue => !issue.blocking), [validation]);
 
+  const taskById = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks]);
+  const gateById = useMemo(() => new Map(gates.map(gate => [gate.id, gate])), [gates]);
   const subjectOf = issue => {
-    const task = issue.entity_type === "task" && tasks.find(item => item.id === issue.entity_id);
+    const task = issue.entity_type === "task" && taskById.get(issue.entity_id);
     if (task) return `${task.code} · ${task.title}`;
-    const gate = issue.entity_type === "gate" && gates.find(item => item.id === issue.entity_id);
+    const gate = issue.entity_type === "gate" && gateById.get(issue.entity_id);
     return gate ? gate.approval_name : "";
   };
 
@@ -101,9 +103,9 @@ export function TemplateValidationPublishPanel({ summary, active, tasks = [], ga
     }
   }
 
-  // Check automatically each time Review is opened.
+  // Check automatically when Review is opened, unless the last check is for this same revision.
   useEffect(() => {
-    if (active) validate();
+    if (active && validation?.draft_revision !== summary.revision_token) validate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 

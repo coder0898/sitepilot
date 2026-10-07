@@ -2,7 +2,7 @@ import { AlertTriangle, CalendarDays, Save, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Field, Input, Modal, Select, Textarea } from "../../../components/ui";
 import { APPROVED_CATEGORIES, APPROVED_PHASES, LEGACY_PHASES, TASK_CLASS_OPTIONS, TASK_KIND_LABELS } from "./templateAuthoringOptions";
-import { TemplateChoiceGroup } from "./TemplateChoiceGroup";
+import { TemplateChoiceGroup, TemplateEditorSection as Section } from "./TemplateChoiceGroup";
 
 const emptyTask = { code:"", sequence_no:"", title:"", description:"", schedule_classification:"execution", planned_start_day:"", planned_end_day:"", phase:"", category:"", applicability:"mandatory", task_class:"", task_kind:"", evidence_required:false, duration_days:"" };
 const asForm = (task, nextSequence, suggestedCode) => task ? Object.fromEntries(Object.keys(emptyTask).map(key => [key, task[key] ?? (key === "evidence_required" ? false : "")])) : { ...emptyTask, sequence_no:nextSequence ?? "", code:suggestedCode ?? "" };
@@ -45,10 +45,6 @@ function WaitsForSection({ task, tasks, waitFor, advancedLinks, blocked, onAdd, 
     </p>)}
     <Field label="Add a task it waits for"><Select aria-label="Add a task it waits for" value="" onChange={event => event.target.value && onAdd(event.target.value)}><option value="">Choose a task…</option>{choices.map(item => <option key={item.id} value={item.id}>{taskLabel(item)}</option>)}</Select></Field>
   </div>;
-}
-
-function Section({ title, children }) {
-  return <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5"><h3 className="text-xs font-black uppercase tracking-[.16em] text-slate-500">{title}</h3>{children}</section>;
 }
 
 export function TemplateTaskEditorModal({ task, tasks=[], dependencies=[], durationDays, revisionToken, nextSequence, suggestedCode, onClose, onSaved, onDirtyChange }) {

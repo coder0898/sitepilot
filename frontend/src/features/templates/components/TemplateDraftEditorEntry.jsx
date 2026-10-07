@@ -10,7 +10,7 @@ import { dependencyTypeLabel } from "./TemplateDependencyCard";
 import { TemplateGateEditorModal } from "./TemplateGateEditorModal";
 import { TemplateValidationPublishPanel } from "./TemplateValidationPublishPanel";
 import { ORG_ADMIN_ROLES } from "../../../utils/constants";
-import { gateDueDateText, nextStructuredCode, TASK_KIND_LABELS } from "./templateAuthoringOptions";
+import { gateDueDateText, nextStructuredCode, TASK_KIND_LABELS, whenNeededFor } from "./templateAuthoringOptions";
 
 function apiMessage(error) {
   const detail = error?.details?.detail;
@@ -52,18 +52,19 @@ async function loadEveryTask(versionId) {
   return [first, ...pages].flatMap(page => page.items);
 }
 
-function taskTypeLabel(task) {
-  if (task.task_kind === "approval_gate" || task.task_kind === "milestone") return TASK_KIND_LABELS[task.task_kind];
-  return task.task_class === "class_a" ? "Class A" : "Standard";
+// The pill on a task card: its class, or its older task type.
+function taskTypePill(task) {
+  if (task.task_kind === "approval_gate" || task.task_kind === "milestone") return { label: TASK_KIND_LABELS[task.task_kind], tone: "violet" };
+  return task.task_class === "class_a" ? { label: "Class A", tone: "red" } : { label: "Standard", tone: "gray" };
 }
 
 function TaskRow({ task, index, count, disableMove, onEdit, onDelete, onMove }) {
-  const typeLabel = taskTypeLabel(task);
+  const typePill = taskTypePill(task);
   return <article data-testid={"draft-task-" + task.code} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_28px_rgba(15,23,42,.05)]">
     <div className="flex items-start gap-3">
       <span className="mt-0.5 hidden text-slate-300 sm:block"><GripVertical size={18}/></span>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{task.code}</span><Pill tone={typeLabel === "Class A" ? "red" : typeLabel === "Standard" ? "gray" : "violet"}>{typeLabel}</Pill>{task.applicability === "conditional" && <Pill tone="orange">Only when it applies</Pill>}</div>
+        <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs font-black text-blue-700">{task.code}</span><Pill tone={typePill.tone}>{typePill.label}</Pill>{task.applicability === "conditional" && <Pill tone="orange">Only when it applies</Pill>}</div>
         <h3 className="mt-2 text-sm font-black leading-5 text-slate-950">{task.title}</h3>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-slate-500"><span>{formatPlannedDays(task)}</span><span>{task.phase || "No phase"}</span><span>{task.category || "No category"}</span></div>
       </div>
@@ -135,7 +136,8 @@ function DeleteDependencyModal({ dependency, busy, error, onClose, onConfirm }) 
 function GateRow({ gate, onEdit, onDelete }) {
   const linkedCount = gate.mapping_classification === "exact" ? (gate.affected_tasks?.length || gate.task_ids?.length || 0) : 0;
   const imported = gate.mapping_classification === "broad_text";
-  const noDueDate = gateDueDateText(gate).startsWith("No due date");
+  const dueDate = gateDueDateText(gate);
+  const noDueDate = whenNeededFor(gate.required_by_type) === "none";
   const actions = size => <>
     <Button size={size} variant="secondary" aria-label={`Edit approval ${gate.code}`} onClick={() => onEdit(gate)}><PencilLine size={15}/>{size === "sm" && " Edit"}</Button>
     <Button size={size} variant="danger" aria-label={`Delete approval ${gate.code}`} onClick={() => onDelete(gate)}><Trash2 size={15}/>{size === "sm" && " Delete"}</Button>
@@ -147,7 +149,7 @@ function GateRow({ gate, onEdit, onDelete }) {
         <p className="mt-1 text-xs font-semibold text-slate-500">{gate.external_party ? `Approved by ${gate.external_party}` : "Who approves is not set"}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           {linkedCount > 0 ? <Pill tone="blue">Required before {linkedCount} task{linkedCount === 1 ? "" : "s"}</Pill> : <Pill tone="orange">Not linked to any task</Pill>}
-          <Pill tone={noDueDate ? "orange" : "gray"}>{gateDueDateText(gate)}</Pill>
+          <Pill tone={noDueDate ? "orange" : "gray"}>{dueDate}</Pill>
         </div>
         {imported && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><strong>Imported wording</strong><p className="mt-1 font-semibold">{gate.broad_mapping_text}</p></div>}
       </div>

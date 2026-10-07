@@ -176,6 +176,18 @@ class TemplateCommandService:
                     task_map=task_map,
                 )
 
+                after_json = {
+                    "template_id": str(owner.id),
+                    "version_id": str(target.id),
+                    "version_no": target.version_no,
+                    "status": target.status,
+                    "task_count": len(task_map),
+                    "dependency_count": len(dependencies),
+                    "gate_count": len(gate_map),
+                    "exact_mapping_count": len(links),
+                }
+                if payload.new_template is not None:
+                    after_json.update(new_template=True, template_code=owner.code, template_name=owner.name)
                 write_template_audit_event(
                     self.db,
                     TemplateAuditWrite(
@@ -189,21 +201,7 @@ class TemplateCommandService:
                             "source_version_no": source.version.version_no,
                             "source_status": source.version.status,
                         },
-                        after_json={
-                            "template_id": str(owner.id),
-                            **({
-                                "new_template": True,
-                                "template_code": owner.code,
-                                "template_name": owner.name,
-                            } if payload.new_template is not None else {}),
-                            "version_id": str(target.id),
-                            "version_no": target.version_no,
-                            "status": target.status,
-                            "task_count": len(task_map),
-                            "dependency_count": len(dependencies),
-                            "gate_count": len(gate_map),
-                            "exact_mapping_count": len(links),
-                        },
+                        after_json=after_json,
                     ),
                 )
                 result = TemplateCloneMutationResponse(

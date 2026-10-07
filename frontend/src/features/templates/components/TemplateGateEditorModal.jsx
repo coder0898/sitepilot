@@ -2,7 +2,7 @@ import { AlertTriangle, Info, Save, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Field, Input, Modal, Select, Textarea } from "../../../components/ui";
 import { EXTERNAL_PARTIES, WHEN_NEEDED_OPTIONS, whenNeededFor } from "./templateAuthoringOptions";
-import { TemplateChoiceGroup } from "./TemplateChoiceGroup";
+import { TemplateChoiceGroup, TemplateEditorSection as Section } from "./TemplateChoiceGroup";
 
 // The saved shape the parent diffs against, so an untouched field - including
 // an imported rule or wording - is never re-sent or converted.
@@ -16,10 +16,6 @@ function asForm(saved) {
 }
 
 function message(error){const d=error?.details?.detail;if(d?.code==="stale_template_version")return"This draft changed in another session. Refresh before retrying.";return d?.message||error?.message||"The approval could not be saved.";}
-
-function Section({ title, children }) {
-  return <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5"><h3 className="text-xs font-black uppercase tracking-[.16em] text-slate-500">{title}</h3>{children}</section>;
-}
 
 export function TemplateGateEditorModal({ gate, tasks, durationDays, revisionToken, nextSequence, suggestedCode, onClose, onSaved, onDirtyChange }) {
   const saved=useMemo(()=>savedShape(gate,nextSequence,suggestedCode),[gate,nextSequence,suggestedCode]);

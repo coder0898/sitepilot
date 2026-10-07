@@ -2,6 +2,7 @@ import { Copy, FilePlus2, Info } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { templatesApi } from "../../../api/templatesApi";
 import { Alert, Button, Field, Input, Modal, Textarea } from "../../../components/ui";
+import { TemplateChoiceGroup } from "./TemplateChoiceGroup";
 
 const emptyCreate = {
   code: "",
@@ -52,12 +53,6 @@ function clonePayload(values, cloneMode) {
   return payload;
 }
 
-function CloneModeOption({ value, checked, title, detail, onSelect }) {
-  return <label className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 text-sm ${checked ? "border-blue-500 bg-blue-50" : "border-slate-200 bg-white"}`}>
-    <input type="radio" name="clone-mode" value={value} checked={checked} onChange={() => onSelect(value)} className="mt-1 size-4 accent-blue-700"/>
-    <span><strong className="block text-slate-950">{title}</strong><span className="mt-1 block text-xs font-semibold leading-5 text-slate-600">{detail}</span></span>
-  </label>;
-}
 
 function requireNewDraftResponse(response, { isClone, sourceVersionId }) {
   const versionId = typeof response?.version_id === "string" ? response.version_id.trim() : "";
@@ -163,15 +158,10 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
 
       {requestError && <Alert tone="danger"><div><strong className="block">{isClone ? "Draft could not be created" : "Template could not be created"}</strong><span className="mt-1 block font-medium">{requestError}</span></div></Alert>}
 
-      {isClone && <fieldset className="grid gap-3 sm:grid-cols-2">
-        <legend className="mb-2 text-sm font-black text-slate-950">What do you want to create?</legend>
-        <CloneModeOption value="version" checked={cloneMode === "version"} onSelect={setCloneMode}
-          title="New version"
-          detail={`The next version of "${source.template_name}". Same name; projects use it once published.`}/>
-        <CloneModeOption value="template" checked={cloneMode === "template"} onSelect={setCloneMode}
-          title="New template"
-          detail={`A separate template with its own name. "${source.template_name}" is not changed.`}/>
-      </fieldset>}
+      {isClone && <TemplateChoiceGroup label="What do you want to create?" name="clone-mode" value={cloneMode} onChange={setCloneMode} options={[
+        { value:"version", label:"New version", detail:`The next version of "${source.template_name}". Same name; projects use it once published.` },
+        { value:"template", label:"New template", detail:`A separate template with its own name. "${source.template_name}" is not changed.` },
+      ]}/>}
 
       {isClone && cloneMode === "template" && <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Template name" error={errors.name} className="sm:col-span-2">

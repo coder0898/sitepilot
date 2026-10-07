@@ -13,3 +13,8 @@ export function TemplateChoiceGroup({ label, name, value, options, onChange, col
     </div>
   </div>;
 }
+
+/** A titled block of fields in the task and approval dialogs. */
+export function TemplateEditorSection({ title, children }) {
+  return <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5"><h3 className="text-xs font-black uppercase tracking-[.16em] text-slate-500">{title}</h3>{children}</section>;
+}
