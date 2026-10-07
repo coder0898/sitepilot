@@ -137,7 +137,8 @@ function GateRow({ gate, onEdit, onDelete }) {
   const linkedCount = gate.mapping_classification === "exact" ? (gate.affected_tasks?.length || gate.task_ids?.length || 0) : 0;
   const imported = gate.mapping_classification === "broad_text";
   const dueDate = gateDueDateText(gate);
-  const noDueDate = whenNeededFor(gate.required_by_type) === "none";
+  // An older fixed-date rule with a date still gives a real due date.
+  const noDueDate = whenNeededFor(gate.required_by_type) === "none" && !(gate.required_by_type === "date" && gate.required_by_value);
   const actions = size => <>
     <Button size={size} variant="secondary" aria-label={`Edit approval ${gate.code}`} onClick={() => onEdit(gate)}><PencilLine size={15}/>{size === "sm" && " Edit"}</Button>
     <Button size={size} variant="danger" aria-label={`Delete approval ${gate.code}`} onClick={() => onDelete(gate)}><Trash2 size={15}/>{size === "sm" && " Delete"}</Button>
@@ -241,12 +242,12 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
   function openEdit(task){setEditorTask(task);setEditorOpen(true);}
 
   // Saves the task, then its "can't start until" links, each call carrying the
-  // revision the previous one returned. A link that fails after the task was
-  // saved is reported on the page; when only links changed, the error stays
-  // in the dialog.
+  // revision the previous one returned. A link that fails after anything was
+  // saved closes the dialog (its link list would be stale) and is reported on
+  // the page; when nothing was saved, the error stays in the dialog.
   async function saveTask(payload,task,links={}) {
     const { taskChanged=true, addPredecessorIds=[], removeDependencyIds=[] }=links;
-    let token=summary.revision_token, saved=task, taskSaved=false, linkFailure=null;
+    let token=summary.revision_token, saved=task, taskSaved=false, linkSaved=false, linkFailure=null;
     if(taskChanged){
       const response=task ? await templatesApi.updateTask(summary.version_id,task.id,payload) : await templatesApi.createTask(summary.version_id,payload);
       token=response.revision_token; saved=response.task||task; taskSaved=true;
@@ -261,15 +262,17 @@ export function TemplateDraftEditorEntry({ summary: initialSummary, user, onBack
           predecessor_task_id:predecessorId, successor_task_id:saved.id, dependency_type:"finish_to_start", blocking:true,
           rule_text:`${saved.code} can't start until ${byId.get(predecessorId)?.code} is finished.`, sequence_no:nextSequence, revision_token:token,
         });
-        token=response.revision_token;
+        token=response.revision_token; linkSaved=true;
       }
       for(const dependencyId of removeDependencyIds){
         const response=await templatesApi.deleteDependency(summary.version_id,dependencyId,token);
-        token=response.revision_token;
+        token=response.revision_token; linkSaved=true;
       }
     } catch(error) {
-      if(!taskSaved) throw error;
-      linkFailure={message:`The task was saved, but its "can't start until" links were not all saved: ${linkErrorCopy(error)}`};
+      if(!taskSaved&&!linkSaved) throw error;
+      linkFailure={message:taskSaved
+        ? `The task was saved, but its "can't start until" links were not all saved: ${linkErrorCopy(error)}`
+        : `Some changes were saved, but not all "can't start until" links were: ${linkErrorCopy(error)}`};
     } finally {
       setSummary(current=>({...current,revision_token:token}));
     }

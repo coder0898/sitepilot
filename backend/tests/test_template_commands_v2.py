@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -542,12 +543,48 @@ class TemplateCommandApiTests(unittest.TestCase):
             self.assertEqual(session.scalar(select(func.count()).select_from(V2Template)), 1)
         self.audit_writer.assert_not_called()
 
+    def test_clone_into_new_template_stores_an_explicit_description(self):
+        response = self.post(
+            f"/api/v2/templates/versions/{self.source_version_id}/clone",
+            {"new_template": {"code": "DESC-01", "name": "Described", "description": "Own words."}},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        with self.Session() as session:
+            created = session.get(V2Template, uuid.UUID(response.json()["template_id"]))
+            self.assertEqual(created.description, "Own words.")
+
     def test_archived_source_is_not_cloneable(self):
         response = self.post(
             f"/api/v2/templates/versions/{self.archived_version_id}/clone", {}
         )
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "Template version not found.")
+
+    def test_archived_source_is_not_cloneable_into_a_new_template(self):
+        response = self.post(
+            f"/api/v2/templates/versions/{self.archived_version_id}/clone",
+            {"new_template": {"code": "FROM-ARCHIVED", "name": "From archived"}},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Template version not found.")
+        with self.Session() as session:
+            self.assertIsNone(
+                session.scalar(select(V2Template).where(V2Template.code == "FROM-ARCHIVED"))
+            )
+
+    def test_concurrent_duplicate_code_on_new_template_clone_is_a_code_conflict(self):
+        with patch.object(
+            TemplateMutationRepository,
+            "create_template",
+            side_effect=IntegrityError("INSERT", {}, Exception("duplicate code")),
+        ):
+            response = self.post(
+                f"/api/v2/templates/versions/{self.source_version_id}/clone",
+                {"new_template": {"code": " race code ", "name": "Race"}},
+            )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "template_code_exists")
+        self.audit_writer.assert_not_called()
 
     def test_create_failure_rolls_back_template_and_version(self):
         with patch.object(

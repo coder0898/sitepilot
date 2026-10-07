@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter, defaultdict, deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -48,6 +48,17 @@ def _issue(issues: list[TemplateValidationIssue], code: str, group: str, entity_
 NO_DUE_DATE_MESSAGE = "This approval has no due date. Date-based overdue reminders will not apply."
 
 
+def _is_iso_date(value: Any) -> bool:
+    """Same parse resolve_gate_due_at uses for a "date" rule."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _check_gate_due_date(issues, gate, links, task_by_id, duration_days, p: str) -> None:
     """Mirror of project_gate_due_date.resolve_gate_due_at: a rule that can
     never produce a date blocks publication; a gate with no usable rule
@@ -67,7 +78,7 @@ def _check_gate_due_date(issues, gate, links, task_by_id, duration_days, p: str)
             _issue(issues, "gate_due_date_missing", "gates", "gate", f"{p}.required_by_type",
                    "None of the linked tasks has a start day, so this approval gets no due date. "
                    "Date-based overdue reminders will not apply.", blocking=False, entity_id=gate.id)
-    elif rule != "date":
+    elif rule != "date" or not _is_iso_date(value):
         _issue(issues, "gate_due_date_missing", "gates", "gate", f"{p}.required_by_type",
                NO_DUE_DATE_MESSAGE, blocking=False, entity_id=gate.id, value=rule)
 

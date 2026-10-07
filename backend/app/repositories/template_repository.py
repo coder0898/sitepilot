@@ -291,6 +291,23 @@ def _dependency_validation_issues(
         issues.append("cross_version_reference")
     return issues
 
+def _required_by_is_invalid(required_type: Any, required_value: Any) -> bool:
+    """Whether a gate's due-date rule is half-filled.
+
+    Mirrored in SQL by ``list_gates``'s ``invalid_required_by_sql``; keep the two
+    in step.
+    - ``before_linked_tasks`` needs no value: the date comes from the linked
+      tasks (project_gate_due_date.resolve_gate_due_at).
+    - Both blank is the "No due date" choice: a draft warning, not invalid.
+    - Otherwise exactly one of type/value blank is invalid.
+    """
+    if required_type == "before_linked_tasks":
+        return False
+    type_blank = not isinstance(required_type, str) or not required_type.strip()
+    value_blank = not isinstance(required_value, str) or not required_value.strip()
+    return type_blank != value_blank
+
+
 def _gate_validation_issues(
     gate: Any,
     mappings: Iterable[tuple[Any, Any | None]],
@@ -304,16 +321,7 @@ def _gate_validation_issues(
     if not isinstance(gate.external_party, str) or not gate.external_party.strip():
         issues.append("missing_external_party")
 
-    required_type = gate.required_by_type
-    required_value = gate.required_by_value
-    # `before_linked_tasks` is complete without a value: the date comes from
-    # the linked tasks (project_gate_due_date.resolve_gate_due_at).
-    if required_type != "before_linked_tasks" and (
-        not isinstance(required_type, str)
-        or not required_type.strip()
-        or not isinstance(required_value, str)
-        or not required_value.strip()
-    ):
+    if _required_by_is_invalid(gate.required_by_type, gate.required_by_value):
         issues.append("invalid_required_by")
 
     classification = gate.mapping_classification
@@ -838,11 +846,23 @@ class TemplateRepository:
         def blank(column: Any) -> Any:
             return func.length(func.trim(func.coalesce(column, ""))) == 0
 
+        # Mirrors _required_by_is_invalid: exactly one of type/value blank,
+        # except `before_linked_tasks`, which needs no value.
+        type_blank = blank(V2TemplateExternalGate.required_by_type)
+        value_blank = blank(V2TemplateExternalGate.required_by_value)
+        invalid_required_by_sql = and_(
+            func.coalesce(V2TemplateExternalGate.required_by_type, "")
+            != "before_linked_tasks",
+            or_(
+                and_(type_blank, ~value_blank),
+                and_(~type_blank, value_blank),
+            ),
+        )
+
         invalid_condition = or_(
             blank(V2TemplateExternalGate.approval_name),
             blank(V2TemplateExternalGate.external_party),
-            blank(V2TemplateExternalGate.required_by_type),
-            blank(V2TemplateExternalGate.required_by_value),
+            invalid_required_by_sql,
             ~V2TemplateExternalGate.mapping_classification.in_(
                 ("exact", "broad_text", "unmapped")
             ),

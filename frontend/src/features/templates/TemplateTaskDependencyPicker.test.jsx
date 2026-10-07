@@ -106,4 +106,21 @@ describe("Can't start until", () => {
     expect(await screen.findByText(/task was saved, but its "can't start until" links were not all saved/i)).toBeInTheDocument();
     expect(screen.getByText(/wait for each other in a loop/i)).toBeInTheDocument();
   });
+
+  it("closes the dialog and reloads when only some new links were saved", async () => {
+    templatesApi.createDependency
+      .mockResolvedValueOnce({ dependency: {}, revision_token: "rev-2" })
+      .mockRejectedValueOnce({ status: 409, message: "Conflict", details: { detail: { code: "template_dependency_cycle", message: "cycle" } } });
+    view();
+    const dialog = await openTask("T003");
+    fireEvent.change(within(dialog).getByLabelText("Add a task it waits for"), { target: { value: "task-1" } });
+    fireEvent.change(within(dialog).getByLabelText("Add a task it waits for"), { target: { value: "task-2" } });
+    const loadsBefore = templatesApi.listDependencies.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole("button", { name: /save task/i }));
+    expect(await screen.findByText(/some changes were saved, but not all "can't start until" links were/i)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /edit task/i })).not.toBeInTheDocument();
+    expect(templatesApi.updateTask).not.toHaveBeenCalled();
+    expect(templatesApi.createDependency).toHaveBeenLastCalledWith("draft-1", expect.objectContaining({ predecessor_task_id: "task-2", revision_token: "rev-2" }));
+    expect(templatesApi.listDependencies.mock.calls.length).toBeGreaterThan(loadsBefore);
+  });
 });

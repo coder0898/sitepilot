@@ -91,6 +91,21 @@ describe("prerequisite approval authoring",()=>{
     expect(card).toHaveTextContent("Due the day before the first of them starts");
   });
 
+  it("shows an older fixed-date rule as a real due date, without the no-due-date warning",async()=>{
+    const dated={...broad,id:"gate-3",code:"E003",approval_name:"Landlord NOC",required_by_type:"date",required_by_value:"2026-11-01",sequence_no:3};
+    templatesApi.listGates.mockResolvedValue(page([broad,dated]));
+    await openApprovals();
+    const card=screen.getByTestId("draft-gate-gate-3");
+    expect(card).not.toHaveTextContent("No due date");
+    const due=within(card).getByText("Due on 2026-11-01");
+    expect(due.className).not.toMatch(/amber/);
+  });
+
+  it("explains that a 'before its tasks' due date is set when the project is activated",async()=>{
+    await openApprovals();const d=addDialog();
+    expect(within(d).getByText("Due the day before the first of those tasks is planned to start, set when the project is activated.")).toBeInTheDocument();
+  });
+
   it("deletes only the approval",async()=>{
     await openApprovals();fireEvent.click(screen.getAllByRole("button",{name:/delete approval E001/i})[0]);
     const d=screen.getByRole("dialog",{name:/delete E001/i});expect(within(d).getByText(/Tasks are not deleted/i)).toBeInTheDocument();

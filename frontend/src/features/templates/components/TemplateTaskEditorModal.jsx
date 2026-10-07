@@ -63,7 +63,9 @@ export function TemplateTaskEditorModal({ task, tasks=[], dependencies=[], durat
     return [...values].sort();
   },[task,tasks]);
   const categoryOptions=useMemo(()=>Array.from(new Set([...APPROVED_CATEGORIES,...tasks.map(item=>item.category).filter(Boolean)])).sort(),[tasks]);
-  const legacyKind=Boolean(task?.task_kind&&TASK_KIND_LABELS[task.task_kind]&&task.task_kind!=="work");
+  // Any stored type other than ordinary work - including an unknown one - can be changed here.
+  const storedKind=task?.task_kind&&task.task_kind!=="work"?task.task_kind:"";
+  const storedKindLabel=TASK_KIND_LABELS[storedKind]||`Unknown type (${storedKind})`;
   // Standard/Class A only applies to ordinary work; approval tasks and milestones keep no class.
   const nonWork=["approval_gate","milestone"].includes(form.task_kind);
   const preActivation=form.schedule_classification==="pre_activation";
@@ -114,7 +116,7 @@ export function TemplateTaskEditorModal({ task, tasks=[], dependencies=[], durat
       <summary className="cursor-pointer text-sm font-black text-slate-700">Advanced</summary>
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <Field label="Task code" error={errors.code} hint="Filled in automatically. Must be unique in this template."><Input aria-label="Task code" value={form.code} onChange={e=>change("code",e.target.value)}/></Field>
-        {legacyKind&&<Field label="Task type" hint="Older task type. Choose ordinary work to use Standard / Class A."><Select aria-label="Task type" value={form.task_kind} onChange={e=>change("task_kind",e.target.value)}><option value="">Ordinary work</option><option value={task.task_kind}>{TASK_KIND_LABELS[task.task_kind]}</option></Select></Field>}
+        {storedKind&&<Field label="Task type" hint="Older task type. Choose ordinary work to use Standard / Class A."><Select aria-label="Task type" value={form.task_kind} onChange={e=>change("task_kind",e.target.value)}><option value="">Ordinary work</option><option value={storedKind}>{storedKindLabel}</option></Select></Field>}
       </div>
     </details>
     <footer className="sticky -bottom-4 -mx-4 flex flex-col-reverse gap-2 border-t border-slate-100 bg-white/95 px-4 py-4 backdrop-blur sm:-bottom-6 sm:-mx-6 sm:flex-row sm:justify-end sm:px-6"><Button variant="secondary" className="w-full sm:w-auto" onClick={close}>Cancel</Button><Button type="submit" loading={saving} className="w-full sm:w-auto"><Save size={17}/>{task?"Save task":"Add task"}</Button></footer>

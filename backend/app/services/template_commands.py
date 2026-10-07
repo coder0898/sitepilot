@@ -224,6 +224,12 @@ class TemplateCommandService:
         except ValueError as exc:
             raise _clone_conflict(str(exc)) from exc
         except IntegrityError as exc:
+            if payload.new_template is not None:
+                # A concurrent clone took the same code between the pre-check
+                # and the insert; a fresh template has no other unique clash.
+                raise _duplicate_code_conflict(
+                    normalize_template_code(payload.new_template.code)
+                ) from exc
             raise _clone_conflict(
                 "The new draft version could not be created because the template changed concurrently. Retry the clone."
             ) from exc

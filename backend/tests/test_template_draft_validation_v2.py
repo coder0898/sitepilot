@@ -102,7 +102,9 @@ class TemplateValidationPureTests(unittest.TestCase):
         return {(i.code, i.blocking) for i in validate_aggregate(aggregate).issues if i.group == "gates"}
 
     def test_supported_due_date_rules_raise_no_due_date_issue(self):
-        for rule in (("project_day", "10"), ("before_linked_tasks", None), ("date", "2026-10-14")):
+        # Day 1 and Day 45 (the version's duration) are the inclusive boundaries.
+        for rule in (("project_day", "10"), ("project_day", "1"), ("project_day", "45"),
+                     ("before_linked_tasks", None), ("date", "2026-10-14")):
             with self.subTest(rule=rule):
                 a = valid_aggregate()
                 a.gates[0].required_by_type, a.gates[0].required_by_value = rule
@@ -110,7 +112,9 @@ class TemplateValidationPureTests(unittest.TestCase):
 
     def test_a_gate_without_a_usable_due_date_rule_is_a_warning_not_a_blocker(self):
         # Imported gates keep their original wording as a "source_text" rule.
-        for rule in ((None, None), ("source_text", "Before civil works"), ("before_task", "T002")):
+        # A "date" rule whose value is not an ISO date gives no date at activation.
+        for rule in ((None, None), ("source_text", "Before civil works"), ("before_task", "T002"),
+                     ("date", "not-a-date"), ("date", None)):
             with self.subTest(rule=rule):
                 a = valid_aggregate()
                 a.gates[0].required_by_type, a.gates[0].required_by_value = rule

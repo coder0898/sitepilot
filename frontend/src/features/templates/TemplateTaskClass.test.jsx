@@ -56,6 +56,16 @@ describe("Template task class", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_class: "class_a", task_kind: null }), expect.anything(), expect.anything()));
   });
+
+  it("shows an unknown task type and lets the Admin change it to ordinary work", async () => {
+    const onSaved = renderEditor(task({ task_kind: "execution" }));
+    const select = screen.getByLabelText("Task type");
+    expect(select).toHaveValue("execution");
+    expect(within(select).getByRole("option", { name: "Unknown type (execution)" })).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save task/ }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ task_kind: null }), expect.anything(), expect.anything()));
+  });
 });
 
 describe("Template task schedule", () => {

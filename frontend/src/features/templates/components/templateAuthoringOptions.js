@@ -26,7 +26,7 @@ export const TASK_KIND_LABELS = { work:"Ordinary work", approval_gate:"Approval 
 // Only rules that produce a real due date (project_gate_due_date.resolve_gate_due_at),
 // plus an honest "no due date". Imported rules show as "No due date" and are kept as-is.
 export const WHEN_NEEDED_OPTIONS = [
-  { value:"before_tasks", label:"Before the tasks it's required for", detail:"Due the day before the first of those tasks starts." },
+  { value:"before_tasks", label:"Before the tasks it's required for", detail:"Due the day before the first of those tasks is planned to start, set when the project is activated." },
   { value:"project_day", label:"By a project day", detail:"Due on a fixed day of the project." },
   { value:"none", label:"No due date", detail:"Set a date when assigning it on each project. Date-based overdue reminders won't apply until then." },
 ];
@@ -35,6 +35,8 @@ export const WHEN_NEEDED_OPTIONS = [
 export function gateDueDateText(gate) {
   if (gate.required_by_type === "before_linked_tasks") return "Due the day before the first of them starts";
   if (gate.required_by_type === "project_day") return `Due by day ${gate.required_by_value}`;
+  // Older fixed-date rule: kept read-only, but it does give a due date.
+  if (gate.required_by_type === "date" && gate.required_by_value) return `Due on ${gate.required_by_value}`;
   return gate.required_by_value ? `No due date (imported: "${gate.required_by_value}")` : "No due date";
 }
 

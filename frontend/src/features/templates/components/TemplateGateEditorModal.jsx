@@ -53,7 +53,7 @@ export function TemplateGateEditorModal({ gate, tasks, durationDays, revisionTok
       <TemplateChoiceGroup label="When is it needed?" name="approval-when" value={form.when} options={WHEN_NEEDED_OPTIONS} columns={1} onChange={value=>{change("when",value);setErrors(current=>({...current,day:""}));}}/>
       {errors.when&&<p className="text-sm font-bold text-rose-600" role="alert">{errors.when}</p>}
       {form.when==="project_day"&&<Field label="Needed by day" error={errors.day}><Input aria-label="Needed by day" type="number" min="1" max={durationDays} value={form.day} onChange={e=>change("day",e.target.value)}/></Field>}
-      {importedRule&&form.when==="none"&&<Alert tone="info"><Info size={18}/><div><strong>Imported wording kept, no due date</strong><span className="mt-1 block">{saved.required_by_value}</span></div></Alert>}
+      {importedRule&&form.when==="none"&&<Alert tone="info"><Info size={18}/><div><strong>{saved.required_by_type==="date"?"Older fixed date kept":"Imported wording kept, no due date"}</strong><span className="mt-1 block">{saved.required_by_value}</span></div></Alert>}
     </Section>
     <Section title="Required before">
       <p className="text-sm font-bold text-slate-700">This approval is required before these tasks</p>
