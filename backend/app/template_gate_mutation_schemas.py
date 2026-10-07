@@ -19,6 +19,7 @@ class _GateFields(StrictTemplateMutationRequest):
     required_by_type: str | None = Field(default=None, max_length=120)
     required_by_value: str | None = Field(default=None, max_length=500)
     impact: str | None = Field(default=None, max_length=500)
+    evidence_instructions: str | None = Field(default=None, max_length=2000)
     sequence_no: int = Field(gt=0)
 
     @field_validator("code", "approval_name")
@@ -30,7 +31,8 @@ class _GateFields(StrictTemplateMutationRequest):
         return value
 
     @field_validator(
-        "description", "external_party", "required_by_type", "required_by_value", "impact"
+        "description", "external_party", "required_by_type", "required_by_value", "impact",
+        "evidence_instructions",
     )
     @classmethod
     def strip_optional(cls, value: str | None) -> str | None:
@@ -83,6 +85,7 @@ class TemplateGateUpdateRequest(StrictTemplateMutationRequest):
     required_by_type: str | None = Field(default=None, max_length=120)
     required_by_value: str | None = Field(default=None, max_length=500)
     impact: str | None = Field(default=None, max_length=500)
+    evidence_instructions: str | None = Field(default=None, max_length=2000)
     sequence_no: int | None = Field(default=None, gt=0)
 
     @field_validator("code", "approval_name")
@@ -96,7 +99,8 @@ class TemplateGateUpdateRequest(StrictTemplateMutationRequest):
         return value
 
     @field_validator(
-        "description", "external_party", "required_by_type", "required_by_value", "impact"
+        "description", "external_party", "required_by_type", "required_by_value", "impact",
+        "evidence_instructions",
     )
     @classmethod
     def strip_optional(cls, value: str | None) -> str | None:
@@ -156,6 +160,7 @@ class TemplateGateMutationItem(BaseModel):
     required_by_type: str | None
     required_by_value: str | None
     impact: str | None
+    evidence_instructions: str | None = None
     mapping_classification: str
     broad_mapping_text: str | None
     requires_configuration: bool

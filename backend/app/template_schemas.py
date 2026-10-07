@@ -85,6 +85,7 @@ class TemplateTaskItem(BaseModel):
     task_class: str | None
     task_kind: str | None
     evidence_required: bool
+    evidence_instructions: str | None = None
     duration_days: int | None
     validation_state: Literal["valid", "invalid"]
     validation_issues: list[str]
@@ -154,6 +155,7 @@ class TemplateGateItem(BaseModel):
     required_by_type: str | None
     required_by_value: str | None
     impact: str | None
+    evidence_instructions: str | None = None
     mapping_classification: str
     requires_configuration: bool
     broad_mapping_text: str | None

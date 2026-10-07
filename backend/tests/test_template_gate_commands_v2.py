@@ -232,6 +232,26 @@ class TemplateGateCommandApiTests(unittest.TestCase):
         self.assertEqual(unmapped.json()["gate"]["mapping_classification"], "unmapped")
         self.assertTrue(unmapped.json()["gate"]["requires_configuration"])
 
+    def test_evidence_instructions_are_saved_returned_and_listed(self):
+        created = self.client.post(
+            f"/api/v2/templates/versions/{self.draft_id}/gates",
+            json=self.base(mapping_classification="unmapped", task_ids=[], evidence_instructions=" Signed NOC copy "),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        gate = created.json()["gate"]
+        self.assertEqual(gate["evidence_instructions"], "Signed NOC copy")
+
+        updated = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/gates/{gate['id']}",
+            json={"revision_token": created.json()["revision_token"], "evidence_instructions": "Stamped NOC"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["gate"]["evidence_instructions"], "Stamped NOC")
+
+        listed = self.client.get(f"/api/v2/templates/versions/{self.draft_id}/gates", params={"page_size": 100})
+        by_id = {item["id"]: item for item in listed.json()["items"]}
+        self.assertEqual(by_id[gate["id"]]["evidence_instructions"], "Stamped NOC")
+
     def test_configure_exact_mapping_and_reject_invalid_tasks(self):
         response = self.client.put(
             f"/api/v2/templates/versions/{self.draft_id}/gates/{self.broad_id}/mappings",

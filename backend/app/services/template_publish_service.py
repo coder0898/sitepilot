@@ -41,6 +41,7 @@ def normalized_content(aggregate: TemplateValidationAggregate) -> dict[str, Any]
             "phase": _clean(t.phase), "category": _clean(t.category), "applicability": t.applicability,
             "task_class": _clean(t.task_class), "task_kind": _clean(t.task_kind),
             "evidence_required": t.evidence_required, "duration_days": t.duration_days,
+            "evidence_instructions": _clean(t.evidence_instructions),
         }
         for t in sorted(aggregate.tasks, key=lambda x: (x.sequence_no, x.code, str(x.id)))
     ]
@@ -59,6 +60,7 @@ def normalized_content(aggregate: TemplateValidationAggregate) -> dict[str, Any]
             "description": _clean(g.description), "external_party": _clean(g.external_party),
             "required_by_type": _clean(g.required_by_type), "required_by_value": _clean(g.required_by_value),
             "impact": _clean(g.impact), "mapping_classification": g.mapping_classification,
+            "evidence_instructions": _clean(g.evidence_instructions),
             "broad_mapping_text": _clean(g.broad_mapping_text),
             "requires_configuration": g.requires_configuration, "sequence_no": g.sequence_no,
             "exact_task_codes": sorted(mappings_by_gate.get(g.id, [])) if g.mapping_classification == "exact" else [],

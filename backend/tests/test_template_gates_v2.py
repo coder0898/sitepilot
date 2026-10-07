@@ -256,7 +256,7 @@ class TemplateGateApiTests(unittest.TestCase):
             {
                 "id", "code", "sequence_no", "approval_name", "description",
                 "external_party", "required_by_type", "required_by_value", "impact",
-                "mapping_classification", "requires_configuration", "broad_mapping_text",
+                "evidence_instructions", "mapping_classification", "requires_configuration", "broad_mapping_text",
                 "affected_tasks", "validation_state", "validation_issues",
             },
         )

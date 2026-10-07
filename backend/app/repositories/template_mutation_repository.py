@@ -170,6 +170,7 @@ class TemplateMutationRepository:
                 task_class=source.task_class,
                 task_kind=source.task_kind,
                 evidence_required=source.evidence_required,
+                evidence_instructions=source.evidence_instructions,
                 duration_days=source.duration_days,
             )
             self.db.add(clone)
@@ -221,6 +222,7 @@ class TemplateMutationRepository:
                 required_by_type=source.required_by_type,
                 required_by_value=source.required_by_value,
                 impact=source.impact,
+                evidence_instructions=source.evidence_instructions,
                 mapping_classification=source.mapping_classification,
                 broad_mapping_text=source.broad_mapping_text,
                 requires_configuration=source.requires_configuration,

@@ -115,6 +115,7 @@ class TemplateCommandApiTests(unittest.TestCase):
                 task_class="control",
                 task_kind="approval",
                 evidence_required=True,
+                evidence_instructions="Signed approval letter.",
                 duration_days=1,
             )
             task_two = V2TemplateTask(
@@ -152,6 +153,7 @@ class TemplateCommandApiTests(unittest.TestCase):
                 code="E001",
                 approval_name="Exact gate",
                 external_party="Client",
+                evidence_instructions="Stamped NOC copy.",
                 required_by_type="task",
                 required_by_value="T008",
                 mapping_classification="exact",
@@ -359,7 +361,7 @@ class TemplateCommandApiTests(unittest.TestCase):
                 "sequence_no", "title", "description", "schedule_classification",
                 "planned_start_day", "planned_end_day", "phase", "category",
                 "applicability", "task_class", "task_kind", "evidence_required",
-                "duration_days",
+                "evidence_instructions", "duration_days",
             )
             for code, source_task in source_tasks_by_code.items():
                 self.assertEqual(
@@ -421,6 +423,7 @@ class TemplateCommandApiTests(unittest.TestCase):
                 "approval_name", "description", "external_party", "required_by_type",
                 "required_by_value", "impact", "mapping_classification",
                 "broad_mapping_text", "requires_configuration", "sequence_no",
+                "evidence_instructions",
             )
             for code, source_gate in source_gate_by_code.items():
                 self.assertEqual(

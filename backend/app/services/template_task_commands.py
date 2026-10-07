@@ -46,6 +46,7 @@ TASK_FIELDS = (
     "task_class",
     "task_kind",
     "evidence_required",
+    "evidence_instructions",
     "duration_days",
 )
 

@@ -305,6 +305,33 @@ class TemplateTaskCommandApiTests(unittest.TestCase):
         with self.Session() as session:
             self.assertEqual(session.get(V2TemplateTask, self.task_two_id).task_class, "class_a")
 
+    def test_evidence_instructions_are_saved_returned_and_listed(self):
+        created = self.client.post(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks",
+            json=self.create_payload(evidence_instructions="  Photos of the levelled floor  "),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        task = created.json()["task"]
+        self.assertEqual(task["evidence_instructions"], "Photos of the levelled floor")
+
+        updated = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks/{task['id']}",
+            json={"revision_token": self.revision(), "evidence_instructions": "Photo and level report"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["task"]["evidence_instructions"], "Photo and level report")
+
+        listed = self.client.get(f"/api/v2/templates/versions/{self.draft_id}/tasks", params={"page_size": 100})
+        by_id = {item["id"]: item for item in listed.json()["items"]}
+        self.assertEqual(by_id[task["id"]]["evidence_instructions"], "Photo and level report")
+
+        cleared = self.client.patch(
+            f"/api/v2/templates/versions/{self.draft_id}/tasks/{task['id']}",
+            json={"revision_token": self.revision(), "evidence_instructions": "   "},
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertIsNone(cleared.json()["task"]["evidence_instructions"])
+
     def test_task_kind_accepts_known_values_only(self):
         for code, sequence, task_kind in (("T004", 4, None), ("T005", 5, "work"), ("T006", 6, "milestone")):
             response = self.client.post(

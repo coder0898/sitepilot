@@ -27,6 +27,7 @@ class TemplateTaskCreateRequest(StrictTemplateMutationRequest):
     task_class: str | None = Field(default=None, max_length=120)
     task_kind: str | None = Field(default=None, max_length=120)
     evidence_required: bool = False
+    evidence_instructions: str | None = Field(default=None, max_length=2000)
     duration_days: int | None = Field(default=None, gt=0)
     revision_token: str = Field(min_length=1, max_length=100)
 
@@ -38,7 +39,7 @@ class TemplateTaskCreateRequest(StrictTemplateMutationRequest):
             raise ValueError("Value cannot be blank.")
         return value
 
-    @field_validator("description", "phase", "category", "task_class", "task_kind")
+    @field_validator("description", "phase", "category", "task_class", "task_kind", "evidence_instructions")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -61,6 +62,7 @@ class TemplateTaskUpdateRequest(StrictTemplateMutationRequest):
     task_class: str | None = Field(default=None, max_length=120)
     task_kind: str | None = Field(default=None, max_length=120)
     evidence_required: bool | None = None
+    evidence_instructions: str | None = Field(default=None, max_length=2000)
     duration_days: int | None = Field(default=None, gt=0)
 
     @field_validator("code", "title")
@@ -73,7 +75,7 @@ class TemplateTaskUpdateRequest(StrictTemplateMutationRequest):
             raise ValueError("Value cannot be blank.")
         return value
 
-    @field_validator("description", "phase", "category", "task_class", "task_kind")
+    @field_validator("description", "phase", "category", "task_class", "task_kind", "evidence_instructions")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -113,6 +115,7 @@ class TemplateTaskMutationItem(BaseModel):
     task_class: str | None
     task_kind: str | None
     evidence_required: bool
+    evidence_instructions: str | None = None
     duration_days: int | None
 
 

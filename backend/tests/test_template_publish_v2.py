@@ -93,6 +93,18 @@ class TemplatePublishApiTests(unittest.TestCase):
             json={"revision_token": token or self.revision(version_id), "change_note": note},
         )
 
+    def test_evidence_instructions_are_part_of_the_published_content(self):
+        with self.Session() as s:
+            aggregate = TemplateValidationRepository(s).load(self.draft_id)
+            before = compute_persisted_content_hash(aggregate)
+            aggregate.tasks[0].evidence_instructions = "Photos of the finished work."
+            after_task = compute_persisted_content_hash(aggregate)
+            self.assertNotEqual(before, after_task)
+            if aggregate.gates:
+                aggregate.gates[0].evidence_instructions = "Stamped NOC."
+                self.assertNotEqual(after_task, compute_persisted_content_hash(aggregate))
+            s.rollback()
+
     def test_valid_draft_publishes_atomically_and_writes_one_audit(self):
         with patch("app.services.template_publish_service.write_template_audit_event") as audit:
             response = self.publish(self.draft_id)

@@ -86,6 +86,7 @@ class TemplateTaskSummary:
     task_class: str | None
     task_kind: str | None
     evidence_required: bool
+    evidence_instructions: str | None
     duration_days: int | None
     validation_state: str
     validation_issues: list[str]
@@ -177,6 +178,7 @@ class TemplateGateSummary:
     required_by_type: str | None
     required_by_value: str | None
     impact: str | None
+    evidence_instructions: str | None
     mapping_classification: str
     requires_configuration: bool
     broad_mapping_text: str | None
@@ -603,6 +605,7 @@ class TemplateRepository:
                     task_class=task.task_class,
                     task_kind=task.task_kind,
                     evidence_required=task.evidence_required,
+                    evidence_instructions=task.evidence_instructions,
                     duration_days=task.duration_days,
                     validation_state="invalid" if issues else "valid",
                     validation_issues=issues,
@@ -986,6 +989,7 @@ class TemplateRepository:
                     required_by_type=gate.required_by_type,
                     required_by_value=gate.required_by_value,
                     impact=gate.impact,
+                    evidence_instructions=gate.evidence_instructions,
                     mapping_classification=gate.mapping_classification,
                     requires_configuration=gate.requires_configuration,
                     broad_mapping_text=gate.broad_mapping_text,

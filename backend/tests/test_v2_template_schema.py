@@ -13,6 +13,7 @@ from app.database import Base
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / "20260725083225_v2_template_schema.sql"
 TASK_DURATION_MIGRATION = REPO_ROOT / "supabase" / "migrations" / "202607280001_v2_template_configured_duration_tasks.sql"
+REFERENCE_MATERIAL_MIGRATION = REPO_ROOT / "supabase" / "migrations" / "202610070001_v2_template_reference_material.sql"
 TABLE_NAMES = {
     "v2_templates",
     "v2_template_versions",
@@ -21,6 +22,11 @@ TABLE_NAMES = {
     "v2_template_external_gates",
     "v2_template_external_gate_tasks",
 }
+# Added later by REFERENCE_MATERIAL_MIGRATION (Template Builder Phase 2).
+REFERENCE_TABLE_NAMES = {
+    "v2_template_task_reference_files",
+    "v2_template_gate_reference_files",
+}
 
 
 class V2TemplateSchemaTests(unittest.TestCase):
@@ -28,6 +34,7 @@ class V2TemplateSchemaTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.sql = MIGRATION.read_text(encoding="utf-8")
         cls.task_duration_sql = TASK_DURATION_MIGRATION.read_text(encoding="utf-8")
+        cls.reference_sql = REFERENCE_MATERIAL_MIGRATION.read_text(encoding="utf-8")
 
     def test_sql_and_sqlalchemy_table_names_match(self) -> None:
         sql_tables = set(re.findall(r"create table if not exists siteops_v2\.(v2_[a-z_]+)", self.sql))
@@ -36,8 +43,21 @@ class V2TemplateSchemaTests(unittest.TestCase):
             for table in Base.metadata.tables.values()
             if table.schema == "siteops_v2" and table.name.startswith("v2_template")
         }
+        reference_sql_tables = set(re.findall(r"create table if not exists siteops_v2.(v2_[a-z_]+)", self.reference_sql))
         self.assertEqual(TABLE_NAMES, sql_tables)
-        self.assertEqual(TABLE_NAMES, model_tables)
+        self.assertEqual(REFERENCE_TABLE_NAMES, reference_sql_tables)
+        self.assertEqual(TABLE_NAMES | REFERENCE_TABLE_NAMES, model_tables)
+
+    def test_reference_material_migration_is_additive(self) -> None:
+        sql = self.reference_sql.lower()
+        for destructive in ("drop table", "drop column", "delete from", "update siteops_v2", "truncate", "alter column"):
+            self.assertNotIn(destructive, sql)
+        # Columns added to existing tables must be nullable, so no existing row needs a value.
+        added = re.findall(r"add column if not exists [^;]+;", sql)
+        self.assertEqual(len(added), 2)
+        for column in added:
+            self.assertNotIn("not null", column)
+        self.assertIn("add column if not exists evidence_instructions text", sql)
 
     def test_important_check_values_match(self) -> None:
         expected_groups = [
