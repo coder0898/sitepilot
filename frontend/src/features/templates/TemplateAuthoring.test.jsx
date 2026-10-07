@@ -148,8 +148,8 @@ describe("Phase 2 template authoring entry", () => {
   it("shows clone only to Super Admin and keeps a published source view-only", async () => {
     renderPage("super_admin");
     await openPublishedDetails();
-    expect(screen.getByRole("button", { name: /clone as draft/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /open draft editor/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^clone$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /edit draft/i })).not.toBeInTheDocument();
     expect(screen.getByText("Published version is view-only")).toBeInTheDocument();
   });
 
@@ -174,7 +174,7 @@ describe("Phase 2 template authoring entry", () => {
 
     renderPage();
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
     const dialog = screen.getByRole("dialog", { name: /clone template/i });
     expect(within(dialog).getByText("Source remains unchanged")).toBeInTheDocument();
     expect(within(dialog).getByText("Separate draft")).toBeInTheDocument();
@@ -200,7 +200,7 @@ describe("Phase 2 template authoring entry", () => {
     });
     renderPage("admin");
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
     const dialog = screen.getByRole("dialog", { name: /clone template/i });
     expect(within(dialog).queryByLabelText("New template name")).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("radio", { name: /new template/i }));
@@ -227,7 +227,7 @@ describe("Phase 2 template authoring entry", () => {
     renderPage();
     const card = await screen.findByTestId("template-card-version-draft");
     fireEvent.click(within(card).getByRole("button", { name: /view details/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /open draft editor/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /edit draft/i }));
     expect(await screen.findByTestId("template-draft-editor")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: draft.template_name })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /back to draft details/i })).toBeInTheDocument();
@@ -239,7 +239,7 @@ describe("Phase 2 template authoring entry", () => {
     const view = render(<TemplatesPage user={{ id: "user-1", role: "super_admin" }} debounceMs={0}/>);
     const card = await screen.findByTestId("template-card-version-draft");
     fireEvent.click(within(card).getByRole("button", { name: /view details/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /open draft editor/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /edit draft/i }));
     await screen.findByTestId("template-draft-editor");
 
     view.rerender(<TemplatesPage user={{ id: "user-1", role: "project_manager" }} debounceMs={0}/>);
@@ -250,8 +250,8 @@ describe("Phase 2 template authoring entry", () => {
   it.each(["project_manager"])("keeps %s details fully read-only", async role => {
     renderPage(role);
     await openPublishedDetails();
-    expect(screen.queryByRole("button", { name: /clone as draft/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /open draft editor/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^clone$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /edit draft/i })).not.toBeInTheDocument();
     expect(screen.getByText("Published version is view-only")).toBeInTheDocument();
   });
 
@@ -283,7 +283,7 @@ describe("Phase 2 template authoring entry", () => {
     });
     renderPage();
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
     const dialog = screen.getByRole("dialog", { name: /clone template/i });
     fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: "Separate revision" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /create draft/i }));
@@ -324,7 +324,7 @@ describe("Phase 2 template authoring entry", () => {
 
     const { container } = renderPage();
     await openPublishedDetails();
-    fireEvent.click(screen.getByRole("button", { name: /clone as draft/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
     const dialog = screen.getByRole("dialog", { name: /clone template/i });
     fireEvent.change(within(dialog).getByLabelText("Change note"), { target: { value: "Locked clone" } });
     const submit = within(dialog).getByRole("button", { name: /create draft/i });

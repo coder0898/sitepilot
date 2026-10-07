@@ -196,7 +196,7 @@ export function TemplateAuthoringModal({ mode, source, onClose, onSuccess }) {
           <Input aria-label="Template name" value={values.name} onChange={event => update("name", event.target.value)} aria-invalid={Boolean(errors.name)} placeholder="Commercial Interior Delivery"/>
         </Field>
         <Field label="Description" className="sm:col-span-2" hint="Describe the intended project type and delivery scope.">
-          <Textarea aria-label="Description" value={values.description} onChange={event => update("description", event.target.value)} placeholder="A controlled delivery template for..."/>
+          <Textarea aria-label="Description" value={values.description} onChange={event => update("description", event.target.value)} placeholder="A delivery template for..."/>
         </Field>
       </div>}
 

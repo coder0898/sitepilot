@@ -31,6 +31,13 @@ export const WHEN_NEEDED_OPTIONS = [
   { value:"none", label:"No due date", detail:"Set a date when assigning it on each project. Date-based overdue reminders won't apply until then." },
 ];
 
+/** When an approval is due, in words; an imported rule shows its original wording. */
+export function gateDueDateText(gate) {
+  if (gate.required_by_type === "before_linked_tasks") return "Due the day before the first of them starts";
+  if (gate.required_by_type === "project_day") return `Due by day ${gate.required_by_value}`;
+  return gate.required_by_value ? `No due date (imported: "${gate.required_by_value}")` : "No due date";
+}
+
 export function whenNeededFor(requiredByType) {
   if (requiredByType === "before_linked_tasks") return "before_tasks";
   if (requiredByType === "project_day") return "project_day";

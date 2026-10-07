@@ -218,7 +218,7 @@ describe("TemplateDetails", () => {
     fireEvent.click(screen.getByRole("tab", { name: /dependencies/i }));
     expect(await screen.findByText("No dependencies stored for this version")).toBeInTheDocument();
     expect(templatesApi.listDependencies).toHaveBeenCalledWith("version-published", { page: 1, page_size: 100 }, expect.any(Object));
-    fireEvent.click(screen.getByRole("tab", { name: /external gates/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /prerequisite approvals/i }));
     expect(await screen.findByText("No external gates stored for this version")).toBeInTheDocument();
     expect(templatesApi.listGates).toHaveBeenCalledWith("version-published", { page: 1, page_size: 100 }, expect.any(Object));
   });
