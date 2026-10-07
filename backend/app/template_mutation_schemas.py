@@ -35,8 +35,33 @@ class TemplateCreateRequest(StrictTemplateMutationRequest):
         return value.strip() or None
 
 
+class TemplateCloneNewTemplate(StrictTemplateMutationRequest):
+    """Identity for a clone that starts a separate template instead of the next version."""
+
+    code: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("code", "name")
+    @classmethod
+    def require_non_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank.")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def trim_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
 class TemplateCloneRequest(StrictTemplateMutationRequest):
     change_note: str | None = Field(default=None, max_length=1000)
+    # Omitted: the draft is the next version of the source's template.
+    new_template: TemplateCloneNewTemplate | None = None
 
     @field_validator("change_note")
     @classmethod
